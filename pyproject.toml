@@ -12,8 +12,15 @@ dependencies = [
     "av>=13.0",
 ]
 
+[project.optional-dependencies]
+dev = ["pytest>=8", "pyinstaller>=6"]
+
 [project.scripts]
 vortex-studio = "vortex_studio.app:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]

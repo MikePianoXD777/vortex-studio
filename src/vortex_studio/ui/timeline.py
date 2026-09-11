@@ -16,6 +16,9 @@ from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QMouseEvent, QPainter, QPen, QWheelEvent
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
+from pathlib import Path
+
+from vortex_studio.media.audio import peaks
 from vortex_studio.model import Clip, ImageOverlay, Sequence, Title, timecode
 
 HEADER_WIDTH = 72
@@ -45,6 +48,9 @@ RANGE_FILL = QColor(61, 111, 168, 46)
 RANGE_EDGE = QColor("#5f9bd8")
 OUTSIDE = QColor(10, 11, 13, 96)
 SNAP_LINE = QColor("#e8c15a")
+WAVE = QColor(190, 235, 210, 190)
+
+PEAKS_PER_SECOND = 60
 
 # Qué tipo de cosa acepta cada clase de pista.
 ACCEPTS = {
@@ -85,6 +91,10 @@ class TimelineWidget(QWidget):
         self._scrubbing = False
         self._drag: dict | None = None
         self._snap_at: float | None = None
+
+        # La onda se calcula una vez por archivo: decodificar el audio
+        # entero en cada repintado sería inservible.
+        self._waves: dict[Path, list[float]] = {}
 
         self.setMinimumHeight(
             RULER_HEIGHT + len(sequence.tracks) * (TRACK_HEIGHT + TRACK_GAP) + 10)
@@ -214,11 +224,47 @@ class TimelineWidget(QWidget):
         painter.setBrush(color.lighter(115) if chosen else color)
         painter.drawRoundedRect(rect, 3, 3)
 
+        if color is CLIP_AUDIO and rect.width() > 8:
+            self._draw_wave(painter, clip, rect)
+
         if rect.width() > 34:
             painter.setPen(QColor("#eef1f4"))
             painter.setFont(QFont("", 8))
             painter.drawText(rect.adjusted(6, 0, -6, 0),
                              Qt.AlignLeft | Qt.AlignVCenter, clip.name)
+
+    def _draw_wave(self, painter: QPainter, clip, rect: QRectF) -> None:
+        """Dibuja la onda del clip, recortada a la parte que se ve.
+
+        Solo se calculan las columnas visibles: con el zoom muy afuera un
+        clip largo cabe en pocos pixeles, y no tiene caso mirar cada pico.
+        """
+        data = self._wave_for(clip.source)
+        if not data:
+            return
+
+        visible = rect.intersected(QRectF(HEADER_WIDTH, rect.top(),
+                                          self.width() - HEADER_WIDTH, rect.height()))
+        if visible.width() < 2:
+            return
+
+        middle = rect.center().y()
+        half = rect.height() / 2 - 3
+
+        painter.setPen(QPen(WAVE, 1))
+        for x in range(int(visible.left()), int(visible.right())):
+            # De pixel a tiempo del clip, y de ahí a tiempo del archivo.
+            dentro = (x - rect.left()) / self.pixels_per_second
+            indice = int((getattr(clip, "in_point", 0.0) + dentro) * PEAKS_PER_SECOND)
+            if not (0 <= indice < len(data)):
+                continue
+            alto = data[indice] * half
+            painter.drawLine(QPointF(x, middle - alto), QPointF(x, middle + alto))
+
+    def _wave_for(self, source) -> list[float]:
+        if source not in self._waves:
+            self._waves[source] = peaks(source, PEAKS_PER_SECOND)
+        return self._waves[source]
 
     def _draw_range(self, painter: QPainter) -> None:
         """Marcas de entrada y salida: oscurece lo de fuera, resalta lo de dentro."""
@@ -391,11 +437,37 @@ class TimelineWidget(QWidget):
 
         if self._drag is not None:
             if self._drag["moved"]:
+                track = self.sequence.tracks[self._drag["track"]]
+                self._resolve_overlap(track, self._drag["item"])
+                track.clips.sort(key=lambda c: c.start)
                 label = "Mover clip" if self._drag["zone"] == "cuerpo" else "Recortar clip"
-                self.sequence.tracks[self._drag["track"]].clips.sort(key=lambda c: c.start)
                 self.edit_finished.emit(label)
             self._drag = None
             self.update()
+
+    @staticmethod
+    def _resolve_overlap(track, item) -> None:
+        """Lo que se suelta encima tapa a lo que ya estaba.
+
+        Es como funciona el arrastre por defecto en un editor: mandas algo
+        sobre otra cosa y la pisa. Antes se permitía el traslape en silencio
+        y lo que veías era el primero de la lista, que no siempre es el de
+        arriba — parecía que el clip se había perdido.
+        """
+        for other in list(track.clips):
+            if other is item or other.end <= item.start or other.start >= item.end:
+                continue
+
+            if other.start >= item.start and other.end <= item.end:
+                track.clips.remove(other)          # queda tapado por completo
+            elif other.start < item.start:
+                other.duration = item.start - other.start   # se le corta la cola
+            else:
+                recorte = item.end - other.start             # se le corta la cabeza
+                other.start = item.end
+                other.duration -= recorte
+                if hasattr(other, "in_point"):
+                    other.in_point += recorte
 
     def _update_cursor(self, pos) -> None:
         if self.tool == TOOL_RAZOR:

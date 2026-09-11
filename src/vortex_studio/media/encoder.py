@@ -8,11 +8,13 @@ completo de un jalón produce la imagen inclinada clásica.
 
 from __future__ import annotations
 
+from fractions import Fraction
 from pathlib import Path
 from typing import Callable, Iterator
 
 try:
     import av
+    from av.audio.fifo import AudioFifo
 
     HAS_PYAV = True
 except ImportError:  # pragma: no cover - depende del entorno
@@ -64,6 +66,9 @@ def export_video(
     fps: float,
     quality: str = DEFAULT_QUALITY,
     progress: Callable[[int, int], bool] | None = None,
+    audio: Iterator | None = None,
+    audio_rate: int = 48000,
+    audio_layout: str = "stereo",
 ) -> Path:
     """Codifica los cuadros que entregue `frames` a H.264.
 
@@ -91,10 +96,18 @@ def export_video(
             "preset": "medium",
         }
 
+        sound = _AudioWriter(container, audio, audio_rate, audio_layout) if audio else None
+
         for index, image in enumerate(frames):
             frame = image_to_frame(image, width, height)
             for packet in stream.encode(frame):
                 container.mux(packet)
+
+            # El audio se va escribiendo al parejo del video en vez de al
+            # final: así el muxer no tiene que retener en memoria todos los
+            # paquetes de imagen esperando a que llegue el sonido.
+            if sound is not None:
+                sound.advance((index + 1) / fps)
 
             if progress is not None and not progress(index + 1, total):
                 container.close()
@@ -102,6 +115,8 @@ def export_video(
                 path.unlink(missing_ok=True)
                 raise Cancelled()
 
+        if sound is not None:
+            sound.finish()
         for packet in stream.encode():   # vaciar lo que quede en el buffer
             container.mux(packet)
     finally:
@@ -113,3 +128,65 @@ def export_video(
 
 class Cancelled(Exception):
     """La exportación se detuvo a petición del usuario."""
+
+
+class _AudioWriter:
+    """Escribe la pista de audio en paralelo con la de video.
+
+    El codificador de AAC pide bloques de un tamaño fijo, que casi nunca
+    coincide con el de los cuadros que entrega el decodificador. Un FIFO en
+    medio absorbe la diferencia; sin él, el codificador rechaza los bloques
+    o mete silencios entre uno y otro.
+    """
+
+    def __init__(self, container, source: Iterator, rate: int, layout: str) -> None:
+        self.container = container
+        self.source = source
+        self.rate = rate
+
+        self.stream = container.add_stream("aac", rate=rate)
+        self.stream.layout = layout
+
+        self._fifo = AudioFifo()
+        self._written = 0          # muestras ya codificadas
+        self._pulled = 0.0         # segundos ya sacados de la fuente
+        self._done = False
+
+    def advance(self, until: float) -> None:
+        """Asegura que haya audio escrito hasta el segundo `until`."""
+        while not self._done and self._pulled < until:
+            frame = next(self.source, None)
+            if frame is None:
+                self._done = True
+                break
+            self._pulled += frame.samples / float(frame.sample_rate or self.rate)
+            frame.pts = None       # el FIFO reasigna las marcas de tiempo
+            self._fifo.write(frame)
+
+        self._drain(self.stream.codec_context.frame_size or 1024)
+
+    def _drain(self, size: int) -> None:
+        while True:
+            chunk = self._fifo.read(size)
+            if chunk is None:
+                break
+            self._emit(chunk)
+
+    def _emit(self, chunk) -> None:
+        chunk.pts = self._written
+        chunk.time_base = Fraction(1, self.rate)
+        self._written += chunk.samples
+        for packet in self.stream.encode(chunk):
+            self.container.mux(packet)
+
+    def finish(self) -> None:
+        for frame in self.source:      # lo que quedara pendiente
+            frame.pts = None
+            self._fifo.write(frame)
+
+        self._drain(self.stream.codec_context.frame_size or 1024)
+        resto = self._fifo.read()
+        if resto is not None:
+            self._emit(resto)
+        for packet in self.stream.encode():
+            self.container.mux(packet)

@@ -10,6 +10,7 @@ from PySide6.QtGui import QAction, QActionGroup, QImage, QKeySequence
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
     QApplication,
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -27,6 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from vortex_studio.media import HAS_PYAV, VideoSource, probe
+from vortex_studio.media.audio import AudioRenderer, has_audio
 from vortex_studio.media.encoder import QUALITY, Cancelled, export_video
 from vortex_studio.model import (
     ANCHORS,
@@ -476,7 +478,15 @@ class MainWindow(QMainWindow):
 
         track = self.sequence.video_tracks()[-1]   # V1, la de hasta abajo
         first = not track.clips
-        clip = track.append(path, info.get("duration") or 0.0)
+        duration = info.get("duration") or 0.0
+        clip = track.append(path, duration)
+
+        # El audio del archivo entra como su propio clip en A1, alineado con
+        # el video. Van sueltos a propósito: así se puede mover o borrar el
+        # sonido sin tocar la imagen.
+        if has_audio(path):
+            audio = self.sequence.audio_tracks()[0]
+            audio.add(Clip(source=path, start=clip.start, duration=duration))
 
         if first:
             self.sequence.fps = info.get("fps") or self.sequence.fps
@@ -542,9 +552,14 @@ class MainWindow(QMainWindow):
             return
 
         self._pause()
-        self._run_export(Path(path), start, end, options.quality())
+        self._run_export(Path(path), start, end, options.quality(),
+                         options.with_audio())
 
-    def _run_export(self, path: Path, start: float, end: float, quality: str) -> None:
+    def _audio_clips(self) -> list:
+        return [c for track in self.sequence.audio_tracks() for c in track.clips]
+
+    def _run_export(self, path: Path, start: float, end: float,
+                    quality: str, with_audio: bool) -> None:
         fps = self.sequence.fps
         total = max(1, int(round((end - start) * fps)))
 
@@ -570,6 +585,8 @@ class MainWindow(QMainWindow):
                 fps,
                 quality,
                 report,
+                AudioRenderer(self._audio_clips()).stream(start, end)
+                if with_audio and self._audio_clips() else None,
             )
         except Cancelled:
             dialog.close()
@@ -582,9 +599,10 @@ class MainWindow(QMainWindow):
             self._seek(self.timeline.playhead)
 
         dialog.close()
+        sonido = "con audio" if with_audio and self._audio_clips() else "sin audio"
         QMessageBox.information(
             self, "Exportado",
-            f"{path.name}\n\n{total} cuadros · {(end - start):.1f} s")
+            f"{path.name}\n\n{total} cuadros · {(end - start):.1f} s · {sonido}")
 
     def _frames(self, start: float, end: float, fps: float):
         """Va entregando el cuadro compuesto de cada instante.
@@ -1006,6 +1024,11 @@ class ExportDialog(QDialog):
         self._quality.addItems(QUALITY.keys())
         self._quality.setCurrentText("Normal")
 
+        pistas = sum(len(t.clips) for t in sequence.audio_tracks())
+        self._audio = QCheckBox(f"Incluir audio ({pistas} clip{'s' if pistas != 1 else ''})")
+        self._audio.setChecked(pistas > 0)
+        self._audio.setEnabled(pistas > 0)
+
         form = QFormLayout()
         form.addRow("Tramo:", QLabel(rango))
         form.addRow("Duración:", QLabel(f"{end - start:.2f} s"))
@@ -1013,7 +1036,8 @@ class ExportDialog(QDialog):
         form.addRow("Cuadros por segundo:", QLabel(f"{sequence.fps:g}"))
         form.addRow("Calidad:", self._quality)
 
-        aviso = QLabel("El video se exporta sin audio: todavía no hay motor de sonido.")
+        aviso = QLabel("El audio se exporta al archivo, pero todavía no suena "
+                       "durante la edición: no hay motor de reproducción de sonido.")
         aviso.setWordWrap(True)
         aviso.setStyleSheet("color:#a8763d; font-size:10px;")
 
@@ -1024,8 +1048,12 @@ class ExportDialog(QDialog):
 
         layout = QVBoxLayout(self)
         layout.addLayout(form)
+        layout.addWidget(self._audio)
         layout.addWidget(aviso)
         layout.addWidget(buttons)
 
     def quality(self) -> str:
         return self._quality.currentText()
+
+    def with_audio(self) -> bool:
+        return self._audio.isChecked()

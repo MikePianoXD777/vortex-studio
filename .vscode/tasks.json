@@ -5,8 +5,23 @@
       "label": "Compilar (ejecutable)",
       "type": "shell",
       "command": "${workspaceFolder}/.venv/bin/pyinstaller vortex-studio.spec --noconfirm --clean",
+      "windows": {
+        "command": "${workspaceFolder}\\.venv\\Scripts\\pyinstaller.exe vortex-studio.spec --noconfirm --clean"
+      },
       "options": { "cwd": "${workspaceFolder}" },
       "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated" }
+    },
+    {
+      "label": "Probar",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/python -m pytest tests -q",
+      "windows": {
+        "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe -m pytest tests -q"
+      },
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": { "kind": "test", "isDefault": true },
       "problemMatcher": [],
       "presentation": { "reveal": "always", "panel": "dedicated" }
     },
@@ -14,6 +29,9 @@
       "label": "Correr",
       "type": "shell",
       "command": "${workspaceFolder}/.venv/bin/python -m vortex_studio",
+      "windows": {
+        "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe -m vortex_studio"
+      },
       "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": [],
       "presentation": { "reveal": "always", "panel": "dedicated" }
@@ -21,7 +39,10 @@
     {
       "label": "Instalar dependencias",
       "type": "shell",
-      "command": "${workspaceFolder}/.venv/bin/pip install -e .",
+      "command": "${workspaceFolder}/.venv/bin/pip install -e \".[dev]\"",
+      "windows": {
+        "command": "${workspaceFolder}\\.venv\\Scripts\\pip.exe install -e \".[dev]\""
+      },
       "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": []
     }
