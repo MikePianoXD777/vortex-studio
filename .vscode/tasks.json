@@ -1,0 +1,29 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Compilar (ejecutable)",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/pyinstaller vortex-studio.spec --noconfirm --clean",
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated" }
+    },
+    {
+      "label": "Correr",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/python -m vortex_studio",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated" }
+    },
+    {
+      "label": "Instalar dependencias",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/pip install -e .",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    }
+  ]
+}
