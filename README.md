@@ -20,6 +20,10 @@ python -m venv .venv
 .venv\Scripts\python -m vortex_studio
 ```
 
+En Windows también hay atajos: `construir.bat` compila el ejecutable a
+`dist\vortex-studio\vortex-studio.exe` y `probar.bat` corre las pruebas.
+Los dos crean el entorno virtual si hace falta.
+
 En VS Code da igual el sistema: `Ctrl+F5` corre, `F5` corre con depurador,
 `Ctrl+Shift+B` compila el ejecutable y `Ctrl+Shift+P → Run Test Task` corre
 las pruebas. Las tareas traen su variante de Windows.
@@ -45,7 +49,10 @@ abrir ventanas, así que funciona por SSH o en una máquina sin pantalla.
 | `test_color.py` | Brillo, contraste, saturación, gamma |
 | `test_audio.py` | Onda y mezcla con huecos |
 | `test_exportar.py` | Que el archivo salga como se ve al editar |
+| `test_clip.py` | Fundidos, velocidad, congelar cuadro |
+| `test_marcadores.py` | Marcadores y su navegación |
 | `test_atajos.py` | Atajos, paneles y barra de estado |
+| `test_portabilidad.py` | Que funcione igual en Linux y Windows |
 
 ## Atajos
 
@@ -62,6 +69,8 @@ abrir ventanas, así que funciona por SSH o en una máquina sin pantalla.
 | `Ctrl+Z` / `Ctrl+Shift+Z` | Deshacer / rehacer |
 | `V` / `C` | Herramienta selección / navaja |
 | `Ctrl+K` / `Ctrl+D` | Cortar en el playhead / duplicar |
+| `Ctrl+Shift+D` | Fundir entrada y salida del clip |
+| `Ctrl+Shift+F` | Congelar el cuadro actual |
 | `Supr` / `Shift+Supr` | Eliminar / eliminar cerrando el hueco |
 | `Ctrl+T` / `Ctrl+Shift+T` | Insertar texto / subtítulo |
 
@@ -73,6 +82,8 @@ abrir ventanas, así que funciona por SSH o en una máquina sin pantalla.
 | `J` `K` `Shift+L` | Más lento / normal / más rápido |
 | `L` | Repetir |
 | `I` `O` / `Ctrl+Shift+X` | Marcar entrada, salida / quitar marcas |
+| `M` / `Shift+M` | Poner marcador / marcador con nombre |
+| `Shift+↓` `Shift+↑` | Marcador siguiente / anterior |
 | `F` | Pantalla completa |
 
 En el timeline: `Ctrl`+rueda hace zoom, arrastrar un clip lo mueve, arrastrar
@@ -92,6 +103,17 @@ sus bordes lo recorta, y todo se imanta a los cortes vecinos y al playhead.
 `Ctrl+E` escribe un MP4 (H.264) con todo quemado: cortes, textos, imágenes y
 corrección de color. Si hay marcas de entrada y salida, exporta solo ese tramo.
 Se puede cancelar a media exportación; el archivo incompleto se borra.
+
+## Portabilidad
+
+El proyecto `.vortex` guarda las rutas **relativas** cuando el material está
+junto al proyecto o debajo de él, y siempre con barras normales. Así la
+carpeta se puede mover, mandar a otra máquina o pasar de Linux a Windows y
+sigue abriendo. Solo se guarda absoluta la ruta de material que vive fuera.
+
+No hay ningún atajo con `Ctrl+Alt`: en Windows con teclado latinoamericano
+`AltGr` manda exactamente eso, y escribir `@` o `\` dispararía comandos del
+editor. Hay una prueba que lo vigila.
 
 ## Pendiente
 

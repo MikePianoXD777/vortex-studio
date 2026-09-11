@@ -26,6 +26,8 @@ class PreviewWidget(QWidget):
         self._overlays: list[tuple[ImageOverlay, QImage]] = []
         self._titles: list[Title] = []
         self._aspect = 16 / 9
+        self._time: float | None = None
+        self._alpha = 1.0
         self._message = "Importa un video para empezar  ·  Ctrl+I"
 
         self.setMinimumSize(320, 180)
@@ -34,9 +36,14 @@ class PreviewWidget(QWidget):
 
     # --- qué mostrar ------------------------------------------------------
 
-    def set_frame(self, frame: Frame | None) -> None:
+    def set_frame(self, frame: Frame | None, alpha: float = 1.0) -> None:
         self._frame = frame
+        self._alpha = alpha
         self.update()
+
+    def set_time(self, t: float) -> None:
+        """El instante que se está viendo, para que cada fundido se aplique."""
+        self._time = t
 
     def set_overlays(self, overlays: list[tuple[ImageOverlay, QImage]]) -> None:
         self._overlays = overlays
@@ -76,7 +83,9 @@ class PreviewWidget(QWidget):
         if self._frame is not None:
             target = self._fit(self._frame.width / self._frame.height)
             painter.fillRect(self.rect(), LETTERBOX)
+            painter.setOpacity(max(0.0, min(1.0, self._alpha)))
             painter.drawImage(target, frame_to_image(self._frame))
+            painter.setOpacity(1.0)
         else:
             # Sin video de fondo el lienzo es negro, pero el texto y las
             # imágenes se siguen viendo: así se puede armar una portada.
@@ -84,10 +93,13 @@ class PreviewWidget(QWidget):
             painter.fillRect(self.rect(), LETTERBOX)
             painter.fillRect(target, QColor("#000000"))
 
+        t = self._time
         for overlay, image in self._overlays:
-            draw_overlay(painter, target, overlay, image)
+            draw_overlay(painter, target, overlay, image,
+                         overlay.fade_at(t) if t is not None else 1.0)
         for title in self._titles:
-            draw_title(painter, target, title)
+            draw_title(painter, target, title,
+                       title.fade_at(t) if t is not None else 1.0)
 
         painter.end()
 
@@ -111,7 +123,8 @@ class PreviewWidget(QWidget):
             height = 1080
             width = int(height * self._aspect)
 
-        return compose(width, height, self._frame, self._overlays, self._titles)
+        return compose(width, height, self._frame, self._overlays, self._titles,
+                       self._time, self._alpha)
 
     # --- pantalla completa ------------------------------------------------
 

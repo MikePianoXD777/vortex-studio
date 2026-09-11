@@ -34,8 +34,8 @@ def frame_to_image(frame: Frame) -> QImage:
 
 
 def draw_overlay(painter: QPainter, target: QRectF,
-                 overlay: ImageOverlay, image: QImage) -> None:
-    if image.isNull():
+                 overlay: ImageOverlay, image: QImage, alpha: float = 1.0) -> None:
+    if image.isNull() or alpha <= 0:
         return
 
     width = target.width() * overlay.scale
@@ -45,14 +45,25 @@ def draw_overlay(painter: QPainter, target: QRectF,
                   width, height)
 
     painter.save()
-    painter.setOpacity(max(0.0, min(1.0, overlay.opacity)))
+    painter.setOpacity(max(0.0, min(1.0, overlay.opacity)) * alpha)
     painter.drawImage(rect, image)
     painter.restore()
 
 
-def draw_title(painter: QPainter, target: QRectF, title: Title) -> None:
-    if not title.text.strip():
+def draw_title(painter: QPainter, target: QRectF, title: Title,
+               alpha: float = 1.0) -> None:
+    if not title.text.strip() or alpha <= 0:
         return
+
+    painter.save()
+    painter.setOpacity(alpha)
+    try:
+        _draw_title_body(painter, target, title)
+    finally:
+        painter.restore()
+
+
+def _draw_title_body(painter: QPainter, target: QRectF, title: Title) -> None:
 
     font = QFont()
     font.setPixelSize(max(8, int(target.height() * title.size)))
@@ -108,8 +119,13 @@ def _draw_line(painter: QPainter, row: QRectF, line: str, font: QFont,
 
 def compose(width: int, height: int, frame: Frame | None,
             overlays: list[tuple[ImageOverlay, QImage]],
-            titles: list[Title]) -> QImage:
-    """Dibuja el cuadro completo sobre un lienzo nuevo del tamaño pedido."""
+            titles: list[Title], t: float | None = None,
+            frame_alpha: float = 1.0) -> QImage:
+    """Dibuja el cuadro completo sobre un lienzo nuevo del tamaño pedido.
+
+    Con `t`, cada elemento aplica su propio fundido. El del video se pasa
+    aparte porque lo calcula el clip, que el compositor no recibe.
+    """
     canvas = QImage(width, height, QImage.Format_RGB888)
     canvas.fill(Qt.black)
 
@@ -119,12 +135,17 @@ def compose(width: int, height: int, frame: Frame | None,
     painter.setRenderHint(QPainter.SmoothPixmapTransform)
     target = QRectF(0, 0, width, height)
 
-    if frame is not None:
+    if frame is not None and frame_alpha > 0:
+        painter.setOpacity(max(0.0, min(1.0, frame_alpha)))
         painter.drawImage(target, frame_to_image(frame))
+        painter.setOpacity(1.0)
+
     for overlay, image in overlays:
-        draw_overlay(painter, target, overlay, image)
+        draw_overlay(painter, target, overlay, image,
+                     overlay.fade_at(t) if t is not None else 1.0)
     for title in titles:
-        draw_title(painter, target, title)
+        draw_title(painter, target, title,
+                   title.fade_at(t) if t is not None else 1.0)
     painter.end()
 
     return canvas

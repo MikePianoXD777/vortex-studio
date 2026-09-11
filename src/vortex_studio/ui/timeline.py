@@ -13,13 +13,21 @@ Reparto de la superficie, igual que en cualquier editor:
 from __future__ import annotations
 
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QMouseEvent, QPainter, QPen, QWheelEvent
+from PySide6.QtGui import (
+    QColor,
+    QFont,
+    QMouseEvent,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QWheelEvent,
+)
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from pathlib import Path
 
-from vortex_studio.media.audio import peaks
 from vortex_studio.model import Clip, ImageOverlay, Sequence, Title, timecode
+from vortex_studio.ui.waveforms import WaveformCache
 
 HEADER_WIDTH = 72
 RULER_HEIGHT = 26
@@ -49,6 +57,11 @@ RANGE_EDGE = QColor("#5f9bd8")
 OUTSIDE = QColor(10, 11, 13, 96)
 SNAP_LINE = QColor("#e8c15a")
 WAVE = QColor(190, 235, 210, 190)
+FADE = QColor(12, 14, 16, 170)
+FADE_EDGE = QColor(235, 238, 242, 130)
+SPEED_TAG = QColor("#f0d68a")
+MARKER = QColor("#e8c15a")
+MARKER_TEXT = QColor("#1b1d21")
 
 PEAKS_PER_SECOND = 60
 
@@ -92,9 +105,10 @@ class TimelineWidget(QWidget):
         self._drag: dict | None = None
         self._snap_at: float | None = None
 
-        # La onda se calcula una vez por archivo: decodificar el audio
-        # entero en cada repintado sería inservible.
-        self._waves: dict[Path, list[float]] = {}
+        # La onda se calcula en un hilo aparte y se guarda: decodificar el
+        # audio entero dentro del repintado congelaba la ventana.
+        self.waves = WaveformCache(PEAKS_PER_SECOND, self)
+        self.waves.ready.connect(self.update)
 
         self.setMinimumHeight(
             RULER_HEIGHT + len(sequence.tracks) * (TRACK_HEIGHT + TRACK_GAP) + 10)
@@ -167,6 +181,7 @@ class TimelineWidget(QWidget):
         painter.fillRect(self.rect(), BG)
 
         self._draw_ruler(painter)
+        self._draw_markers(painter)
         self._draw_tracks(painter)
         self._draw_range(painter)
         self._draw_snap(painter)
@@ -186,6 +201,30 @@ class TimelineWidget(QWidget):
             painter.setPen(TEXT)
             painter.drawText(QPointF(x + 3, RULER_HEIGHT - 9), timecode(t, self.sequence.fps))
             t += step
+
+    def _draw_markers(self, painter: QPainter) -> None:
+        """Los marcadores van clavados en la regla, con su línea hacia abajo."""
+        for marker in self.sequence.markers:
+            x = self.x_for(marker.time)
+            if x < HEADER_WIDTH or x > self.width():
+                continue
+
+            painter.setPen(QPen(QColor(marker.color), 1, Qt.DotLine))
+            painter.drawLine(QPointF(x, RULER_HEIGHT), QPointF(x, self.height()))
+
+            banderita = QPainterPath()
+            banderita.moveTo(x, RULER_HEIGHT)
+            banderita.lineTo(x - 5, RULER_HEIGHT - 8)
+            banderita.lineTo(x + 5, RULER_HEIGHT - 8)
+            banderita.closeSubpath()
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(marker.color))
+            painter.drawPath(banderita)
+
+            if marker.name:
+                painter.setPen(QColor(marker.color))
+                painter.setFont(QFont("", 7))
+                painter.drawText(QPointF(x + 8, RULER_HEIGHT + 11), marker.name[:22])
 
     def _ruler_step(self) -> float:
         """Separación entre marcas, para que no se encimen al alejar el zoom."""
@@ -211,9 +250,10 @@ class TimelineWidget(QWidget):
                              Qt.AlignRight | Qt.AlignVCenter, track.name)
 
             for clip in track.clips:
-                self._draw_clip(painter, clip, y, _color_for(track, clip))
+                self._draw_clip(painter, clip, y, _color_for(track, clip), track.kind)
 
-    def _draw_clip(self, painter: QPainter, clip, y: float, color: QColor) -> None:
+    def _draw_clip(self, painter: QPainter, clip, y: float, color: QColor,
+                   track_kind: str = "video") -> None:
         rect = QRectF(self.x_for(clip.start), y + 2,
                       clip.duration * self.pixels_per_second, TRACK_HEIGHT - 4)
         if rect.right() < HEADER_WIDTH or rect.left() > self.width():
@@ -224,14 +264,60 @@ class TimelineWidget(QWidget):
         painter.setBrush(color.lighter(115) if chosen else color)
         painter.drawRoundedRect(rect, 3, 3)
 
-        if color is CLIP_AUDIO and rect.width() > 8:
+        if track_kind == "audio" and rect.width() > 8:
             self._draw_wave(painter, clip, rect)
+
+        self._draw_fades(painter, clip, rect)
 
         if rect.width() > 34:
             painter.setPen(QColor("#eef1f4"))
             painter.setFont(QFont("", 8))
             painter.drawText(rect.adjusted(6, 0, -6, 0),
                              Qt.AlignLeft | Qt.AlignVCenter, clip.name)
+
+        velocidad = getattr(clip, "speed", 1.0)
+        if velocidad != 1.0 and rect.width() > 60:
+            painter.setPen(SPEED_TAG)
+            painter.setFont(QFont("", 7, QFont.Bold))
+            etiqueta = "❄" if velocidad == 0 else f"{velocidad:g}×"
+            painter.drawText(rect.adjusted(0, 0, -6, 0),
+                             Qt.AlignRight | Qt.AlignVCenter, etiqueta)
+
+    def _draw_fades(self, painter: QPainter, clip, rect: QRectF) -> None:
+        """Los fundidos se dibujan como cuñas oscuras en las puntas.
+
+        Es la forma en que se leen de un vistazo en cualquier editor: la
+        cuña muestra hacia dónde baja la opacidad sin tener que abrir nada.
+        """
+        entrada = getattr(clip, "fade_in", 0.0)
+        salida = getattr(clip, "fade_out", 0.0)
+        if entrada <= 0 and salida <= 0:
+            return
+
+        painter.save()
+        painter.setClipRect(rect)
+        painter.setPen(QPen(FADE_EDGE, 1))
+        painter.setBrush(FADE)
+
+        if entrada > 0:
+            ancho = min(entrada, clip.duration) * self.pixels_per_second
+            cuna = QPainterPath()
+            cuna.moveTo(rect.left(), rect.top())
+            cuna.lineTo(rect.left() + ancho, rect.top())
+            cuna.lineTo(rect.left(), rect.bottom())
+            cuna.closeSubpath()
+            painter.drawPath(cuna)
+
+        if salida > 0:
+            ancho = min(salida, clip.duration) * self.pixels_per_second
+            cuna = QPainterPath()
+            cuna.moveTo(rect.right(), rect.top())
+            cuna.lineTo(rect.right() - ancho, rect.top())
+            cuna.lineTo(rect.right(), rect.bottom())
+            cuna.closeSubpath()
+            painter.drawPath(cuna)
+
+        painter.restore()
 
     def _draw_wave(self, painter: QPainter, clip, rect: QRectF) -> None:
         """Dibuja la onda del clip, recortada a la parte que se ve.
@@ -262,9 +348,7 @@ class TimelineWidget(QWidget):
             painter.drawLine(QPointF(x, middle - alto), QPointF(x, middle + alto))
 
     def _wave_for(self, source) -> list[float]:
-        if source not in self._waves:
-            self._waves[source] = peaks(source, PEAKS_PER_SECOND)
-        return self._waves[source]
+        return self.waves.get(source)
 
     def _draw_range(self, painter: QPainter) -> None:
         """Marcas de entrada y salida: oscurece lo de fuera, resalta lo de dentro."""

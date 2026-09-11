@@ -23,7 +23,10 @@ class Clip:
     duration: float
     in_point: float = 0.0  # desde qué segundo del archivo fuente se toma
     name: str = ""
+    speed: float = 1.0     # 0.25 = cámara lenta, 4.0 = cámara rápida
     color: ColorAdjust = field(default_factory=ColorAdjust)
+    fade_in: float = 0.0
+    fade_out: float = 0.0
 
     def __post_init__(self) -> None:
         self.source = Path(self.source)
@@ -38,8 +41,39 @@ class Clip:
         return self.start <= t < self.end
 
     def source_time(self, t: float) -> float:
-        """Convierte un tiempo de la pista al tiempo del archivo fuente."""
-        return self.in_point + (t - self.start)
+        """Convierte un tiempo de la pista al tiempo del archivo fuente.
+
+        Con velocidad distinta de 1, el archivo se recorre más rápido o más
+        lento que la línea de tiempo: dos segundos de pista a 2× consumen
+        cuatro segundos de material.
+        """
+        return self.in_point + (t - self.start) * self.speed
+
+    def fade_at(self, t: float) -> float:
+        """La misma cuenta que en los demás elementos con tiempo."""
+        entrada, salida = self.fade_in, self.fade_out
+        if entrada <= 0 and salida <= 0:
+            return 1.0
+
+        total = entrada + salida
+        if total > self.duration > 0:
+            factor = self.duration / total
+            entrada, salida = entrada * factor, salida * factor
+
+        dentro = t - self.start
+        alfa = 1.0
+        if entrada > 0 and dentro < entrada:
+            alfa = min(alfa, max(0.0, dentro / entrada))
+        if salida > 0 and dentro > self.duration - salida:
+            alfa = min(alfa, max(0.0, (self.duration - dentro) / salida))
+        return alfa
+
+    def retime(self, speed: float) -> None:
+        """Cambia la velocidad ajustando la duración para no perder material."""
+        speed = max(0.1, min(10.0, speed))
+        material = self.duration * self.speed      # segundos de archivo que usa
+        self.speed = speed
+        self.duration = material / speed
 
 
 @dataclass
@@ -87,6 +121,15 @@ class Track:
 
 
 @dataclass
+class Marker:
+    """Una nota clavada en un punto de la línea de tiempo."""
+
+    time: float
+    name: str = ""
+    color: str = "#e8c15a"
+
+
+@dataclass
 class Sequence:
     """Una secuencia (timeline) con sus pistas."""
 
@@ -95,6 +138,7 @@ class Sequence:
     width: int = 1920
     height: int = 1080
     tracks: list[Track] = field(default_factory=list)
+    markers: list[Marker] = field(default_factory=list)
 
     @classmethod
     def default(cls) -> Sequence:
@@ -158,6 +202,28 @@ class Sequence:
 
     def track_named(self, name: str) -> Track | None:
         return next((t for t in self.tracks if t.name == name), None)
+
+    # --- marcadores -------------------------------------------------------
+
+    def add_marker(self, t: float, name: str = "") -> Marker:
+        """Pone un marcador, o reemplaza el que ya hubiera en ese cuadro."""
+        self.markers = [m for m in self.markers
+                        if abs(m.time - t) > self.frame_duration / 2]
+        marker = Marker(time=t, name=name)
+        self.markers.append(marker)
+        self.markers.sort(key=lambda m: m.time)
+        return marker
+
+    def marker_near(self, t: float, tolerance: float = 0.0) -> Marker | None:
+        margen = tolerance or self.frame_duration / 2
+        return next((m for m in self.markers if abs(m.time - t) <= margen), None)
+
+    def next_marker(self, t: float) -> Marker | None:
+        return next((m for m in self.markers if m.time > t + 1e-6), None)
+
+    def previous_marker(self, t: float) -> Marker | None:
+        anteriores = [m for m in self.markers if m.time < t - 1e-6]
+        return anteriores[-1] if anteriores else None
 
 
 @dataclass

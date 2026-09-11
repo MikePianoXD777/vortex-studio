@@ -36,6 +36,8 @@ class TimedItem:
 
     start: float
     duration: float
+    fade_in: float = 0.0     # segundos de entrada en fundido
+    fade_out: float = 0.0    # segundos de salida
 
     @property
     def end(self) -> float:
@@ -43,6 +45,30 @@ class TimedItem:
 
     def contains(self, t: float) -> bool:
         return self.start <= t < self.end
+
+    def fade_at(self, t: float) -> float:
+        """Cuánta opacidad le toca en ese instante, de 0 a 1.
+
+        Si los dos fundidos juntos no caben en el clip, se reparten a
+        prorrata en vez de encimarse: encimados producen un bajón al centro
+        que se ve como un parpadeo.
+        """
+        entrada, salida = self.fade_in, self.fade_out
+        if entrada <= 0 and salida <= 0:
+            return 1.0
+
+        total = entrada + salida
+        if total > self.duration > 0:
+            factor = self.duration / total
+            entrada, salida = entrada * factor, salida * factor
+
+        dentro = t - self.start
+        alfa = 1.0
+        if entrada > 0 and dentro < entrada:
+            alfa = min(alfa, max(0.0, dentro / entrada))
+        if salida > 0 and dentro > self.duration - salida:
+            alfa = min(alfa, max(0.0, (self.duration - dentro) / salida))
+        return alfa
 
 
 @dataclass

@@ -15,20 +15,44 @@ from typing import Any
 
 from vortex_studio.model.color import ColorAdjust
 from vortex_studio.model.overlays import ImageOverlay, Title
-from vortex_studio.model.project import Clip, Project, Sequence, Track
+from vortex_studio.model.project import Clip, Marker, Project, Sequence, Track
 
 FORMAT_VERSION = 1
 EXTENSION = ".vortex"
 
 
-def item_to_dict(item: Any) -> dict:
+def _write_path(path: Path, base: Path | None) -> str:
+    """Cómo se guarda la ruta de un archivo dentro del proyecto.
+
+    Si el material está junto al proyecto o debajo de él, se guarda relativo
+    y con barras normales. Así el proyecto se puede mover de carpeta, pasar
+    de Linux a Windows o mandarse junto con sus videos y sigue abriendo.
+    Solo se guarda absoluta cuando el archivo vive en otro lado.
+    """
+    path = Path(path)
+    if base is not None:
+        try:
+            return path.resolve().relative_to(base.resolve()).as_posix()
+        except (ValueError, OSError):
+            pass
+    return path.as_posix()
+
+
+def _read_path(texto: str, base: Path | None) -> Path:
+    path = Path(texto)
+    if not path.is_absolute() and base is not None:
+        return (base / path).resolve()
+    return path
+
+
+def item_to_dict(item: Any, base: Path | None = None) -> dict:
     data = asdict(item)
     if isinstance(item, Clip):
         data["tipo"] = "clip"
-        data["source"] = str(item.source)
+        data["source"] = _write_path(item.source, base)
     elif isinstance(item, ImageOverlay):
         data["tipo"] = "imagen"
-        data["source"] = str(item.source)
+        data["source"] = _write_path(item.source, base)
     elif isinstance(item, Title):
         data["tipo"] = "texto"
     else:  # pragma: no cover - no debería pasar
@@ -36,24 +60,26 @@ def item_to_dict(item: Any) -> dict:
     return data
 
 
-def item_from_dict(data: dict) -> Any:
+def item_from_dict(data: dict, base: Path | None = None) -> Any:
     data = dict(data)
     kind = data.pop("tipo")
 
     if kind == "clip":
         color = data.pop("color", None)
+        data["source"] = _read_path(data["source"], base)
         clip = Clip(**data)
         if color:
             clip.color = ColorAdjust(**color)
         return clip
     if kind == "imagen":
+        data["source"] = _read_path(data["source"], base)
         return ImageOverlay(**data)
     if kind == "texto":
         return Title(**data)
     raise ValueError(f"Tipo desconocido en el proyecto: {kind}")
 
 
-def sequence_to_dict(sequence: Sequence) -> dict:
+def sequence_to_dict(sequence: Sequence, base: Path | None = None) -> dict:
     return {
         "name": sequence.name,
         "fps": sequence.fps,
@@ -63,14 +89,15 @@ def sequence_to_dict(sequence: Sequence) -> dict:
             {
                 "name": track.name,
                 "kind": track.kind,
-                "clips": [item_to_dict(c) for c in track.clips],
+                "clips": [item_to_dict(c, base) for c in track.clips],
             }
             for track in sequence.tracks
         ],
+        "markers": [asdict(m) for m in sequence.markers],
     }
 
 
-def sequence_from_dict(data: dict) -> Sequence:
+def sequence_from_dict(data: dict, base: Path | None = None) -> Sequence:
     sequence = Sequence(
         name=data.get("name", "Secuencia 1"),
         fps=data.get("fps", 30.0),
@@ -81,22 +108,23 @@ def sequence_from_dict(data: dict) -> Sequence:
         Track(
             name=track["name"],
             kind=track.get("kind", "video"),
-            clips=[item_from_dict(c) for c in track.get("clips", [])],
+            clips=[item_from_dict(c, base) for c in track.get("clips", [])],
         )
         for track in data.get("tracks", [])
     ]
+    sequence.markers = [Marker(**m) for m in data.get("markers", [])]
     return sequence
 
 
-def project_to_dict(project: Project) -> dict:
+def project_to_dict(project: Project, base: Path | None = None) -> dict:
     return {
         "formato": FORMAT_VERSION,
         "name": project.name,
-        "sequences": [sequence_to_dict(s) for s in project.sequences],
+        "sequences": [sequence_to_dict(s, base) for s in project.sequences],
     }
 
 
-def project_from_dict(data: dict) -> Project:
+def project_from_dict(data: dict, base: Path | None = None) -> Project:
     version = data.get("formato", 0)
     if version > FORMAT_VERSION:
         raise ValueError(
@@ -105,19 +133,23 @@ def project_from_dict(data: dict) -> Project:
         )
 
     project = Project(name=data.get("name", "Sin título"))
-    sequences = [sequence_from_dict(s) for s in data.get("sequences", [])]
+    sequences = [sequence_from_dict(s, base) for s in data.get("sequences", [])]
     project.sequences = sequences or [Sequence.default()]
     return project
 
 
 def save_project(project: Project, path: str | Path) -> Path:
     path = Path(path).with_suffix(EXTENSION)
+    # `encoding="utf-8"` explícito: en Windows el valor por omisión suele ser
+    # cp1252 y los acentos de los nombres se escribirían mal.
     path.write_text(
-        json.dumps(project_to_dict(project), indent=2, ensure_ascii=False),
+        json.dumps(project_to_dict(project, path.parent), indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
     return path
 
 
 def load_project(path: str | Path) -> Project:
-    return project_from_dict(json.loads(Path(path).read_text(encoding="utf-8")))
+    path = Path(path)
+    datos = json.loads(path.read_text(encoding="utf-8"))
+    return project_from_dict(datos, path.parent)

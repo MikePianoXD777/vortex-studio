@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFileDialog,
     QFormLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMainWindow,
@@ -199,6 +200,25 @@ class MainWindow(QMainWindow):
             action.setChecked(tool == TOOL_SELECT)
             herramientas.addAction(action)
 
+        # Nada de atajos con Ctrl+Alt: en Windows, con teclado latinoamericano,
+        # AltGr manda Ctrl+Alt, así que escribir @ o \ los dispararía.
+        clip_menu = self.menuBar().addMenu("&Clip")
+        self._action(clip_menu, "&Fundir entrada y salida", "Ctrl+Shift+D",
+                     lambda: self.set_fade(entrada=1.0, salida=1.0))
+        self._action(clip_menu, "Fundido de &entrada (1 s)", None,
+                     lambda: self.set_fade(entrada=1.0))
+        self._action(clip_menu, "Fundido de &salida (1 s)", None,
+                     lambda: self.set_fade(salida=1.0))
+        self._action(clip_menu, "&Quitar fundidos", None,
+                     lambda: self.set_fade(entrada=0.0, salida=0.0))
+        clip_menu.addSeparator()
+        for etiqueta, valor in (("Cámara lenta 0.5×", 0.5), ("Velocidad normal", 1.0),
+                                ("Cámara rápida 2×", 2.0), ("Cámara rápida 4×", 4.0)):
+            self._action(clip_menu, etiqueta, None,
+                         lambda _=False, v=valor: self.set_clip_speed(v))
+        clip_menu.addSeparator()
+        self._action(clip_menu, "&Congelar cuadro", "Ctrl+Shift+F", self.freeze_frame)
+
         insertar = self.menuBar().addMenu("&Insertar")
         self._action(insertar, "&Texto", "Ctrl+T", self.add_title)
         self._action(insertar, "&Subtítulo aquí", "Ctrl+Shift+T",
@@ -219,6 +239,12 @@ class MainWindow(QMainWindow):
         self._action(marcar, "Marcar &entrada", "I", self.mark_in)
         self._action(marcar, "Marcar &salida", "O", self.mark_out)
         self._action(marcar, "&Quitar marcas", "Ctrl+Shift+X", self.clear_marks)
+        marcar.addSeparator()
+        self._action(marcar, "Poner &marcador", "M", self.add_marker)
+        self._action(marcar, "Marcador con &nombre…", "Shift+M", self.add_named_marker)
+        self._action(marcar, "Marcador &siguiente", "Shift+Down", self.next_marker)
+        self._action(marcar, "Marcador &anterior", "Shift+Up", self.previous_marker)
+        self._action(marcar, "&Borrar marcadores", "Ctrl+Shift+M", self.clear_markers)
         marcar.addSeparator()
         self._action(marcar, "Ir a la entrada", "Shift+I",
                      lambda: self._scrubbed(self.timeline.mark_in or 0.0))
@@ -350,6 +376,8 @@ class MainWindow(QMainWindow):
         """Lo que hay que saber de un vistazo sin abrir ningún menú."""
         seq = self.sequence
         piezas = sum(len(track.clips) for track in seq.tracks)
+        marcadores = (f"   ·   {len(seq.markers)} marcador"
+                      f"{'es' if len(seq.markers) != 1 else ''}" if seq.markers else "")
         herramienta = "Navaja" if self.timeline.tool == TOOL_RAZOR else "Selección"
         marcas = ""
         if self.timeline.mark_in is not None or self.timeline.mark_out is not None:
@@ -360,7 +388,7 @@ class MainWindow(QMainWindow):
             f"{seq.width}×{seq.height}   ·   {seq.fps:g} fps   ·   "
             f"{timecode(seq.duration, seq.fps)}   ·   "
             f"{piezas} elemento{'s' if piezas != 1 else ''}   ·   "
-            f"{herramienta}{marcas}"
+            f"{herramienta}{marcadores}{marcas}"
         )
 
     # --- historial --------------------------------------------------------
@@ -614,11 +642,14 @@ class MainWindow(QMainWindow):
         count = max(1, int(round((end - start) * fps)))
         for index in range(count):
             t = start + index / fps
+            clip = self.sequence.top_clip_at(t)
             yield compose(
                 self.sequence.width, self.sequence.height,
                 self._frame_at(t),
                 [(o, self._image_for(o.source)) for o in self.sequence.overlays_at(t)],
                 self.sequence.titles_at(t),
+                t,
+                clip.fade_at(t) if clip else 1.0,
             )
 
     def _frame_at(self, t: float):
@@ -684,6 +715,49 @@ class MainWindow(QMainWindow):
         track.add(copia)
         self.timeline.select(copia)
         self._commit("Duplicar")
+
+    def set_fade(self, entrada: float | None = None, salida: float | None = None) -> None:
+        """Fundidos del elemento seleccionado, o del que esté bajo el playhead."""
+        item = self.timeline.selected or self.sequence.top_clip_at(self.timeline.playhead)
+        if item is None:
+            return
+
+        if entrada is not None:
+            item.fade_in = min(entrada, item.duration)
+        if salida is not None:
+            item.fade_out = min(salida, item.duration)
+        self._commit("Fundido")
+
+    def set_clip_speed(self, speed: float) -> None:
+        """Cámara lenta o rápida. Solo aplica a clips de archivo."""
+        item = self.timeline.selected or self.sequence.top_clip_at(self.timeline.playhead)
+        if not isinstance(item, Clip):
+            return
+
+        item.retime(speed)
+        self._fit_zoom()
+        self._commit(f"Velocidad {speed:g}×")
+
+    def freeze_frame(self) -> None:
+        """Convierte el cuadro actual en una imagen fija de 2 segundos.
+
+        Se hace partiendo el clip en el playhead y dejando la mitad derecha
+        con velocidad cero — es la manera más simple de congelar sin tener
+        que escribir un archivo intermedio.
+        """
+        t = self.timeline.playhead
+        clip = self.sequence.top_clip_at(t)
+        if clip is None:
+            return
+
+        if self._cut(clip, t, commit=False):
+            track = self._track_of(clip)
+            congelado = next((c for c in track.clips if abs(c.start - t) < 1e-6), None)
+            if congelado is not None:
+                congelado.speed = 0.0       # el tiempo del archivo deja de avanzar
+                congelado.duration = 2.0
+                self.timeline.select(congelado)
+        self._commit("Congelar cuadro")
 
     def delete_selected(self) -> None:
         item = self.timeline.selected
@@ -815,7 +889,9 @@ class MainWindow(QMainWindow):
         self._scrubbed(self.timeline.playhead + seconds)
 
     def _render(self, t: float) -> None:
-        self.preview.set_frame(self._frame_at(t))
+        clip = self.sequence.top_clip_at(t)
+        self.preview.set_time(t)
+        self.preview.set_frame(self._frame_at(t), clip.fade_at(t) if clip else 1.0)
         self.preview.set_overlays([
             (overlay, self._image_for(overlay.source))
             for overlay in self.sequence.overlays_at(t)
@@ -875,6 +951,34 @@ class MainWindow(QMainWindow):
         self.timeline.mark_in = self.timeline.mark_out = None
         self.timeline.update()
         self._update_status()
+
+    # --- marcadores -------------------------------------------------------
+
+    def add_marker(self, name: str = "") -> None:
+        self.sequence.add_marker(self.timeline.playhead, name)
+        self._commit("Poner marcador")
+
+    def add_named_marker(self) -> None:
+        actual = self.sequence.marker_near(self.timeline.playhead)
+        nombre, listo = QInputDialog.getText(
+            self, "Marcador", "Nombre:", text=actual.name if actual else "")
+        if listo:
+            self.add_marker(nombre.strip())
+
+    def next_marker(self) -> None:
+        marcador = self.sequence.next_marker(self.timeline.playhead)
+        if marcador is not None:
+            self._scrubbed(marcador.time)
+
+    def previous_marker(self) -> None:
+        marcador = self.sequence.previous_marker(self.timeline.playhead)
+        if marcador is not None:
+            self._scrubbed(marcador.time)
+
+    def clear_markers(self) -> None:
+        if self.sequence.markers:
+            self.sequence.markers.clear()
+            self._commit("Borrar marcadores")
 
     def _range(self) -> tuple[float, float]:
         """El tramo que se reproduce: el marcado, o todo si no hay marcas."""
