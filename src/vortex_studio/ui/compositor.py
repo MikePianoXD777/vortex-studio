@@ -117,18 +117,41 @@ def _draw_line(painter: QPainter, row: QRectF, line: str, font: QFont,
     painter.drawText(QPointF(x, baseline), line)
 
 
-def draw_layers(painter: QPainter, target: QRectF,
-                layers: list[tuple[Frame, float]]) -> None:
+def draw_layers(painter: QPainter, target: QRectF, layers: list[tuple]) -> None:
     """Pinta las capas de video de abajo hacia arriba.
 
     Normalmente hay una sola. Durante una transición cruzada hay dos: la que
     sale con opacidad decreciente y la que entra encima con la creciente.
+
+    Cada capa puede traer su transformación: desplazamiento, tamaño y giro.
+    Se aplica girando el lienzo alrededor del centro del cuadro, no de la
+    esquina, que es lo que uno espera al rotar algo.
     """
-    for frame, alpha in layers:
+    for capa in layers:
+        frame, alpha = capa[0], capa[1]
+        valores = capa[2] if len(capa) > 2 else None
         if frame is None or alpha <= 0:
             continue
-        painter.setOpacity(max(0.0, min(1.0, alpha)))
+
+        opacidad = alpha * (valores.get("opacity", 1.0) if valores else 1.0)
+        if opacidad <= 0:
+            continue
+
+        painter.save()
+        painter.setOpacity(max(0.0, min(1.0, opacidad)))
+
+        if valores:
+            centro = target.center()
+            painter.translate(centro.x() + target.width() * valores.get("x", 0.0),
+                              centro.y() + target.height() * valores.get("y", 0.0))
+            painter.rotate(valores.get("rotation", 0.0))
+            escala = max(0.01, valores.get("scale", 1.0))
+            painter.scale(escala, escala)
+            painter.translate(-centro.x(), -centro.y())
+
         painter.drawImage(target, frame_to_image(frame))
+        painter.restore()
+
     painter.setOpacity(1.0)
 
 

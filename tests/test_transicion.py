@@ -78,7 +78,7 @@ def test_las_opacidades_del_cruce_suman_uno(ventana, media):
     primero, segundo = dos_clips(ventana, media)
     segundo.dissolve = 1.0
     capas = ventana._layers_at(segundo.start)
-    assert sum(a for _, a in capas) == pytest.approx(1.0, abs=0.02)
+    assert sum(capa[1] for capa in capas) == pytest.approx(1.0, abs=0.02)
 
 
 def test_el_cruce_cambia_la_imagen(ventana, media):

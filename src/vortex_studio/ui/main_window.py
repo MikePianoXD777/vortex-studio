@@ -34,6 +34,7 @@ from vortex_studio.media.audio import AudioRenderer, has_audio
 from vortex_studio.media.encoder import QUALITY, Cancelled, export_video
 from vortex_studio.model import (
     ANCHORS,
+    PROPS,
     Clip,
     ImageOverlay,
     Project,
@@ -45,7 +46,13 @@ from vortex_studio.model.history import History
 from vortex_studio.model.serialize import EXTENSION, load_project, save_project
 from vortex_studio.ui.audio_player import AudioPlayer
 from vortex_studio.ui.compositor import compose
-from vortex_studio.ui.panels import ClipPanel, ColorPanel, ImagePanel, TextPanel
+from vortex_studio.ui.panels import (
+    ClipPanel,
+    ColorPanel,
+    ImagePanel,
+    TextPanel,
+    TransformPanel,
+)
 from vortex_studio.ui.preview import PreviewWidget
 from vortex_studio.ui.timeline import TOOL_RAZOR, TOOL_SELECT, TimelineWidget
 from vortex_studio.ui.transport import SPEEDS, TransportBar
@@ -115,13 +122,14 @@ class MainWindow(QMainWindow):
         self._audio_on = False
 
         self.preview = PreviewWidget()
-        self.preview.set_aspect(self.sequence.width / self.sequence.height)
+        self.preview.set_canvas(self.sequence.width, self.sequence.height)
         self.timeline = TimelineWidget(self.sequence)
         self.transport = TransportBar()
         self.color_panel = ColorPanel()
         self.text_panel = TextPanel()
         self.image_panel = ImagePanel()
         self.clip_panel = ClipPanel()
+        self.transform_panel = TransformPanel()
 
         self._build_layout()
         self._build_menu()
@@ -177,10 +185,12 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.RightDockWidgetArea, self.text_panel)
         self.addDockWidget(Qt.RightDockWidgetArea, self.image_panel)
         self.addDockWidget(Qt.RightDockWidgetArea, self.clip_panel)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.transform_panel)
         self.addDockWidget(Qt.RightDockWidgetArea, self.color_panel)
         self.resizeDocks(
-            [self.text_panel, self.image_panel, self.clip_panel, self.color_panel],
-            [290, 210, 260, 220], Qt.Vertical)
+            [self.text_panel, self.image_panel, self.clip_panel,
+             self.transform_panel, self.color_panel],
+            [250, 190, 230, 260, 210], Qt.Vertical)
 
     def _build_menu(self) -> None:
         archivo = self.menuBar().addMenu("&Archivo")
@@ -237,6 +247,10 @@ class MainWindow(QMainWindow):
         self._action(clip_menu, "Quitar &transición", None, lambda: self.set_dissolve(0.0))
         clip_menu.addSeparator()
         self._action(clip_menu, "&Congelar cuadro", "Ctrl+Shift+F", self.freeze_frame)
+        clip_menu.addSeparator()
+        self._action(clip_menu, "Poner &keyframe de todo", "Ctrl+Shift+K",
+                     self.key_all_transform)
+        self._action(clip_menu, "Quitar a&nimación", None, self.clear_transform_keys)
 
         insertar = self.menuBar().addMenu("&Insertar")
         self._action(insertar, "&Texto", "Ctrl+T", self.add_title)
@@ -270,6 +284,19 @@ class MainWindow(QMainWindow):
         self._action(marcar, "Ir a la salida", "Shift+O",
                      lambda: self._scrubbed(self.timeline.mark_out or self.sequence.duration))
 
+        formato = self.menuBar().addMenu("&Secuencia")
+        for etiqueta, ancho, alto in (
+            ("Horizontal 16:9  ·  1920 × 1080", 1920, 1080),
+            ("Vertical 9:16  ·  1080 × 1920", 1080, 1920),
+            ("Cuadrado 1:1  ·  1080 × 1080", 1080, 1080),
+            ("Vertical 4:5  ·  1080 × 1350", 1080, 1350),
+            ("Cine 21:9  ·  2560 × 1080", 2560, 1080),
+        ):
+            self._action(formato, etiqueta, None,
+                         lambda _=False, a=ancho, b=alto: self.set_format(a, b))
+        formato.addSeparator()
+        self._action(formato, "Ajustar al primer clip", None, self.format_from_clip)
+
         ver = self.menuBar().addMenu("&Ver")
         self._action(ver, "Pantalla &completa", "F", self.toggle_fullscreen)
         self._action(ver, "&Ajustar timeline", "Shift+Z", self._fit_zoom)
@@ -277,6 +304,7 @@ class MainWindow(QMainWindow):
         ver.addAction(self.text_panel.toggleViewAction())
         ver.addAction(self.image_panel.toggleViewAction())
         ver.addAction(self.clip_panel.toggleViewAction())
+        ver.addAction(self.transform_panel.toggleViewAction())
         ver.addAction(self.color_panel.toggleViewAction())
 
         self._update_history_actions()
@@ -319,6 +347,8 @@ class MainWindow(QMainWindow):
         self.image_panel.changed.connect(self._image_changed)
         self.clip_panel.changed.connect(lambda: self._schedule("Ajustar clip"))
         self.clip_panel.committed.connect(self._clip_committed)
+        self.transform_panel.changed.connect(lambda: self._schedule("Transformar"))
+        self.transform_panel.committed.connect(self._commit)
         self.text_panel.changed.connect(self._text_changed)
         self.text_panel.add_requested.connect(self.add_title)
         self.text_panel.delete_requested.connect(self.delete_title)
@@ -466,7 +496,7 @@ class MainWindow(QMainWindow):
         self.timeline.selected = None
         self.timeline.refresh()
         self._title = None
-        self.preview.set_aspect(sequence.width / sequence.height)
+        self.preview.set_canvas(sequence.width, sequence.height)
 
         if reset_history:
             self.history.reset(sequence)
@@ -543,7 +573,7 @@ class MainWindow(QMainWindow):
             self.sequence.fps = info.get("fps") or self.sequence.fps
             self.sequence.width = info.get("width") or self.sequence.width
             self.sequence.height = info.get("height") or self.sequence.height
-            self.preview.set_aspect(self.sequence.width / self.sequence.height)
+            self.preview.set_canvas(self.sequence.width, self.sequence.height)
 
         self._fit_zoom()
         self.timeline.select(clip)
@@ -682,16 +712,19 @@ class MainWindow(QMainWindow):
         if cruce is not None:
             saliente, entrante, avance = cruce
             return [
-                (self._frame_of(saliente, t), (1.0 - avance) * saliente.fade_at(
-                    min(t, saliente.end - 1e-6))),
-                (self._frame_of(entrante, t), avance * entrante.fade_at(
-                    max(t, entrante.start))),
+                (self._frame_of(saliente, t),
+                 (1.0 - avance) * saliente.fade_at(min(t, saliente.end - 1e-6)),
+                 saliente.transform.values_at(saliente.local(t))),
+                (self._frame_of(entrante, t),
+                 avance * entrante.fade_at(max(t, entrante.start)),
+                 entrante.transform.values_at(entrante.local(t))),
             ]
 
         clip = self.sequence.top_clip_at(t)
         if clip is None:
             return []
-        return [(self._frame_of(clip, t), clip.fade_at(t))]
+        return [(self._frame_of(clip, t), clip.fade_at(t),
+                 clip.transform.values_at(clip.local(t)))]
 
     def _frame_of(self, clip, t: float):
         """El cuadro de ese clip en ese instante, ya corregido de color.
@@ -714,6 +747,31 @@ class MainWindow(QMainWindow):
         return self._frame_of(clip, t)
 
     # --- edición ----------------------------------------------------------
+
+    def set_format(self, ancho: int, alto: int) -> None:
+        """Cambia el tamaño del cuadro: vertical para redes, ancho para cine.
+
+        El material no se recorta: se acomoda dentro del cuadro nuevo y lo
+        que sobra queda negro. Desde ahí se encuadra con el panel
+        Transformar, que es donde el usuario decide qué se ve.
+        """
+        self.sequence.width, self.sequence.height = ancho, alto
+        self.preview.set_canvas(ancho, alto)
+        self._commit(f"Formato {ancho}×{alto}")
+        self.statusBar().showMessage(
+            f"Formato {ancho}×{alto}. Usa Transformar para encuadrar.", 5000)
+
+    def format_from_clip(self) -> None:
+        clip = next((c for track in self.sequence.video_tracks()
+                     for c in track.clips if isinstance(c, Clip)), None)
+        if clip is None:
+            return
+        try:
+            info = probe(clip.source)
+        except Exception:
+            return
+        if info.get("width"):
+            self.set_format(info["width"], info["height"])
 
     def _track_of(self, item):
         return next((t for t in self.sequence.tracks if item in t.clips), None)
@@ -812,6 +870,31 @@ class MainWindow(QMainWindow):
         item.dissolve = min(seconds, tope)
         self._commit("Transición")
 
+    def key_all_transform(self) -> None:
+        """Clava un keyframe de las cinco propiedades donde está el playhead.
+
+        Es el gesto que más se repite al animar: fijar el estado de partida
+        antes de mover el playhead y cambiar algo.
+        """
+        item = self.timeline.selected or self.sequence.top_clip_at(self.timeline.playhead)
+        if not isinstance(item, Clip):
+            return
+
+        local = item.local(self.timeline.playhead)
+        for prop in PROPS:
+            item.transform.set_key(prop, local, item.transform.at(prop, local))
+
+        self._commit("Keyframe de todo")
+        self._sync_panels(self.timeline.playhead)
+
+    def clear_transform_keys(self) -> None:
+        item = self.timeline.selected or self.sequence.top_clip_at(self.timeline.playhead)
+        if not isinstance(item, Clip) or not item.transform.keys:
+            return
+        item.transform.clear_keys()
+        self._commit("Quitar animación")
+        self._sync_panels(self.timeline.playhead)
+
     def freeze_frame(self) -> None:
         """Convierte el cuadro actual en una imagen fija de 2 segundos.
 
@@ -870,6 +953,7 @@ class MainWindow(QMainWindow):
         elif isinstance(item, Clip):
             track = self._track_of(item)
             self.clip_panel.set_target(item, bool(track and track.kind == "audio"))
+            self.transform_panel.set_target(item, item.local(self.timeline.playhead))
             self.color_panel.set_target(item.color, item.name)
             self.clip_panel.raise_()
 
@@ -952,6 +1036,8 @@ class MainWindow(QMainWindow):
         objetivo = seleccion if isinstance(seleccion, Clip) else clip
         pista = self._track_of(objetivo) if objetivo else None
         self.clip_panel.set_target(objetivo, bool(pista and pista.kind == "audio"))
+        self.transform_panel.set_target(
+            objetivo, objetivo.local(t) if objetivo else 0.0)
 
         titles = self.sequence.titles_at(t)
         if self._title not in titles:

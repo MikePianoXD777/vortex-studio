@@ -16,6 +16,7 @@ from typing import Any
 from vortex_studio.model.color import ColorAdjust
 from vortex_studio.model.overlays import ImageOverlay, Title
 from vortex_studio.model.project import Clip, Marker, Project, Sequence, Track
+from vortex_studio.model.transform import Transform
 
 FORMAT_VERSION = 1
 EXTENSION = ".vortex"
@@ -66,10 +67,13 @@ def item_from_dict(data: dict, base: Path | None = None) -> Any:
 
     if kind == "clip":
         color = data.pop("color", None)
+        transform = data.pop("transform", None)
         data["source"] = _read_path(data["source"], base)
         clip = Clip(**data)
         if color:
             clip.color = ColorAdjust(**color)
+        if transform:
+            clip.transform = Transform(**transform)
         return clip
     if kind == "imagen":
         data["source"] = _read_path(data["source"], base)

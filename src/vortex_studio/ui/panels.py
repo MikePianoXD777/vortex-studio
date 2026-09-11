@@ -19,8 +19,22 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from vortex_studio.model import ANCHORS, ColorAdjust, ImageOverlay, Title
-from vortex_studio.model.color import BRIGHTNESS, CONTRAST, GAMMA, SATURATION
+from vortex_studio.model import (
+    ANCHORS,
+    PROPS,
+    RANGES,
+    ColorAdjust,
+    ImageOverlay,
+    Title,
+)
+from vortex_studio.model.color import (
+    BRIGHTNESS,
+    CONTRAST,
+    GAMMA,
+    LOOKS,
+    SATURATION,
+    TEMPERATURE,
+)
 from vortex_studio.ui.widgets import SliderRow, column, section
 
 PANEL_STYLE = """
@@ -67,6 +81,12 @@ class ColorPanel(QDockWidget):
         self._contrast = SliderRow("Contraste", *CONTRAST)
         self._saturation = SliderRow("Saturación", *SATURATION)
         self._gamma = SliderRow("Gamma", *GAMMA)
+        self._temperature = SliderRow("Temperatura", *TEMPERATURE)
+
+        self._look = QComboBox()
+        self._look.addItems(LOOKS.keys())
+        self._look.setToolTip("Combinaciones listas; luego puedes seguir ajustando")
+        self._look.currentTextChanged.connect(self._apply_look)
 
         for row in self._rows():
             row.changed.connect(self._push)
@@ -76,15 +96,18 @@ class ColorPanel(QDockWidget):
 
         self.setWidget(column(
             self._target,
+            section("Look"), self._look,
             section("Ajustes"),
-            self._brightness, self._contrast, self._saturation, self._gamma,
+            self._brightness, self._contrast, self._saturation,
+            self._gamma, self._temperature,
             reset,
             None,
         ))
         self.set_target(None, "")
 
     def _rows(self) -> list[SliderRow]:
-        return [self._brightness, self._contrast, self._saturation, self._gamma]
+        return [self._brightness, self._contrast, self._saturation,
+                self._gamma, self._temperature]
 
     def set_target(self, adjust: ColorAdjust | None, name: str) -> None:
         """Apunta el panel a un clip. Sin clip, los controles se apagan."""
@@ -93,12 +116,14 @@ class ColorPanel(QDockWidget):
 
         for row in self._rows():
             row.setEnabled(adjust is not None)
+        self._look.setEnabled(adjust is not None)
 
         if adjust is not None:
             self._brightness.set_value(adjust.brightness)
             self._contrast.set_value(adjust.contrast)
             self._saturation.set_value(adjust.saturation)
             self._gamma.set_value(adjust.gamma)
+            self._temperature.set_value(adjust.temperature)
 
     def _push(self) -> None:
         if self._adjust is None:
@@ -107,12 +132,33 @@ class ColorPanel(QDockWidget):
         self._adjust.contrast = self._contrast.value()
         self._adjust.saturation = self._saturation.value()
         self._adjust.gamma = self._gamma.value()
+        self._adjust.temperature = self._temperature.value()
+        self.changed.emit()
+
+    def _apply_look(self, nombre: str) -> None:
+        """Un look es un punto de partida, no una capa aparte.
+
+        Escribe en los mismos controles, así que después se puede seguir
+        ajustando a mano sin tener que deshacerlo primero.
+        """
+        if self._adjust is None or nombre not in LOOKS:
+            return
+
+        self._adjust.apply(LOOKS[nombre])
+        nombre_actual = self._target.text().removeprefix("Clip: ")
+        self.set_target(self._adjust, nombre_actual)
+        self._look.blockSignals(True)
+        self._look.setCurrentText(nombre)
+        self._look.blockSignals(False)
         self.changed.emit()
 
     def _reset(self) -> None:
         if self._adjust is None:
             return
         self._adjust.reset()
+        self._look.blockSignals(True)
+        self._look.setCurrentText("Ninguno")
+        self._look.blockSignals(False)
         self.set_target(self._adjust, self._target.text().removeprefix("Clip: "))
         self.changed.emit()
 
@@ -520,3 +566,172 @@ class ClipPanel(QDockWidget):
             self.committed.emit(f"__dissolve__{cruce}")
 
         self._describe()
+
+
+class TransformPanel(QDockWidget):
+    """Posición, tamaño, giro y opacidad, con animación por keyframes.
+
+    La capacidad es la de After Effects; la interfaz, no. Cada propiedad
+    tiene su deslizador y un rombo al lado: apagado significa valor fijo,
+    encendido significa que hay keyframe justo donde está el playhead. Se
+    anima poniendo un rombo, moviendo el playhead y moviendo el deslizador.
+    No hay gráfica de curvas que aprender.
+    """
+
+    changed = Signal()
+    committed = Signal(str)
+
+    ETIQUETAS = {
+        "x": "Horizontal", "y": "Vertical", "scale": "Tamaño",
+        "rotation": "Giro", "opacity": "Opacidad",
+    }
+    ESCALAS = {"x": 100.0, "y": 100.0, "scale": 100.0, "rotation": 1.0, "opacity": 100.0}
+
+    def __init__(self) -> None:
+        super().__init__("Transformar")
+        self.setStyleSheet(PANEL_STYLE)
+        self.setAllowedAreas(Qt.RightDockWidgetArea | Qt.LeftDockWidgetArea)
+
+        self._clip = None
+        self._local = 0.0
+        self._loading = False
+
+        self._name = QLabel("Nada seleccionado")
+        self._name.setWordWrap(True)
+        self._name.setStyleSheet("color:#7d838c; font-size:10px;")
+
+        self._rows: dict[str, SliderRow] = {}
+        self._keys: dict[str, QPushButton] = {}
+        filas = []
+
+        for prop in PROPS:
+            fila = SliderRow(self.ETIQUETAS[prop], *RANGES[prop])
+            fila.changed.connect(lambda _=0, p=prop: self._push(p))
+            self._rows[prop] = fila
+
+            rombo = QPushButton("◆")
+            rombo.setCheckable(True)
+            rombo.setFixedWidth(26)
+            rombo.setFocusPolicy(Qt.NoFocus)
+            rombo.setToolTip("Poner o quitar keyframe aquí")
+            rombo.setStyleSheet(
+                "QPushButton { background:#24282d; border:1px solid #363b42;"
+                " border-radius:3px; color:#5d636b; padding:2px; }"
+                "QPushButton:checked { color:#e8c15a; border-color:#6a5c34; }")
+            rombo.clicked.connect(lambda _=False, p=prop: self._toggle_key(p))
+            self._keys[prop] = rombo
+
+            linea = QHBoxLayout()
+            linea.setContentsMargins(0, 0, 0, 0)
+            linea.setSpacing(5)
+            linea.addWidget(fila, 1)
+            linea.addWidget(rombo)
+            filas.append(linea)
+
+        self._info = QLabel("")
+        self._info.setWordWrap(True)
+        self._info.setStyleSheet("color:#6f757e; font-size:10px;")
+
+        centrar = QPushButton("Restablecer")
+        centrar.clicked.connect(self._reset)
+        limpiar = QPushButton("Quitar animación")
+        limpiar.clicked.connect(self._clear_keys)
+
+        botones = QHBoxLayout()
+        botones.setSpacing(6)
+        botones.addWidget(centrar)
+        botones.addWidget(limpiar)
+
+        self.setWidget(column(
+            self._name,
+            section("Transformación"), *filas,
+            self._info, botones,
+            None,
+        ))
+        self.set_target(None, 0.0)
+
+    # --- estado -----------------------------------------------------------
+
+    def set_target(self, clip, local: float) -> None:
+        self._clip = clip
+        self._local = local
+        self._loading = True
+
+        tiene = clip is not None and hasattr(clip, "transform")
+        self._name.setText(f"Clip: {clip.name}" if tiene else "Nada seleccionado")
+
+        for prop in PROPS:
+            self._rows[prop].setEnabled(tiene)
+            self._keys[prop].setEnabled(tiene)
+            if not tiene:
+                continue
+
+            valor = clip.transform.at(prop, local)
+            self._rows[prop].set_value(int(round(valor * self.ESCALAS[prop])))
+            self._keys[prop].blockSignals(True)
+            self._keys[prop].setChecked(
+                clip.transform.key_near(prop, local) is not None)
+            self._keys[prop].blockSignals(False)
+
+        self._describe()
+        self._loading = False
+
+    def _describe(self) -> None:
+        if self._clip is None or not hasattr(self._clip, "transform"):
+            self._info.setText("")
+            return
+
+        animadas = [self.ETIQUETAS[p] for p in PROPS if self._clip.transform.animated(p)]
+        self._info.setText(
+            f"Animando: {', '.join(animadas)}" if animadas
+            else "Sin animación. Prende un rombo para empezar.")
+
+    # --- edición ----------------------------------------------------------
+
+    def _push(self, prop: str) -> None:
+        if self._clip is None or self._loading:
+            return
+
+        transform = self._clip.transform
+        valor = self._rows[prop].value() / self.ESCALAS[prop]
+
+        if transform.animated(prop):
+            # Con la propiedad animada, mover el deslizador escribe el
+            # keyframe de aquí: es lo que uno espera y evita que el cambio
+            # se pierda al mover el playhead.
+            transform.set_key(prop, self._local, valor)
+            self._keys[prop].blockSignals(True)
+            self._keys[prop].setChecked(True)
+            self._keys[prop].blockSignals(False)
+        else:
+            setattr(transform, prop, valor)
+
+        self.changed.emit()
+
+    def _toggle_key(self, prop: str) -> None:
+        if self._clip is None:
+            return
+
+        transform = self._clip.transform
+        if transform.key_near(prop, self._local) is not None:
+            transform.remove_key(prop, self._local)
+        else:
+            transform.set_key(prop, self._local,
+                              self._rows[prop].value() / self.ESCALAS[prop])
+
+        self.set_target(self._clip, self._local)
+        self.committed.emit("Keyframe")
+
+    def _reset(self) -> None:
+        if self._clip is None:
+            return
+        self._clip.transform.reset()
+        self.set_target(self._clip, self._local)
+        self.committed.emit("Restablecer transformación")
+
+    def _clear_keys(self) -> None:
+        if self._clip is None:
+            return
+        self._clip.transform.clear_keys()
+        self.set_target(self._clip, self._local)
+        self.committed.emit("Quitar animación")

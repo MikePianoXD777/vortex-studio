@@ -12,6 +12,7 @@ from pathlib import Path
 
 from vortex_studio.model.color import ColorAdjust
 from vortex_studio.model.overlays import ImageOverlay, Title
+from vortex_studio.model.transform import Transform
 
 
 @dataclass
@@ -29,6 +30,7 @@ class Clip:
     fade_out: float = 0.0
     gain: float = 1.0        # volumen del clip, solo aplica en pistas de audio
     dissolve: float = 0.0    # transición cruzada con el clip de la izquierda
+    transform: Transform = field(default_factory=Transform)
 
     def __post_init__(self) -> None:
         self.source = Path(self.source)
@@ -50,6 +52,10 @@ class Clip:
         cuatro segundos de material.
         """
         return self.in_point + (t - self.start) * self.speed
+
+    def local(self, t: float) -> float:
+        """Segundos transcurridos desde el inicio del clip."""
+        return max(0.0, t - self.start)
 
     def fade_at(self, t: float) -> float:
         """La misma cuenta que en los demás elementos con tiempo."""

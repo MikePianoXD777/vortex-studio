@@ -272,6 +272,7 @@ class TimelineWidget(QWidget):
             self._draw_wave(painter, clip, rect)
 
         self._draw_fades(painter, clip, rect)
+        self._draw_keyframes(painter, clip, rect)
 
         if rect.width() > 34:
             painter.setPen(QColor("#eef1f4"))
@@ -312,6 +313,31 @@ class TimelineWidget(QWidget):
             painter.setPen(QPen(DISSOLVE_EDGE, 1))
             painter.drawLine(rect.topLeft(), rect.bottomRight())
             painter.drawLine(rect.bottomLeft(), rect.topRight())
+
+    def _draw_keyframes(self, painter: QPainter, clip, rect: QRectF) -> None:
+        """Rombos en la orilla de abajo, uno por instante animado.
+
+        Van dentro del clip y no en una pista aparte: así se ve de un vistazo
+        qué clips están animados sin tener que desplegar nada.
+        """
+        transform = getattr(clip, "transform", None)
+        if transform is None or not transform.keys:
+            return
+
+        y = rect.bottom() - 4
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(MARKER)
+        for local in transform.all_keys():
+            x = self.x_for(clip.start + local)
+            if x < max(HEADER_WIDTH, rect.left()) or x > min(self.width(), rect.right()):
+                continue
+            rombo = QPainterPath()
+            rombo.moveTo(x, y - 4)
+            rombo.lineTo(x + 4, y)
+            rombo.lineTo(x, y + 4)
+            rombo.lineTo(x - 4, y)
+            rombo.closeSubpath()
+            painter.drawPath(rombo)
 
     def _draw_fades(self, painter: QPainter, clip, rect: QRectF) -> None:
         """Los fundidos se dibujan como cuñas oscuras en las puntas.

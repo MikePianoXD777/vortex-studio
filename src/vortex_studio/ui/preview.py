@@ -22,10 +22,13 @@ class PreviewWidget(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._layers: list[tuple[Frame, float]] = []
+        self._layers: list[tuple] = []
         self._overlays: list[tuple[ImageOverlay, QImage]] = []
         self._titles: list[Title] = []
-        self._aspect = 16 / 9
+        # El lienzo lo define la secuencia, no el archivo de origen: un
+        # video horizontal metido en una secuencia vertical se acomoda
+        # dentro, y el cuadro exportado debe salir vertical.
+        self._canvas = (1920, 1080)
         self._time: float | None = None
         self._alpha = 1.0
         self._message = "Importa un video para empezar  ·  Ctrl+I"
@@ -36,9 +39,12 @@ class PreviewWidget(QWidget):
 
     # --- qué mostrar ------------------------------------------------------
 
-    def set_layers(self, layers: list[tuple[Frame, float]]) -> None:
-        """Las capas de video, de abajo hacia arriba."""
-        self._layers = [(f, a) for f, a in layers if f is not None]
+    def set_layers(self, layers: list[tuple]) -> None:
+        """Las capas de video, de abajo hacia arriba.
+
+        Cada capa es (cuadro, opacidad) y opcionalmente su transformación.
+        """
+        self._layers = [capa for capa in layers if capa[0] is not None]
         self.update()
 
     def set_frame(self, frame: Frame | None, alpha: float = 1.0) -> None:
@@ -60,9 +66,14 @@ class PreviewWidget(QWidget):
         self._titles = titles
         self.update()
 
-    def set_aspect(self, aspect: float) -> None:
-        self._aspect = aspect or (16 / 9)
-        self.update()
+    def set_canvas(self, width: int, height: int) -> None:
+        if width > 0 and height > 0:
+            self._canvas = (width, height)
+            self.update()
+
+    @property
+    def _aspect(self) -> float:
+        return self._canvas[0] / self._canvas[1]
 
     def set_message(self, text: str) -> None:
         self._message = text
@@ -88,8 +99,7 @@ class PreviewWidget(QWidget):
             return
 
         if self._layers:
-            base = self._layers[0][0]
-            target = self._fit(base.width / base.height)
+            target = self._fit(self._aspect)
             painter.fillRect(self.rect(), LETTERBOX)
             draw_layers(painter, target, self._layers)
         else:
@@ -123,13 +133,7 @@ class PreviewWidget(QWidget):
         if self.is_empty:
             return None
 
-        if self._layers:
-            base = self._layers[0][0]
-            width, height = base.width, base.height
-        else:
-            height = 1080
-            width = int(height * self._aspect)
-
+        width, height = self._canvas
         return compose(width, height, self._layers, self._overlays,
                        self._titles, self._time)
 

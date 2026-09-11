@@ -54,6 +54,8 @@ abrir ventanas, así que funciona por SSH o en una máquina sin pantalla.
 | `test_atajos.py` | Atajos, paneles y barra de estado |
 | `test_transicion.py` | Fundido cruzado entre clips |
 | `test_reproduccion.py` | Sonido y sincronía con la imagen |
+| `test_transformar.py` | Transformación y animación por keyframes |
+| `test_looks.py` | Looks de color y formatos de secuencia |
 | `test_portabilidad.py` | Que funcione igual en Linux y Windows |
 
 ## Atajos
@@ -73,6 +75,7 @@ abrir ventanas, así que funciona por SSH o en una máquina sin pantalla.
 | `Ctrl+K` / `Ctrl+D` | Cortar en el playhead / duplicar |
 | `Ctrl+Shift+D` | Fundir entrada y salida del clip |
 | `Ctrl+Shift+F` | Congelar el cuadro actual |
+| `Ctrl+Shift+K` | Poner keyframe de toda la transformación |
 | `Supr` / `Shift+Supr` | Eliminar / eliminar cerrando el hueco |
 | `Ctrl+T` / `Ctrl+Shift+T` | Insertar texto / subtítulo |
 
@@ -100,6 +103,32 @@ sus bordes lo recorta, y todo se imanta a los cortes vecinos y al playhead.
 - `ui/` — ventana, preview, timeline, transporte y paneles. El compositor
   vive aparte y lo comparten el preview y la exportación: es lo que garantiza
   que el archivo final se vea igual que lo que viste al editar.
+
+## Animación
+
+Cada clip tiene posición, tamaño, giro y opacidad, y cualquiera de las cuatro
+se puede animar. La capacidad es la de After Effects; la interfaz no: cada
+propiedad tiene su deslizador y un rombo al lado. Rombo apagado es valor
+fijo; rombo encendido es keyframe donde está el playhead. Se anima poniendo
+un rombo, moviendo el playhead y moviendo el deslizador. No hay gráfica de
+curvas que aprender.
+
+La interpolación suaviza la entrada y la salida de cada tramo. Un movimiento
+lineal delata que lo hizo una máquina —arranca y frena de golpe—; esta curva
+se ve intencional sin pedirle nada al usuario.
+
+Los keyframes se guardan en tiempo relativo al inicio del clip, así que mover
+el clip se lleva su animación pegada.
+
+## Formatos y looks
+
+El menú Secuencia cambia el cuadro a vertical 9:16, cuadrado, 4:5 o cine
+21:9 de un clic. El material no se recorta: se acomoda dentro y lo que sobra
+queda negro; desde ahí se encuadra con Transformar.
+
+El panel de Color trae looks listos (Cálido, Frío, Cine, Vívido, Suave,
+Blanco y negro, Noche). No son una capa aparte: escriben en los mismos
+deslizadores, así que se puede partir de uno y seguir ajustando a mano.
 
 ## Sonido
 

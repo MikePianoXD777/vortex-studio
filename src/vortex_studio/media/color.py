@@ -57,7 +57,7 @@ class ColorProcessor:
 
         signature = (
             adjust.brightness, adjust.contrast, adjust.saturation, adjust.gamma,
-            frame.width, frame.height, frame.format.name,
+            adjust.temperature, frame.width, frame.height, frame.format.name,
         )
         if signature != self._signature:
             self._build(frame, adjust)
@@ -78,10 +78,20 @@ class ColorProcessor:
             f":time_base=1/1000:pixel_aspect=1/1",
         )
 
+        calor = adjust.warmth
         chain = [
             graph.add("format", "rgb24"),
             graph.add("lutrgb", f"r={expression}:g={expression}:b={expression}"),
             graph.add("hue", f"s={adjust.saturation_factor:.4f}"),
+        ]
+        if abs(calor) > 1e-6:
+            # `colorchannelmixer` y no `colorbalance`: este último pesa por
+            # zonas de luminancia y deja intacto el gris medio exacto, así
+            # que un plano parejo no cambiaba nada. La matriz directa sí.
+            chain.append(graph.add(
+                "colorchannelmixer",
+                f"rr={1 + calor:.4f}:gg=1.0:bb={1 - calor:.4f}"))
+        chain += [
             graph.add("format", "rgb24"),
             graph.add("buffersink"),
         ]
