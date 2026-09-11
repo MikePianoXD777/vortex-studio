@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from vortex_studio.model import ANCHORS, ColorAdjust, Title
+from vortex_studio.model import ANCHORS, ColorAdjust, ImageOverlay, Title
 from vortex_studio.model.color import BRIGHTNESS, CONTRAST, GAMMA, SATURATION
 from vortex_studio.ui.widgets import SliderRow, column, section
 
@@ -300,3 +300,103 @@ class TextPanel(QDockWidget):
         self._title.x, self._title.y = ANCHORS[self._anchor.currentText()]
 
         self.changed.emit()
+
+
+class ImagePanel(QDockWidget):
+    """Acomoda la imagen seleccionada sobre el video."""
+
+    changed = Signal()
+
+    def __init__(self) -> None:
+        super().__init__("Imagen")
+        self.setStyleSheet(PANEL_STYLE)
+        self.setAllowedAreas(Qt.RightDockWidgetArea | Qt.LeftDockWidgetArea)
+
+        self._overlay: ImageOverlay | None = None
+        self._loading = False
+
+        self._name = QLabel("Ninguna imagen seleccionada")
+        self._name.setWordWrap(True)
+        self._name.setStyleSheet("color:#7d838c; font-size:10px;")
+
+        self._x = SliderRow("Horizontal", 0, 100, 50)
+        self._y = SliderRow("Vertical", 0, 100, 50)
+        self._scale = SliderRow("Tamaño", 2, 200, 35)
+        self._opacity = SliderRow("Opacidad", 0, 100, 100)
+        for row in (self._x, self._y, self._scale, self._opacity):
+            row.changed.connect(self._push)
+
+        self._duration = QDoubleSpinBox()
+        self._duration.setRange(0.2, 600.0)
+        self._duration.setSingleStep(0.5)
+        self._duration.setValue(4.0)
+        self._duration.setSuffix(" s")
+        self._duration.valueChanged.connect(self._push)
+
+        duration_row = QHBoxLayout()
+        duration_row.addWidget(QLabel("Duración"))
+        duration_row.addWidget(self._duration, 1)
+
+        center = QPushButton("Centrar")
+        center.clicked.connect(self._center)
+        cover = QPushButton("Llenar el cuadro")
+        cover.clicked.connect(self._cover)
+
+        buttons = QHBoxLayout()
+        buttons.setSpacing(6)
+        buttons.addWidget(center)
+        buttons.addWidget(cover)
+
+        self.setWidget(column(
+            self._name,
+            section("Posición"), self._x, self._y,
+            section("Aspecto"), self._scale, self._opacity,
+            section("Tiempo"), duration_row,
+            buttons,
+            None,
+        ))
+        self.set_target(None)
+
+    def set_target(self, overlay: ImageOverlay | None) -> None:
+        self._overlay = overlay
+        self._loading = True
+
+        self._name.setText(f"Imagen: {overlay.name}" if overlay
+                           else "Ninguna imagen seleccionada")
+        for widget in (self._x, self._y, self._scale, self._opacity, self._duration):
+            widget.setEnabled(overlay is not None)
+
+        if overlay is not None:
+            self._x.set_value(int(round(overlay.x * 100)))
+            self._y.set_value(int(round(overlay.y * 100)))
+            self._scale.set_value(max(2, int(round(overlay.scale * 100))))
+            self._opacity.set_value(int(round(overlay.opacity * 100)))
+            self._duration.setValue(overlay.duration)
+
+        self._loading = False
+
+    def _push(self) -> None:
+        if self._overlay is None or self._loading:
+            return
+        self._overlay.x = self._x.value() / 100.0
+        self._overlay.y = self._y.value() / 100.0
+        self._overlay.scale = self._scale.value() / 100.0
+        self._overlay.opacity = self._opacity.value() / 100.0
+        self._overlay.duration = self._duration.value()
+        self.changed.emit()
+
+    def _center(self) -> None:
+        if self._overlay is None:
+            return
+        self._x.set_value(50)
+        self._y.set_value(50)
+        self._push()
+
+    def _cover(self) -> None:
+        """Centrada y al ancho completo: el caso de una portada o un fondo."""
+        if self._overlay is None:
+            return
+        self._x.set_value(50)
+        self._y.set_value(50)
+        self._scale.set_value(100)
+        self._push()

@@ -1,7 +1,13 @@
-"""El timeline: regla de tiempo, pistas, clips y playhead.
+"""El timeline: regla de tiempo, pistas, clips, playhead y edición.
 
-Dibujado a mano con QPainter. Un editor necesita control fino de cada pixel
-(snapping, zoom, arrastre), y ningún widget de Qt hecho da eso.
+Dibujado y manipulado a mano con QPainter. Un editor necesita control fino
+de cada pixel — imantado, recorte por los bordes, arrastre entre pistas — y
+ningún widget de Qt hecho da eso.
+
+Reparto de la superficie, igual que en cualquier editor:
+  · la regla de arriba mueve el playhead
+  · el área vacía de las pistas también lo mueve
+  · encima de un clip, el clic selecciona y arrastra
 """
 
 from __future__ import annotations
@@ -16,21 +22,36 @@ HEADER_WIDTH = 72
 RULER_HEIGHT = 26
 TRACK_HEIGHT = 40
 TRACK_GAP = 2
+EDGE_GRAB = 7          # pixeles de cada extremo que sirven para recortar
+SNAP_PIXELS = 9        # qué tan cerca hay que estar para que imante
+
+TOOL_SELECT = "seleccion"
+TOOL_RAZOR = "navaja"
 
 BG = QColor("#1b1d21")
 RULER_BG = QColor("#232629")
 TRACK_BG = QColor("#212429")
+TRACK_BG_TARGET = QColor("#262b32")
 CLIP_VIDEO = QColor("#3d6fa8")
 CLIP_AUDIO = QColor("#3f7d5c")
 CLIP_TEXT = QColor("#a8763d")
 CLIP_IMAGE = QColor("#7a5aa8")
 CLIP_BORDER = QColor("#0f1113")
+SELECTED = QColor("#ffffff")
 TEXT = QColor("#c8ccd2")
 DIM_TEXT = QColor("#7d838c")
 PLAYHEAD = QColor("#e0574a")
 RANGE_FILL = QColor(61, 111, 168, 46)
 RANGE_EDGE = QColor("#5f9bd8")
 OUTSIDE = QColor(10, 11, 13, 96)
+SNAP_LINE = QColor("#e8c15a")
+
+# Qué tipo de cosa acepta cada clase de pista.
+ACCEPTS = {
+    "video": (Clip, ImageOverlay),
+    "texto": (Title,),
+    "audio": (Clip,),
+}
 
 
 def _color_for(track, clip) -> QColor:
@@ -43,9 +64,12 @@ def _color_for(track, clip) -> QColor:
 
 
 class TimelineWidget(QWidget):
-    """Muestra la secuencia y deja mover el playhead arrastrando."""
+    """Muestra la secuencia y deja editarla."""
 
     playhead_moved = Signal(float)
+    selection_changed = Signal(object)
+    edit_finished = Signal(str)          # etiqueta para el historial
+    cut_requested = Signal(object, float)
 
     def __init__(self, sequence: Sequence, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -55,8 +79,15 @@ class TimelineWidget(QWidget):
         self.mark_in: float | None = None
         self.mark_out: float | None = None
 
-        self._dragging = False
-        self.setMinimumHeight(RULER_HEIGHT + len(sequence.tracks) * (TRACK_HEIGHT + TRACK_GAP) + 10)
+        self.tool = TOOL_SELECT
+        self.selected = None
+
+        self._scrubbing = False
+        self._drag: dict | None = None
+        self._snap_at: float | None = None
+
+        self.setMinimumHeight(
+            RULER_HEIGHT + len(sequence.tracks) * (TRACK_HEIGHT + TRACK_GAP) + 10)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.StrongFocus)
@@ -75,6 +106,49 @@ class TimelineWidget(QWidget):
             self.playhead = t
             self.update()
 
+    def set_tool(self, tool: str) -> None:
+        self.tool = tool
+        self.setCursor(Qt.CrossCursor if tool == TOOL_RAZOR else Qt.ArrowCursor)
+
+    def select(self, item) -> None:
+        if item is not self.selected:
+            self.selected = item
+            self.selection_changed.emit(item)
+            self.update()
+
+    def refresh(self) -> None:
+        """Tras cambiar la secuencia por fuera (deshacer, importar…)."""
+        self.setMinimumHeight(
+            RULER_HEIGHT + len(self.sequence.tracks) * (TRACK_HEIGHT + TRACK_GAP) + 10)
+        self.update()
+
+    # --- geometría de pistas ---------------------------------------------
+
+    def _track_top(self, index: int) -> float:
+        return RULER_HEIGHT + TRACK_GAP + index * (TRACK_HEIGHT + TRACK_GAP)
+
+    def _track_index_at(self, y: float) -> int | None:
+        if y < RULER_HEIGHT:
+            return None
+        index = int((y - RULER_HEIGHT - TRACK_GAP) // (TRACK_HEIGHT + TRACK_GAP))
+        return index if 0 <= index < len(self.sequence.tracks) else None
+
+    def _item_at(self, x: float, y: float):
+        """Devuelve (índice de pista, item, zona) o (None, None, "")."""
+        index = self._track_index_at(y)
+        if index is None:
+            return None, None, ""
+
+        for item in self.sequence.tracks[index].clips:
+            left, right = self.x_for(item.start), self.x_for(item.end)
+            if left <= x <= right:
+                if x - left <= EDGE_GRAB:
+                    return index, item, "inicio"
+                if right - x <= EDGE_GRAB:
+                    return index, item, "fin"
+                return index, item, "cuerpo"
+        return index, None, ""
+
     # --- dibujo -----------------------------------------------------------
 
     def paintEvent(self, event) -> None:
@@ -85,6 +159,7 @@ class TimelineWidget(QWidget):
         self._draw_ruler(painter)
         self._draw_tracks(painter)
         self._draw_range(painter)
+        self._draw_snap(painter)
         self._draw_playhead(painter)
         painter.end()
 
@@ -110,9 +185,15 @@ class TimelineWidget(QWidget):
         return 600.0
 
     def _draw_tracks(self, painter: QPainter) -> None:
-        y = RULER_HEIGHT + TRACK_GAP
-        for track in self.sequence.tracks:
-            painter.fillRect(QRectF(0, y, self.width(), TRACK_HEIGHT), TRACK_BG)
+        dragging = self._drag["item"] if self._drag else None
+
+        for index, track in enumerate(self.sequence.tracks):
+            y = self._track_top(index)
+
+            # Al arrastrar, las pistas donde sí cabe lo que traes se aclaran.
+            highlight = dragging is not None and isinstance(dragging, ACCEPTS.get(track.kind, ()))
+            painter.fillRect(QRectF(0, y, self.width(), TRACK_HEIGHT),
+                             TRACK_BG_TARGET if highlight else TRACK_BG)
 
             painter.setPen(DIM_TEXT)
             painter.setFont(QFont("", 8, QFont.Bold))
@@ -122,22 +203,22 @@ class TimelineWidget(QWidget):
             for clip in track.clips:
                 self._draw_clip(painter, clip, y, _color_for(track, clip))
 
-            y += TRACK_HEIGHT + TRACK_GAP
-
     def _draw_clip(self, painter: QPainter, clip, y: float, color: QColor) -> None:
-        rect = QRectF(self.x_for(clip.start), y + 3,
-                      clip.duration * self.pixels_per_second, TRACK_HEIGHT - 6)
+        rect = QRectF(self.x_for(clip.start), y + 2,
+                      clip.duration * self.pixels_per_second, TRACK_HEIGHT - 4)
         if rect.right() < HEADER_WIDTH or rect.left() > self.width():
             return
 
-        painter.setPen(QPen(CLIP_BORDER, 1))
-        painter.setBrush(color)
+        chosen = clip is self.selected
+        painter.setPen(QPen(SELECTED if chosen else CLIP_BORDER, 2 if chosen else 1))
+        painter.setBrush(color.lighter(115) if chosen else color)
         painter.drawRoundedRect(rect, 3, 3)
 
-        painter.setPen(QColor("#eef1f4"))
-        painter.setFont(QFont("", 8))
-        painter.drawText(rect.adjusted(6, 0, -6, 0),
-                         Qt.AlignLeft | Qt.AlignVCenter, clip.name)
+        if rect.width() > 34:
+            painter.setPen(QColor("#eef1f4"))
+            painter.setFont(QFont("", 8))
+            painter.drawText(rect.adjusted(6, 0, -6, 0),
+                             Qt.AlignLeft | Qt.AlignVCenter, clip.name)
 
     def _draw_range(self, painter: QPainter) -> None:
         """Marcas de entrada y salida: oscurece lo de fuera, resalta lo de dentro."""
@@ -166,6 +247,13 @@ class TimelineWidget(QWidget):
             if mark is not None:
                 painter.drawLine(QPointF(x, 0), QPointF(x, self.height()))
 
+    def _draw_snap(self, painter: QPainter) -> None:
+        if self._snap_at is None:
+            return
+        painter.setPen(QPen(SNAP_LINE, 1, Qt.DashLine))
+        x = self.x_for(self._snap_at)
+        painter.drawLine(QPointF(x, RULER_HEIGHT), QPointF(x, self.height()))
+
     def _draw_playhead(self, painter: QPainter) -> None:
         x = self.x_for(self.playhead)
         if x < HEADER_WIDTH:
@@ -178,22 +266,150 @@ class TimelineWidget(QWidget):
         painter.setBrush(PLAYHEAD)
         painter.drawRect(QRectF(x - 5, 0, 10, 9))
 
+    # --- imantado ---------------------------------------------------------
+
+    def _snap(self, t: float, ignore=None) -> float:
+        """Jala el tiempo hacia los puntos de interés que estén muy cerca.
+
+        Sin esto es imposible pegar dos clips sin dejar un hueco de un par
+        de milisegundos, que luego se ve como un parpadeo negro.
+        """
+        candidates = [0.0, self.playhead]
+        if self.mark_in is not None:
+            candidates.append(self.mark_in)
+        if self.mark_out is not None:
+            candidates.append(self.mark_out)
+        for track in self.sequence.tracks:
+            for item in track.clips:
+                if item is not ignore:
+                    candidates += [item.start, item.end]
+
+        tolerance = SNAP_PIXELS / self.pixels_per_second
+        best = min(candidates, key=lambda c: abs(c - t))
+        if abs(best - t) <= tolerance:
+            self._snap_at = best
+            return best
+
+        self._snap_at = None
+        return self.sequence.snap_to_frame(t)
+
     # --- interacción ------------------------------------------------------
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
-        if event.button() == Qt.LeftButton and event.position().x() >= HEADER_WIDTH:
-            self._dragging = True
-            self._scrub(event)
+        if event.button() != Qt.LeftButton:
+            return
+
+        pos = event.position()
+        if pos.x() < HEADER_WIDTH:
+            return
+
+        if pos.y() < RULER_HEIGHT:
+            self._scrubbing = True
+            self._scrub(pos.x())
+            return
+
+        index, item, zone = self._item_at(pos.x(), pos.y())
+
+        if item is None:
+            self.select(None)
+            self._scrubbing = True
+            self._scrub(pos.x())
+            return
+
+        if self.tool == TOOL_RAZOR:
+            self.cut_requested.emit(item, self.time_for(pos.x()))
+            return
+
+        self.select(item)
+        self._drag = {
+            "item": item,
+            "track": index,
+            "zone": zone,
+            "grab": self.time_for(pos.x()),
+            "start": item.start,
+            "duration": item.duration,
+            "in_point": getattr(item, "in_point", None),
+            "moved": False,
+        }
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
-        if self._dragging:
-            self._scrub(event)
+        pos = event.position()
+
+        if self._scrubbing:
+            self._scrub(pos.x())
+            return
+
+        if self._drag is None:
+            self._update_cursor(pos)
+            return
+
+        self._drag["moved"] = True
+        zone = self._drag["zone"]
+        if zone == "cuerpo":
+            self._move_drag(pos)
+        else:
+            self._trim_drag(pos, zone)
+        self.update()
+
+    def _move_drag(self, pos) -> None:
+        drag = self._drag
+        item = drag["item"]
+
+        delta = self.time_for(pos.x()) - drag["grab"]
+        item.start = max(0.0, self._snap(drag["start"] + delta, ignore=item))
+
+        # Cambio de pista: solo a una que acepte este tipo de elemento.
+        index = self._track_index_at(pos.y())
+        if index is not None and index != drag["track"]:
+            target = self.sequence.tracks[index]
+            if isinstance(item, ACCEPTS.get(target.kind, ())):
+                self.sequence.tracks[drag["track"]].clips.remove(item)
+                target.add(item)
+                drag["track"] = index
+
+    def _trim_drag(self, pos, zone: str) -> None:
+        drag = self._drag
+        item = drag["item"]
+        minimum = self.sequence.frame_duration
+        edge = self._snap(self.time_for(pos.x()), ignore=item)
+
+        if zone == "inicio":
+            original_end = drag["start"] + drag["duration"]
+            new_start = max(0.0, min(edge, original_end - minimum))
+            item.start = new_start
+            item.duration = original_end - new_start
+            # En un clip de archivo, recortar por el inicio avanza el punto
+            # de entrada: se ve más adelante del original, no se estira.
+            if drag["in_point"] is not None:
+                item.in_point = max(0.0, drag["in_point"] + (new_start - drag["start"]))
+        else:
+            item.duration = max(minimum, edge - item.start)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
-        self._dragging = False
+        self._scrubbing = False
+        self._snap_at = None
 
-    def _scrub(self, event: QMouseEvent) -> None:
-        t = self.sequence.snap_to_frame(self.time_for(event.position().x()))
+        if self._drag is not None:
+            if self._drag["moved"]:
+                label = "Mover clip" if self._drag["zone"] == "cuerpo" else "Recortar clip"
+                self.sequence.tracks[self._drag["track"]].clips.sort(key=lambda c: c.start)
+                self.edit_finished.emit(label)
+            self._drag = None
+            self.update()
+
+    def _update_cursor(self, pos) -> None:
+        if self.tool == TOOL_RAZOR:
+            return
+        _, item, zone = self._item_at(pos.x(), pos.y())
+        if item is None:
+            self.setCursor(Qt.ArrowCursor)
+        elif zone in ("inicio", "fin"):
+            self.setCursor(Qt.SizeHorCursor)
+        else:
+            self.setCursor(Qt.OpenHandCursor)
+
+    def _scrub(self, x: float) -> None:
+        t = self.sequence.snap_to_frame(self.time_for(x))
         self.set_playhead(t)
         self.playhead_moved.emit(t)
 
