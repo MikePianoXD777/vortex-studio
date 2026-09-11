@@ -1,37 +1,22 @@
-"""El monitor: compone el cuadro final.
-
-El orden de pintado es el de cualquier editor — video de fondo, luego las
-imágenes de las pistas superiores, y el texto hasta arriba.
-
-Las imágenes y el texto se componen aquí con QPainter en vez de mandarlos al
-grafo de FFmpeg: son pocos elementos y así se pueden mover en vivo sin
-reconstruir nada.
-"""
+"""El monitor: muestra el cuadro compuesto, con letterbox."""
 
 from __future__ import annotations
 
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetricsF, QImage, QPainter, QPainterPath, QPen
+from PySide6.QtCore import QRectF, Qt, Signal
+from PySide6.QtGui import QColor, QImage, QPainter
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from vortex_studio.media import Frame
 from vortex_studio.model import ImageOverlay, Title
+from vortex_studio.ui.compositor import compose, draw_overlay, draw_title, frame_to_image
 
 BG = QColor("#101113")
 LETTERBOX = QColor("#000000")
 HINT = QColor("#6c727b")
-OUTLINE = QColor(0, 0, 0, 235)
-CAPTION_BOX = QColor(0, 0, 0, 150)
-
-ALIGN_FLAGS = {
-    "izquierda": Qt.AlignLeft,
-    "centro": Qt.AlignHCenter,
-    "derecha": Qt.AlignRight,
-}
 
 
 class PreviewWidget(QWidget):
-    """Dibuja el cuadro respetando su relación de aspecto (letterbox)."""
+    """Dibuja el cuadro respetando su relación de aspecto."""
 
     fullscreen_toggled = Signal()
 
@@ -41,7 +26,7 @@ class PreviewWidget(QWidget):
         self._overlays: list[tuple[ImageOverlay, QImage]] = []
         self._titles: list[Title] = []
         self._aspect = 16 / 9
-        self._message = "Abre un video para empezar  ·  Ctrl+O"
+        self._message = "Importa un video para empezar  ·  Ctrl+I"
 
         self.setMinimumSize(320, 180)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -69,6 +54,10 @@ class PreviewWidget(QWidget):
         self._message = text
         self.update()
 
+    @property
+    def is_empty(self) -> bool:
+        return self._frame is None and not self._overlays and not self._titles
+
     # --- dibujo -----------------------------------------------------------
 
     def paintEvent(self, event) -> None:
@@ -78,20 +67,16 @@ class PreviewWidget(QWidget):
         painter.setRenderHint(QPainter.TextAntialiasing)
         painter.setRenderHint(QPainter.SmoothPixmapTransform)
 
-        empty = self._frame is None and not self._overlays and not self._titles
-        if empty:
+        if self.is_empty:
             painter.setPen(HINT)
             painter.drawText(self.rect(), Qt.AlignCenter, self._message)
             painter.end()
             return
 
         if self._frame is not None:
-            frame = self._frame
-            target = self._fit(frame.width / frame.height)
-            image = QImage(frame.data, frame.width, frame.height,
-                           frame.stride, QImage.Format_RGB888)
+            target = self._fit(self._frame.width / self._frame.height)
             painter.fillRect(self.rect(), LETTERBOX)
-            painter.drawImage(target, image)
+            painter.drawImage(target, frame_to_image(self._frame))
         else:
             # Sin video de fondo el lienzo es negro, pero el texto y las
             # imágenes se siguen viendo: así se puede armar una portada.
@@ -100,94 +85,11 @@ class PreviewWidget(QWidget):
             painter.fillRect(target, QColor("#000000"))
 
         for overlay, image in self._overlays:
-            self._draw_overlay(painter, target, overlay, image)
-
+            draw_overlay(painter, target, overlay, image)
         for title in self._titles:
-            self._draw_title(painter, target, title)
+            draw_title(painter, target, title)
 
         painter.end()
-
-    def _draw_overlay(self, painter: QPainter, target: QRectF,
-                      overlay: ImageOverlay, image: QImage) -> None:
-        if image.isNull():
-            return
-
-        width = target.width() * overlay.scale
-        height = width * (image.height() / image.width())
-        rect = QRectF(target.left() + target.width() * overlay.x - width / 2,
-                      target.top() + target.height() * overlay.y - height / 2,
-                      width, height)
-
-        painter.save()
-        painter.setOpacity(max(0.0, min(1.0, overlay.opacity)))
-        painter.drawImage(rect, image)
-        painter.restore()
-
-    def _draw_title(self, painter: QPainter, target: QRectF, title: Title) -> None:
-        if not title.text.strip():
-            return
-
-        font = QFont()
-        font.setPixelSize(max(8, int(target.height() * title.size)))
-        font.setBold(title.bold)
-        font.setItalic(title.italic)
-
-        metrics = QFontMetricsF(font)
-        lines = title.text.splitlines() or [""]
-        line_height = metrics.height()
-        block_height = line_height * len(lines)
-        widest = max(metrics.horizontalAdvance(line) for line in lines)
-
-        anchor_x = target.left() + target.width() * title.x
-        anchor_y = target.top() + target.height() * title.y
-
-        if title.align == "izquierda":
-            left = anchor_x
-        elif title.align == "derecha":
-            left = anchor_x - widest
-        else:
-            left = anchor_x - widest / 2
-
-        block = QRectF(left, anchor_y - block_height / 2, widest, block_height)
-
-        if title.background:
-            pad = line_height * 0.22
-            painter.setPen(Qt.NoPen)
-            painter.setBrush(CAPTION_BOX)
-            painter.drawRoundedRect(block.adjusted(-pad, -pad / 2, pad, pad / 2), 4, 4)
-
-        painter.setFont(font)
-        for index, line in enumerate(lines):
-            row = QRectF(block.left(), block.top() + index * line_height,
-                         block.width(), line_height)
-            self._draw_line(painter, row, line, font, metrics, title)
-
-    def _draw_line(self, painter: QPainter, row: QRectF, line: str,
-                   font: QFont, metrics: QFontMetricsF, title: Title) -> None:
-        """El contorno se dibuja como trazo de un path, no como texto repetido.
-
-        Repetir el texto desplazado deja bordes sucios en las diagonales; el
-        trazo sobre el contorno real queda parejo en todas las direcciones.
-        """
-        flags = ALIGN_FLAGS.get(title.align, Qt.AlignHCenter)
-        if flags == Qt.AlignLeft:
-            x = row.left()
-        elif flags == Qt.AlignRight:
-            x = row.right() - metrics.horizontalAdvance(line)
-        else:
-            x = row.center().x() - metrics.horizontalAdvance(line) / 2
-        baseline = row.top() + metrics.ascent()
-
-        if title.outline:
-            path = QPainterPath()
-            path.addText(QPointF(x, baseline), font, line)
-            width = max(1.5, font.pixelSize() * 0.055)
-            painter.setPen(QPen(OUTLINE, width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
-            painter.setBrush(Qt.NoBrush)
-            painter.drawPath(path)
-
-        painter.setPen(QColor(title.color))
-        painter.drawText(QPointF(x, baseline), line)
 
     def _fit(self, aspect: float) -> QRectF:
         """El rectángulo más grande con esa relación de aspecto que cabe."""
@@ -198,11 +100,9 @@ class PreviewWidget(QWidget):
             fit_w, fit_h = float(w), w / aspect
         return QRectF((w - fit_w) / 2, (h - fit_h) / 2, fit_w, fit_h)
 
-    # --- imagen y pantalla completa ---------------------------------------
-
     def current_image(self) -> QImage | None:
-        """Lo que se ve, con imágenes y texto incluidos, listo para guardar."""
-        if self._frame is None and not self._overlays and not self._titles:
+        """El cuadro a resolución completa, para exportarlo."""
+        if self.is_empty:
             return None
 
         if self._frame is not None:
@@ -211,26 +111,9 @@ class PreviewWidget(QWidget):
             height = 1080
             width = int(height * self._aspect)
 
-        canvas = QImage(width, height, QImage.Format_RGB888)
-        canvas.fill(Qt.black)
+        return compose(width, height, self._frame, self._overlays, self._titles)
 
-        painter = QPainter(canvas)
-        painter.setRenderHint(QPainter.Antialiasing)
-        painter.setRenderHint(QPainter.TextAntialiasing)
-        painter.setRenderHint(QPainter.SmoothPixmapTransform)
-        target = QRectF(0, 0, width, height)
-
-        if self._frame is not None:
-            frame = self._frame
-            painter.drawImage(target, QImage(frame.data, frame.width, frame.height,
-                                             frame.stride, QImage.Format_RGB888))
-        for overlay, image in self._overlays:
-            self._draw_overlay(painter, target, overlay, image)
-        for title in self._titles:
-            self._draw_title(painter, target, title)
-        painter.end()
-
-        return canvas
+    # --- pantalla completa ------------------------------------------------
 
     def mouseDoubleClickEvent(self, event) -> None:
         self.fullscreen_toggled.emit()

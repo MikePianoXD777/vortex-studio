@@ -8,15 +8,26 @@ from pathlib import Path
 from PySide6.QtCore import QElapsedTimer, Qt, QTimer
 from PySide6.QtGui import QAction, QActionGroup, QImage, QKeySequence
 from PySide6.QtWidgets import (
+    QAbstractSpinBox,
+    QApplication,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
+    QFormLayout,
+    QLabel,
+    QLineEdit,
     QMainWindow,
     QMessageBox,
+    QPlainTextEdit,
+    QProgressDialog,
     QSplitter,
     QVBoxLayout,
     QWidget,
 )
 
 from vortex_studio.media import HAS_PYAV, VideoSource, probe
+from vortex_studio.media.encoder import QUALITY, Cancelled, export_video
 from vortex_studio.model import (
     ANCHORS,
     Clip,
@@ -28,6 +39,7 @@ from vortex_studio.model import (
 )
 from vortex_studio.model.history import History
 from vortex_studio.model.serialize import EXTENSION, load_project, save_project
+from vortex_studio.ui.compositor import compose
 from vortex_studio.ui.panels import ColorPanel, ImagePanel, TextPanel
 from vortex_studio.ui.preview import PreviewWidget
 from vortex_studio.ui.timeline import TOOL_RAZOR, TOOL_SELECT, TimelineWidget
@@ -44,6 +56,17 @@ MEDIA_FILTER = (
 )
 PROJECT_FILTER = f"Proyecto de Vortex Studio (*{EXTENSION});;Todos los archivos (*)"
 EXPORT_FILTER = "PNG (*.png);;JPEG (*.jpg)"
+VIDEO_OUT_FILTER = "Video MP4 (*.mp4)"
+
+HEAVY_MODIFIERS = Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier
+
+
+def _is_plain_key(sequence: QKeySequence) -> bool:
+    """¿El atajo es una tecla suelta, sin Ctrl ni Alt?"""
+    if sequence.isEmpty():
+        return False
+    return not bool(sequence[0].keyboardModifiers() & HEAVY_MODIFIERS)
+
 
 DEFAULT_TITLE_SECONDS = 3.0
 DEFAULT_IMAGE_SECONDS = 4.0
@@ -62,6 +85,12 @@ class MainWindow(QMainWindow):
         self._title: Title | None = None
         self._path: Path | None = None
         self._dirty = False
+
+        # Atajos de una sola tecla (Espacio, C, L, Supr…). Hay que apagarlos
+        # mientras se escribe: si no, teclear un subtítulo activa la navaja,
+        # el bucle y borra el clip seleccionado, y las letras ni siquiera
+        # llegan al cuadro de texto porque el atajo se las come antes.
+        self._plain_actions: list[QAction] = []
 
         self._playing = False
         self._speed = 1.0
@@ -82,12 +111,23 @@ class MainWindow(QMainWindow):
         self._build_menu()
         self._connect()
         self._update_title()
+        self._update_status()
 
         # Reproducción guiada por reloj real, no por conteo de ticks.
         # `_origin` es el punto de la secuencia donde se dio play y `_elapsed`
         # cuánto ha pasado desde entonces: la posición se calcula, no se
         # acumula. Así, si un cuadro tarda de más, se salta en vez de irse
         # quedando atrás — que es lo que desfasa a un reproductor.
+        # Los paneles disparan un cambio por cada tecla y por cada pixel que
+        # se mueve un deslizador. Agruparlos en una sola entrada del historial
+        # es lo que hace que Ctrl+Z deshaga "escribir el subtítulo" y no la
+        # última letra.
+        self._pending: str | None = None
+        self._commit_timer = QTimer(self)
+        self._commit_timer.setSingleShot(True)
+        self._commit_timer.setInterval(700)
+        self._commit_timer.timeout.connect(self._flush)
+
         self._elapsed = QElapsedTimer()
         self._origin = 0.0
         self._clock = QTimer(self)
@@ -133,7 +173,8 @@ class MainWindow(QMainWindow):
         self._action(archivo, "Guardar &como…", "Ctrl+Shift+S", self.save_as)
         archivo.addSeparator()
         self._action(archivo, "&Importar…", "Ctrl+I", self.import_media)
-        self._action(archivo, "&Exportar cuadro…", "Ctrl+Shift+E", self.export_frame)
+        self._action(archivo, "Exportar &video…", "Ctrl+E", self.export_video)
+        self._action(archivo, "Exportar &cuadro…", "Ctrl+Shift+E", self.export_frame)
         archivo.addSeparator()
         self._action(archivo, "&Salir", QKeySequence.Quit, self.close)
 
@@ -142,6 +183,7 @@ class MainWindow(QMainWindow):
         self._redo_action = self._action(editar, "&Rehacer", "Ctrl+Shift+Z", self.redo)
         editar.addSeparator()
         self._action(editar, "&Cortar en el playhead", "Ctrl+K", self.cut_at_playhead)
+        self._action(editar, "&Duplicar", "Ctrl+D", self.duplicate_selected)
         self._action(editar, "&Eliminar", "Delete", self.delete_selected)
         self._action(editar, "Eliminar y &cerrar hueco", "Shift+Delete", self.ripple_delete)
         editar.addSeparator()
@@ -190,16 +232,24 @@ class MainWindow(QMainWindow):
         ver.addAction(self.color_panel.toggleViewAction())
 
         self._update_history_actions()
+        QApplication.instance().focusChanged.connect(self._focus_changed)
 
     def _action(self, menu, text: str, shortcut, slot) -> QAction:
         action = QAction(text, self)
         if shortcut:
             action.setShortcut(shortcut)
+            if _is_plain_key(action.shortcut()):
+                self._plain_actions.append(action)
         action.triggered.connect(slot)
         # Los atajos deben responder aunque el foco esté en el timeline.
         action.setShortcutContext(Qt.ApplicationShortcut)
         menu.addAction(action)
         return action
+
+    def _focus_changed(self, old, new) -> None:
+        typing = isinstance(new, (QPlainTextEdit, QLineEdit, QAbstractSpinBox, QComboBox))
+        for action in self._plain_actions:
+            action.setEnabled(not typing)
 
     def _connect(self) -> None:
         self.timeline.playhead_moved.connect(self._scrubbed)
@@ -255,6 +305,7 @@ class MainWindow(QMainWindow):
         self._update_title()
 
     def save(self) -> bool:
+        self._flush()
         if self._path is None:
             return self.save_as()
         try:
@@ -293,20 +344,57 @@ class MainWindow(QMainWindow):
         name = self._path.stem if self._path else "Sin título"
         self.setWindowTitle(f"{'*' if self._dirty else ''}{name} — Vortex Studio")
 
+    def _update_status(self) -> None:
+        """Lo que hay que saber de un vistazo sin abrir ningún menú."""
+        seq = self.sequence
+        piezas = sum(len(track.clips) for track in seq.tracks)
+        herramienta = "Navaja" if self.timeline.tool == TOOL_RAZOR else "Selección"
+        marcas = ""
+        if self.timeline.mark_in is not None or self.timeline.mark_out is not None:
+            inicio, fin = self._range()
+            marcas = f"   ·   Marcas {timecode(inicio, seq.fps)} → {timecode(fin, seq.fps)}"
+
+        self.statusBar().showMessage(
+            f"{seq.width}×{seq.height}   ·   {seq.fps:g} fps   ·   "
+            f"{timecode(seq.duration, seq.fps)}   ·   "
+            f"{piezas} elemento{'s' if piezas != 1 else ''}   ·   "
+            f"{herramienta}{marcas}"
+        )
+
     # --- historial --------------------------------------------------------
+
+    def _schedule(self, label: str) -> None:
+        """Apunta un cambio para registrarlo cuando el usuario deje de teclear."""
+        self._pending = label
+        self._commit_timer.start()
+        self._dirty = True
+        self._update_title()
+        self._refresh()
+
+    def _flush(self) -> None:
+        if self._pending is None:
+            return
+        self.history.push(self.sequence, self._pending)
+        self._pending = None
+        self._update_history_actions()
 
     def _commit(self, label: str) -> None:
         """Registra un cambio ya aplicado y refresca lo que dependa de él."""
+        self._commit_timer.stop()
+        self._pending = None
         self.history.push(self.sequence, label)
         self._dirty = True
         self._update_title()
         self._update_history_actions()
         self._refresh()
+        self._update_status()
 
     def undo(self) -> None:
+        self._flush()
         self._restore(self.history.undo())
 
     def redo(self) -> None:
+        self._flush()
         self._restore(self.history.redo())
 
     def _restore(self, sequence: Sequence | None) -> None:
@@ -333,6 +421,7 @@ class MainWindow(QMainWindow):
 
         self._fit_zoom()
         self._seek(min(self.timeline.playhead, sequence.duration))
+        self._update_status()
 
     def _update_history_actions(self) -> None:
         self._undo_action.setEnabled(self.history.can_undo)
@@ -429,6 +518,101 @@ class MainWindow(QMainWindow):
         if path and not image.save(path):
             QMessageBox.critical(self, "No se pudo guardar", path)
 
+    # --- exportar video ---------------------------------------------------
+
+    def export_video(self) -> None:
+        if self.sequence.duration <= 0:
+            QMessageBox.information(self, "Nada que exportar",
+                                    "La secuencia está vacía.")
+            return
+        if not HAS_PYAV:
+            QMessageBox.warning(self, "Falta PyAV",
+                                "Sin PyAV no se puede codificar video.")
+            return
+
+        start, end = self._range()
+        options = ExportDialog(self, start, end, self.sequence)
+        if options.exec() != QDialog.Accepted:
+            return
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Exportar video", f"{self._path.stem if self._path else 'video'}.mp4",
+            VIDEO_OUT_FILTER)
+        if not path:
+            return
+
+        self._pause()
+        self._run_export(Path(path), start, end, options.quality())
+
+    def _run_export(self, path: Path, start: float, end: float, quality: str) -> None:
+        fps = self.sequence.fps
+        total = max(1, int(round((end - start) * fps)))
+
+        dialog = QProgressDialog("Exportando…", "Cancelar", 0, total, self)
+        dialog.setWindowTitle("Exportar video")
+        dialog.setWindowModality(Qt.WindowModal)
+        dialog.setMinimumDuration(0)
+        dialog.setAutoClose(False)
+
+        def report(done: int, of: int) -> bool:
+            dialog.setValue(done)
+            dialog.setLabelText(
+                f"Cuadro {done} de {of}   ·   {timecode(start + done / fps, fps)}")
+            return not dialog.wasCanceled()
+
+        try:
+            export_video(
+                path,
+                self._frames(start, end, fps),
+                total,
+                self.sequence.width,
+                self.sequence.height,
+                fps,
+                quality,
+                report,
+            )
+        except Cancelled:
+            dialog.close()
+            return
+        except Exception as error:
+            dialog.close()
+            QMessageBox.critical(self, "Falló la exportación", str(error))
+            return
+        finally:
+            self._seek(self.timeline.playhead)
+
+        dialog.close()
+        QMessageBox.information(
+            self, "Exportado",
+            f"{path.name}\n\n{total} cuadros · {(end - start):.1f} s")
+
+    def _frames(self, start: float, end: float, fps: float):
+        """Va entregando el cuadro compuesto de cada instante.
+
+        Es un generador para que la codificación avance mientras se dibuja,
+        en vez de armar todos los cuadros en memoria primero — una secuencia
+        de un minuto en 1080p serían varios gigabytes.
+        """
+        count = max(1, int(round((end - start) * fps)))
+        for index in range(count):
+            t = start + index / fps
+            yield compose(
+                self.sequence.width, self.sequence.height,
+                self._frame_at(t),
+                [(o, self._image_for(o.source)) for o in self.sequence.overlays_at(t)],
+                self.sequence.titles_at(t),
+            )
+
+    def _frame_at(self, t: float):
+        """El cuadro de video de fondo en ese instante, ya corregido."""
+        clip = self.sequence.top_clip_at(t)
+        if clip is None or not HAS_PYAV:
+            return None
+        try:
+            return self._source_for(clip.source).frame_at(clip.source_time(t), clip.color)
+        except Exception:
+            return None
+
     # --- edición ----------------------------------------------------------
 
     def _track_of(self, item):
@@ -436,6 +620,7 @@ class MainWindow(QMainWindow):
 
     def set_tool(self, tool: str) -> None:
         self.timeline.set_tool(tool)
+        self._update_status()
 
     def cut_at_playhead(self) -> None:
         """Corta lo que esté seleccionado, o todo lo que cruce el playhead."""
@@ -468,6 +653,19 @@ class MainWindow(QMainWindow):
             self.timeline.select(second)
             self._commit("Cortar")
         return True
+
+    def duplicate_selected(self) -> None:
+        """Pega una copia justo después de lo seleccionado, sin dejar hueco."""
+        item = self.timeline.selected
+        track = self._track_of(item) if item else None
+        if track is None:
+            return
+
+        copia = copy.deepcopy(item)
+        copia.start = item.end
+        track.add(copia)
+        self.timeline.select(copia)
+        self._commit("Duplicar")
 
     def delete_selected(self) -> None:
         item = self.timeline.selected
@@ -541,21 +739,16 @@ class MainWindow(QMainWindow):
         self._title = self.text_panel._title
         for track in self.sequence.text_tracks():
             track.clips.sort(key=lambda c: c.start)
-        self._dirty = True
-        self._update_title()
-        self._refresh()
+        self._schedule("Editar texto")
 
     def _color_changed(self) -> None:
-        self._dirty = True
-        self._update_title()
-        self._refresh()
+        self._schedule("Corregir color")
 
     def _image_changed(self) -> None:
         for track in self.sequence.video_tracks():
             track.clips.sort(key=lambda c: c.start)
-        self._dirty = True
-        self._update_title()
-        self._refresh()
+        self._schedule("Ajustar imagen")
+        self._update_status()
 
     # --- navegación -------------------------------------------------------
 
@@ -604,18 +797,7 @@ class MainWindow(QMainWindow):
         self._scrubbed(self.timeline.playhead + seconds)
 
     def _render(self, t: float) -> None:
-        clip = self.sequence.top_clip_at(t)
-
-        if clip is None or not HAS_PYAV:
-            self.preview.set_frame(None)
-        else:
-            try:
-                source = self._source_for(clip.source)
-                self.preview.set_frame(source.frame_at(clip.source_time(t), clip.color))
-            except Exception:
-                # Un cuadro que no se pudo decodificar no debe tumbar la ventana.
-                self.preview.set_frame(None)
-
+        self.preview.set_frame(self._frame_at(t))
         self.preview.set_overlays([
             (overlay, self._image_for(overlay.source))
             for overlay in self.sequence.overlays_at(t)
@@ -661,6 +843,7 @@ class MainWindow(QMainWindow):
             self.timeline.mark_out = None
         self.timeline.mark_in = t
         self.timeline.update()
+        self._update_status()
 
     def mark_out(self) -> None:
         t = self.timeline.playhead
@@ -668,10 +851,12 @@ class MainWindow(QMainWindow):
             self.timeline.mark_in = None
         self.timeline.mark_out = t
         self.timeline.update()
+        self._update_status()
 
     def clear_marks(self) -> None:
         self.timeline.mark_in = self.timeline.mark_out = None
         self.timeline.update()
+        self._update_status()
 
     def _range(self) -> tuple[float, float]:
         """El tramo que se reproduce: el marcado, o todo si no hay marcas."""
@@ -793,6 +978,7 @@ class MainWindow(QMainWindow):
             super().keyPressEvent(event)
 
     def closeEvent(self, event) -> None:
+        self._flush()
         if not self._confirm_discard():
             event.ignore()
             return
@@ -802,3 +988,44 @@ class MainWindow(QMainWindow):
             self.preview.close()
         self._close_sources()
         super().closeEvent(event)
+
+
+class ExportDialog(QDialog):
+    """Qué se va a exportar y con qué calidad, antes de pedir el archivo."""
+
+    def __init__(self, parent, start: float, end: float, sequence) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Exportar video")
+        self.setMinimumWidth(340)
+
+        marked = (start, end) != (0.0, sequence.duration)
+        rango = (f"{timecode(start, sequence.fps)} → {timecode(end, sequence.fps)}"
+                 f"{'   (entre las marcas)' if marked else ''}")
+
+        self._quality = QComboBox()
+        self._quality.addItems(QUALITY.keys())
+        self._quality.setCurrentText("Normal")
+
+        form = QFormLayout()
+        form.addRow("Tramo:", QLabel(rango))
+        form.addRow("Duración:", QLabel(f"{end - start:.2f} s"))
+        form.addRow("Tamaño:", QLabel(f"{sequence.width} × {sequence.height}"))
+        form.addRow("Cuadros por segundo:", QLabel(f"{sequence.fps:g}"))
+        form.addRow("Calidad:", self._quality)
+
+        aviso = QLabel("El video se exporta sin audio: todavía no hay motor de sonido.")
+        aviso.setWordWrap(True)
+        aviso.setStyleSheet("color:#a8763d; font-size:10px;")
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.button(QDialogButtonBox.Ok).setText("Exportar")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+
+        layout = QVBoxLayout(self)
+        layout.addLayout(form)
+        layout.addWidget(aviso)
+        layout.addWidget(buttons)
+
+    def quality(self) -> str:
+        return self._quality.currentText()
