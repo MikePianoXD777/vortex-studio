@@ -111,13 +111,56 @@ class AudioRenderer:
 
             desde = clip.in_point + (cursor - clip.start)
             hasta = min(clip.end, end)
-            yield from self._from_clip(clip, desde, hasta - cursor)
+            for frame in self._from_clip(clip, desde, hasta - cursor):
+                yield self._apply_level(frame, clip, cursor)
+                cursor += frame.samples / self.rate
             cursor = hasta
 
         if cursor < end:
             yield from self._silence(end - cursor)
 
     # --- piezas -----------------------------------------------------------
+
+    # --- volumen y fundidos -----------------------------------------------
+
+    def _apply_level(self, frame, clip, cuando: float):
+        """Aplica volumen y fundidos del clip a un bloque de audio.
+
+        Se hace con el filtro `volume` de FFmpeg y no multiplicando muestras
+        en Python: son 48 000 valores por segundo y por canal, y un bucle
+        aquí se comería el tiempo de la exportación entera.
+
+        El nivel se calcula al centro del bloque. Con bloques de un segundo
+        el fundido queda escalonado, pero cada escalón dura lo que un bloque
+        y el oído no distingue la escalera de una rampa continua.
+        """
+        nivel = getattr(clip, "gain", 1.0)
+        if hasattr(clip, "fade_at"):
+            centro = cuando + frame.samples / self.rate / 2
+            nivel *= clip.fade_at(min(max(centro, clip.start), clip.end - 1e-9))
+
+        if abs(nivel - 1.0) < 1e-3:
+            return frame
+        return self._volume(frame, max(0.0, nivel))
+
+    def _volume(self, frame, nivel: float):
+        graph = av.filter.Graph()
+        source = graph.add(
+            "abuffer",
+            f"sample_rate={self.rate}:sample_fmt={self.format}"
+            f":channel_layout={self.layout}:time_base=1/{self.rate}",
+        )
+        volumen = graph.add("volume", f"volume={nivel:.4f}")
+        sink = graph.add("abuffersink")
+        source.link_to(volumen)
+        volumen.link_to(sink)
+        graph.configure()
+
+        frame.pts = None
+        graph.push(frame)
+        salida = graph.pull()
+        salida.sample_rate = self.rate
+        return salida
 
     def _silence(self, seconds: float) -> Iterator:
         pendientes = int(round(seconds * self.rate))

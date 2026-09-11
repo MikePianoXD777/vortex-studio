@@ -61,6 +61,8 @@ FADE = QColor(12, 14, 16, 170)
 FADE_EDGE = QColor(235, 238, 242, 130)
 SPEED_TAG = QColor("#f0d68a")
 MARKER = QColor("#e8c15a")
+DISSOLVE = QColor(120, 170, 230, 120)
+DISSOLVE_EDGE = QColor("#8fb6e0")
 MARKER_TEXT = QColor("#1b1d21")
 
 PEAKS_PER_SECOND = 60
@@ -251,6 +253,8 @@ class TimelineWidget(QWidget):
 
             for clip in track.clips:
                 self._draw_clip(painter, clip, y, _color_for(track, clip), track.kind)
+            if track.kind == "video":
+                self._draw_dissolves(painter, track, y)
 
     def _draw_clip(self, painter: QPainter, clip, y: float, color: QColor,
                    track_kind: str = "video") -> None:
@@ -282,6 +286,32 @@ class TimelineWidget(QWidget):
             etiqueta = "❄" if velocidad == 0 else f"{velocidad:g}×"
             painter.drawText(rect.adjusted(0, 0, -6, 0),
                              Qt.AlignRight | Qt.AlignVCenter, etiqueta)
+
+    def _draw_dissolves(self, painter: QPainter, track, y: float) -> None:
+        """La transición se dibuja a caballo sobre el corte, con su moño.
+
+        Se pinta después de los clips y no dentro de cada uno porque
+        pertenece a los dos: cruza el corte por igual hacia ambos lados.
+        """
+        for clip in track.clips:
+            cruce = getattr(clip, "dissolve", 0.0)
+            if cruce <= 0 or track.before(clip) is None:
+                continue
+
+            ancho = cruce * self.pixels_per_second
+            rect = QRectF(self.x_for(clip.start) - ancho / 2, y + 2,
+                          ancho, TRACK_HEIGHT - 4)
+            if rect.right() < HEADER_WIDTH or rect.left() > self.width():
+                continue
+
+            painter.setPen(QPen(DISSOLVE_EDGE, 1))
+            painter.setBrush(DISSOLVE)
+            painter.drawRect(rect)
+
+            # El moño: dos diagonales cruzadas, como en cualquier editor.
+            painter.setPen(QPen(DISSOLVE_EDGE, 1))
+            painter.drawLine(rect.topLeft(), rect.bottomRight())
+            painter.drawLine(rect.bottomLeft(), rect.topRight())
 
     def _draw_fades(self, painter: QPainter, clip, rect: QRectF) -> None:
         """Los fundidos se dibujan como cuñas oscuras en las puntas.

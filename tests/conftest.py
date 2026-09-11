@@ -94,3 +94,38 @@ def ventana(qapp):
 def secuencia():
     from vortex_studio.model import Sequence
     return Sequence.default()
+
+
+@pytest.fixture(autouse=True)
+def sin_dialogos_modales(monkeypatch, request):
+    """Hace que un diálogo modal falle en vez de colgar la prueba.
+
+    Un QMessageBox dentro de una prueba se queda esperando un clic que nunca
+    llega: la prueba no falla, se congela, y de paso arrastra a todas las que
+    vienen atrás. Ya pasó una vez con el aviso de la transición.
+
+    Las pruebas que sí quieren verificar un diálogo pueden pedir el permiso
+    marcándose con @pytest.mark.permite_dialogos.
+    """
+    if request.node.get_closest_marker("permite_dialogos"):
+        return
+
+    from PySide6.QtWidgets import QFileDialog, QInputDialog, QMessageBox
+
+    def prohibido(nombre):
+        def _falla(*args, **kwargs):
+            raise AssertionError(
+                f"{nombre} abrió un diálogo modal durante la prueba. "
+                f"Usa la barra de estado, o marca la prueba con "
+                f"@pytest.mark.permite_dialogos.")
+        return _falla
+
+    for clase, metodos in (
+        (QMessageBox, ("information", "warning", "critical", "question", "about")),
+        (QInputDialog, ("getText", "getInt", "getDouble", "getItem")),
+        (QFileDialog, ("getOpenFileName", "getSaveFileName", "getExistingDirectory")),
+    ):
+        for metodo in metodos:
+            monkeypatch.setattr(clase, metodo,
+                                staticmethod(prohibido(f"{clase.__name__}.{metodo}")),
+                                raising=False)

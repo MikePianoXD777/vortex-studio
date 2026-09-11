@@ -23,10 +23,12 @@ class Clip:
     duration: float
     in_point: float = 0.0  # desde qué segundo del archivo fuente se toma
     name: str = ""
-    speed: float = 1.0     # 0.25 = cámara lenta, 4.0 = cámara rápida
+    speed: float = 1.0       # 0.25 = cámara lenta, 4.0 = cámara rápida
     color: ColorAdjust = field(default_factory=ColorAdjust)
     fade_in: float = 0.0
     fade_out: float = 0.0
+    gain: float = 1.0        # volumen del clip, solo aplica en pistas de audio
+    dissolve: float = 0.0    # transición cruzada con el clip de la izquierda
 
     def __post_init__(self) -> None:
         self.source = Path(self.source)
@@ -102,6 +104,15 @@ class Track:
     def items_at(self, t: float) -> list:
         """Todo lo que esté vivo en ese instante, en orden de la pista."""
         return [c for c in self.clips if c.contains(t)]
+
+    def before(self, clip) -> "Clip | None":
+        """El elemento inmediatamente anterior en la pista, si va pegado."""
+        anterior = None
+        for otro in self.clips:
+            if otro is clip:
+                return anterior if anterior and abs(anterior.end - clip.start) < 1e-6 else None
+            anterior = otro
+        return None
 
     def video_at(self, t: float) -> Clip | None:
         """Solo clips de archivo de video: ignora imágenes y textos."""
@@ -180,6 +191,28 @@ class Sequence:
             clip = track.video_at(t)
             if clip is not None:
                 return clip
+        return None
+
+    def dissolve_at(self, t: float):
+        """Si `t` cae dentro de una transición, devuelve (saliente, entrante, avance).
+
+        La transición se reparte mitad antes y mitad después del corte, que
+        es como la coloca Premiere: el corte queda al centro del cruce, no
+        al principio.
+        """
+        for track in self.video_tracks():
+            for clip in track.clips:
+                d = getattr(clip, "dissolve", 0.0)
+                if d <= 0:
+                    continue
+
+                saliente = track.before(clip)
+                if saliente is None:
+                    continue
+
+                desde, hasta = clip.start - d / 2, clip.start + d / 2
+                if desde <= t < hasta:
+                    return saliente, clip, (t - desde) / d
         return None
 
     def overlays_at(self, t: float) -> list[ImageOverlay]:

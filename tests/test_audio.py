@@ -63,3 +63,31 @@ def test_un_archivo_inexistente_no_truena(media):
     clip = Clip(source="/no/existe.mp4", start=0.0, duration=1.0)
     frames = list(AudioRenderer([clip]).stream(0.0, 1.0))
     assert abs(sum(f.samples for f in frames) - RATE) < RATE * 0.05
+
+
+# --- volumen y fundidos ---------------------------------------------------
+
+def render(media, **kw):
+    from vortex_studio.media.audio import AudioRenderer
+    clip = Clip(source=media["sonoro"], start=0.0, duration=6.0, **kw)
+    return list(AudioRenderer([clip]).stream(0.0, 6.0))
+
+
+def test_el_volumen_del_clip_se_aplica(media):
+    normal = energia(render(media), 1.0, 5.0)
+    bajo = energia(render(media, gain=0.25), 1.0, 5.0)
+    assert 0.15 * normal < bajo < 0.35 * normal
+
+
+def test_volumen_cero_es_silencio(media):
+    assert energia(render(media, gain=0.0), 1.0, 5.0) < 0.001
+
+
+def test_el_fundido_de_audio_baja_el_inicio(media):
+    frames = render(media, fade_in=3.0)
+    assert energia(frames, 0.0, 1.0) < energia(frames, 4.0, 5.5) * 0.4
+
+
+def test_el_volumen_no_cambia_la_duracion(media):
+    frames = render(media, gain=0.3, fade_in=2.0, fade_out=2.0)
+    assert abs(sum(f.samples for f in frames) - 6 * RATE) < RATE * 0.05

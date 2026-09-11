@@ -8,7 +8,7 @@ from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from vortex_studio.media import Frame
 from vortex_studio.model import ImageOverlay, Title
-from vortex_studio.ui.compositor import compose, draw_overlay, draw_title, frame_to_image
+from vortex_studio.ui.compositor import compose, draw_layers, draw_overlay, draw_title
 
 BG = QColor("#101113")
 LETTERBOX = QColor("#000000")
@@ -22,7 +22,7 @@ class PreviewWidget(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._frame: Frame | None = None
+        self._layers: list[tuple[Frame, float]] = []
         self._overlays: list[tuple[ImageOverlay, QImage]] = []
         self._titles: list[Title] = []
         self._aspect = 16 / 9
@@ -36,10 +36,17 @@ class PreviewWidget(QWidget):
 
     # --- qué mostrar ------------------------------------------------------
 
-    def set_frame(self, frame: Frame | None, alpha: float = 1.0) -> None:
-        self._frame = frame
-        self._alpha = alpha
+    def set_layers(self, layers: list[tuple[Frame, float]]) -> None:
+        """Las capas de video, de abajo hacia arriba."""
+        self._layers = [(f, a) for f, a in layers if f is not None]
         self.update()
+
+    def set_frame(self, frame: Frame | None, alpha: float = 1.0) -> None:
+        self.set_layers([(frame, alpha)] if frame is not None else [])
+
+    @property
+    def _frame(self) -> Frame | None:
+        return self._layers[0][0] if self._layers else None
 
     def set_time(self, t: float) -> None:
         """El instante que se está viendo, para que cada fundido se aplique."""
@@ -63,7 +70,7 @@ class PreviewWidget(QWidget):
 
     @property
     def is_empty(self) -> bool:
-        return self._frame is None and not self._overlays and not self._titles
+        return not self._layers and not self._overlays and not self._titles
 
     # --- dibujo -----------------------------------------------------------
 
@@ -80,12 +87,11 @@ class PreviewWidget(QWidget):
             painter.end()
             return
 
-        if self._frame is not None:
-            target = self._fit(self._frame.width / self._frame.height)
+        if self._layers:
+            base = self._layers[0][0]
+            target = self._fit(base.width / base.height)
             painter.fillRect(self.rect(), LETTERBOX)
-            painter.setOpacity(max(0.0, min(1.0, self._alpha)))
-            painter.drawImage(target, frame_to_image(self._frame))
-            painter.setOpacity(1.0)
+            draw_layers(painter, target, self._layers)
         else:
             # Sin video de fondo el lienzo es negro, pero el texto y las
             # imágenes se siguen viendo: así se puede armar una portada.
@@ -117,14 +123,15 @@ class PreviewWidget(QWidget):
         if self.is_empty:
             return None
 
-        if self._frame is not None:
-            width, height = self._frame.width, self._frame.height
+        if self._layers:
+            base = self._layers[0][0]
+            width, height = base.width, base.height
         else:
             height = 1080
             width = int(height * self._aspect)
 
-        return compose(width, height, self._frame, self._overlays, self._titles,
-                       self._time, self._alpha)
+        return compose(width, height, self._layers, self._overlays,
+                       self._titles, self._time)
 
     # --- pantalla completa ------------------------------------------------
 

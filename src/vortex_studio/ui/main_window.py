@@ -28,7 +28,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from vortex_studio.media import HAS_PYAV, VideoSource, probe
+from vortex_studio.media import HAS_PYAV, probe
+from vortex_studio.media.pool import SourcePool
 from vortex_studio.media.audio import AudioRenderer, has_audio
 from vortex_studio.media.encoder import QUALITY, Cancelled, export_video
 from vortex_studio.model import (
@@ -42,8 +43,9 @@ from vortex_studio.model import (
 )
 from vortex_studio.model.history import History
 from vortex_studio.model.serialize import EXTENSION, load_project, save_project
+from vortex_studio.ui.audio_player import AudioPlayer
 from vortex_studio.ui.compositor import compose
-from vortex_studio.ui.panels import ColorPanel, ImagePanel, TextPanel
+from vortex_studio.ui.panels import ClipPanel, ColorPanel, ImagePanel, TextPanel
 from vortex_studio.ui.preview import PreviewWidget
 from vortex_studio.ui.timeline import TOOL_RAZOR, TOOL_SELECT, TimelineWidget
 from vortex_studio.ui.transport import SPEEDS, TransportBar
@@ -83,7 +85,11 @@ class MainWindow(QMainWindow):
         self.history = History()
         self.history.reset(self.sequence)
 
-        self._sources: dict[Path, VideoSource] = {}
+        # Un decodificador por clip. Compartirlo por archivo hacía que una
+        # transición entre dos mitades del mismo video saltara adelante y
+        # atrás en cada cuadro, y la reproducción se caía a segundos por
+        # cuadro.
+        self._sources = SourcePool()
         self._images: dict[Path, QImage] = {}
         self._title: Title | None = None
         self._path: Path | None = None
@@ -102,6 +108,12 @@ class MainWindow(QMainWindow):
 
         self.resize(1440, 820)
 
+        # El sonido manda cuando está activo: no se puede acelerar ni saltar
+        # sin que se oiga, así que la imagen lo sigue a él. Se crea antes que
+        # los widgets porque `_connect` ya lo necesita.
+        self.audio = AudioPlayer(self)
+        self._audio_on = False
+
         self.preview = PreviewWidget()
         self.preview.set_aspect(self.sequence.width / self.sequence.height)
         self.timeline = TimelineWidget(self.sequence)
@@ -109,6 +121,7 @@ class MainWindow(QMainWindow):
         self.color_panel = ColorPanel()
         self.text_panel = TextPanel()
         self.image_panel = ImagePanel()
+        self.clip_panel = ClipPanel()
 
         self._build_layout()
         self._build_menu()
@@ -163,9 +176,11 @@ class MainWindow(QMainWindow):
 
         self.addDockWidget(Qt.RightDockWidgetArea, self.text_panel)
         self.addDockWidget(Qt.RightDockWidgetArea, self.image_panel)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.clip_panel)
         self.addDockWidget(Qt.RightDockWidgetArea, self.color_panel)
-        self.resizeDocks([self.text_panel, self.image_panel, self.color_panel],
-                         [360, 250, 240], Qt.Vertical)
+        self.resizeDocks(
+            [self.text_panel, self.image_panel, self.clip_panel, self.color_panel],
+            [290, 210, 260, 220], Qt.Vertical)
 
     def _build_menu(self) -> None:
         archivo = self.menuBar().addMenu("&Archivo")
@@ -217,6 +232,10 @@ class MainWindow(QMainWindow):
             self._action(clip_menu, etiqueta, None,
                          lambda _=False, v=valor: self.set_clip_speed(v))
         clip_menu.addSeparator()
+        self._action(clip_menu, "&Transición cruzada (1 s)", "Ctrl+Shift+A",
+                     lambda: self.set_dissolve(1.0))
+        self._action(clip_menu, "Quitar &transición", None, lambda: self.set_dissolve(0.0))
+        clip_menu.addSeparator()
         self._action(clip_menu, "&Congelar cuadro", "Ctrl+Shift+F", self.freeze_frame)
 
         insertar = self.menuBar().addMenu("&Insertar")
@@ -257,6 +276,7 @@ class MainWindow(QMainWindow):
         ver.addSeparator()
         ver.addAction(self.text_panel.toggleViewAction())
         ver.addAction(self.image_panel.toggleViewAction())
+        ver.addAction(self.clip_panel.toggleViewAction())
         ver.addAction(self.color_panel.toggleViewAction())
 
         self._update_history_actions()
@@ -292,10 +312,13 @@ class MainWindow(QMainWindow):
         self.transport.go_end.connect(lambda: self._scrubbed(self.sequence.duration))
         self.transport.loop_toggled.connect(self.set_loop)
         self.transport.speed_changed.connect(self.set_speed)
+        self.transport.volume_changed.connect(self.audio.set_volume)
 
         self.preview.fullscreen_toggled.connect(self.toggle_fullscreen)
         self.color_panel.changed.connect(self._color_changed)
         self.image_panel.changed.connect(self._image_changed)
+        self.clip_panel.changed.connect(lambda: self._schedule("Ajustar clip"))
+        self.clip_panel.committed.connect(self._clip_committed)
         self.text_panel.changed.connect(self._text_changed)
         self.text_panel.add_requested.connect(self.add_title)
         self.text_panel.delete_requested.connect(self.delete_title)
@@ -547,7 +570,7 @@ class MainWindow(QMainWindow):
     def export_frame(self) -> None:
         image = self.preview.current_image()
         if image is None:
-            QMessageBox.information(self, "Sin imagen", "No hay ningún cuadro en pantalla.")
+            self.statusBar().showMessage("No hay ningún cuadro en pantalla.", 4000)
             return
 
         stamp = timecode(self.timeline.playhead, self.sequence.fps).replace(":", "-")
@@ -560,8 +583,7 @@ class MainWindow(QMainWindow):
 
     def export_video(self) -> None:
         if self.sequence.duration <= 0:
-            QMessageBox.information(self, "Nada que exportar",
-                                    "La secuencia está vacía.")
+            self.statusBar().showMessage("La secuencia está vacía: nada que exportar.", 4000)
             return
         if not HAS_PYAV:
             QMessageBox.warning(self, "Falta PyAV",
@@ -642,25 +664,54 @@ class MainWindow(QMainWindow):
         count = max(1, int(round((end - start) * fps)))
         for index in range(count):
             t = start + index / fps
-            clip = self.sequence.top_clip_at(t)
             yield compose(
                 self.sequence.width, self.sequence.height,
-                self._frame_at(t),
+                self._layers_at(t),
                 [(o, self._image_for(o.source)) for o in self.sequence.overlays_at(t)],
                 self.sequence.titles_at(t),
                 t,
-                clip.fade_at(t) if clip else 1.0,
             )
 
-    def _frame_at(self, t: float):
-        """El cuadro de video de fondo en ese instante, ya corregido."""
+    def _layers_at(self, t: float) -> list:
+        """Las capas de video del instante, de abajo hacia arriba.
+
+        Casi siempre es una sola. Durante una transición cruzada son dos: la
+        que sale, con opacidad bajando, y la que entra encima subiendo.
+        """
+        cruce = self.sequence.dissolve_at(t)
+        if cruce is not None:
+            saliente, entrante, avance = cruce
+            return [
+                (self._frame_of(saliente, t), (1.0 - avance) * saliente.fade_at(
+                    min(t, saliente.end - 1e-6))),
+                (self._frame_of(entrante, t), avance * entrante.fade_at(
+                    max(t, entrante.start))),
+            ]
+
         clip = self.sequence.top_clip_at(t)
+        if clip is None:
+            return []
+        return [(self._frame_of(clip, t), clip.fade_at(t))]
+
+    def _frame_of(self, clip, t: float):
+        """El cuadro de ese clip en ese instante, ya corregido de color.
+
+        El tiempo se puede salir del clip durante una transición: se recorta
+        a su material para no pedirle al archivo algo que no tiene.
+        """
         if clip is None or not HAS_PYAV:
             return None
         try:
-            return self._source_for(clip.source).frame_at(clip.source_time(t), clip.color)
+            dentro = min(max(t, clip.start), clip.end - 1e-6)
+            source = self._sources.get(id(clip), clip.source)
+            return source.frame_at(clip.source_time(dentro), clip.color)
         except Exception:
             return None
+
+    def _frame_at(self, t: float):
+        """El cuadro de fondo suelto, sin transición. Lo usa la exportación."""
+        clip = self.sequence.top_clip_at(t)
+        return self._frame_of(clip, t)
 
     # --- edición ----------------------------------------------------------
 
@@ -738,6 +789,29 @@ class MainWindow(QMainWindow):
         self._fit_zoom()
         self._commit(f"Velocidad {speed:g}×")
 
+    def set_dissolve(self, seconds: float) -> None:
+        """Pone una transición cruzada con el clip de la izquierda."""
+        item = self.timeline.selected or self.sequence.top_clip_at(self.timeline.playhead)
+        if not isinstance(item, Clip):
+            return
+
+        track = self._track_of(item)
+        anterior = track.before(item) if track else None
+        if anterior is None:
+            # Aviso en la barra, no en un diálogo: un modal para esto
+            # interrumpe el trabajo por algo que se corrige solo moviendo
+            # el clip, y además vuelve la función imposible de probar.
+            if seconds > 0:
+                self.statusBar().showMessage(
+                    "La transición necesita otro clip pegado a la izquierda.", 4000)
+            return
+
+        # No puede durar más que la mitad de ninguno de los dos, o el cruce
+        # se saldría del material disponible.
+        tope = min(item.duration, anterior.duration)
+        item.dissolve = min(seconds, tope)
+        self._commit("Transición")
+
     def freeze_frame(self) -> None:
         """Convierte el cuadro actual en una imagen fija de 2 segundos.
 
@@ -794,8 +868,10 @@ class MainWindow(QMainWindow):
             self.image_panel.set_target(item)
             self.image_panel.raise_()
         elif isinstance(item, Clip):
+            track = self._track_of(item)
+            self.clip_panel.set_target(item, bool(track and track.kind == "audio"))
             self.color_panel.set_target(item.color, item.name)
-            self.color_panel.raise_()
+            self.clip_panel.raise_()
 
     def _titles_in_track(self) -> list[Title]:
         return [c for track in self.sequence.text_tracks() for c in track.clips]
@@ -836,6 +912,14 @@ class MainWindow(QMainWindow):
     def _color_changed(self) -> None:
         self._schedule("Corregir color")
 
+    def _clip_committed(self, etiqueta: str) -> None:
+        """Los cambios pesados del panel de clip: velocidad y transición."""
+        if etiqueta.startswith("__dissolve__"):
+            self.set_dissolve(float(etiqueta.removeprefix("__dissolve__")))
+            return
+        self._fit_zoom()
+        self._commit(etiqueta)
+
     def _image_changed(self) -> None:
         for track in self.sequence.video_tracks():
             track.clips.sort(key=lambda c: c.start)
@@ -864,6 +948,11 @@ class MainWindow(QMainWindow):
         self.color_panel.set_target(clip.color if clip else None,
                                     clip.name if clip else "")
 
+        seleccion = self.timeline.selected
+        objetivo = seleccion if isinstance(seleccion, Clip) else clip
+        pista = self._track_of(objetivo) if objetivo else None
+        self.clip_panel.set_target(objetivo, bool(pista and pista.kind == "audio"))
+
         titles = self.sequence.titles_at(t)
         if self._title not in titles:
             self._title = titles[0] if titles else None
@@ -889,9 +978,8 @@ class MainWindow(QMainWindow):
         self._scrubbed(self.timeline.playhead + seconds)
 
     def _render(self, t: float) -> None:
-        clip = self.sequence.top_clip_at(t)
         self.preview.set_time(t)
-        self.preview.set_frame(self._frame_at(t), clip.fade_at(t) if clip else 1.0)
+        self.preview.set_layers(self._layers_at(t))
         self.preview.set_overlays([
             (overlay, self._image_for(overlay.source))
             for overlay in self.sequence.overlays_at(t)
@@ -910,15 +998,8 @@ class MainWindow(QMainWindow):
             self._images[path] = QImage(str(path))
         return self._images[path]
 
-    def _source_for(self, path: Path) -> VideoSource:
-        if path not in self._sources:
-            self._sources[path] = VideoSource(path)
-        return self._sources[path]
-
     def _close_sources(self) -> None:
-        for source in self._sources.values():
-            source.close()
-        self._sources.clear()
+        self._sources.close_all()
         self._images.clear()
 
     def _fit_zoom(self) -> None:
@@ -1003,6 +1084,14 @@ class MainWindow(QMainWindow):
         self._playing = True
         self._origin = self.timeline.playhead
         self._elapsed.start()
+
+        # El audio solo acompaña a velocidad normal. A otras velocidades se
+        # oiría con el tono cambiado, que es peor que no oírlo.
+        self._audio_on = (
+            self._speed == 1.0
+            and self.audio.start(self._audio_clips(), self._origin, end)
+        )
+
         self._clock.start(self._interval())
         self.transport.set_playing(True)
 
@@ -1011,6 +1100,8 @@ class MainWindow(QMainWindow):
             return
         self._playing = False
         self._clock.stop()
+        self.audio.stop()
+        self._audio_on = False
         self.transport.set_playing(False)
 
     def _interval(self) -> int:
@@ -1019,12 +1110,20 @@ class MainWindow(QMainWindow):
 
     def _tick(self) -> None:
         start, end = self._range()
-        t = self._origin + (self._elapsed.elapsed() / 1000.0) * self._speed
+
+        # Con sonido, la referencia es lo que ya salió por la tarjeta; sin
+        # él, el reloj de la interfaz.
+        if self._audio_on:
+            t = self._origin + self.audio.position()
+        else:
+            t = self._origin + (self._elapsed.elapsed() / 1000.0) * self._speed
 
         if t >= end:
             if self._loop:
                 self._origin = start
                 self._elapsed.restart()
+                if self._audio_on:
+                    self._audio_on = self.audio.start(self._audio_clips(), start, end)
                 self._seek(start)
                 return
             self._pause()
@@ -1106,6 +1205,7 @@ class MainWindow(QMainWindow):
             return
 
         self._clock.stop()
+        self.audio.stop()
         if self._fullscreen:
             self.preview.close()
         self._close_sources()

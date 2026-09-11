@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QSlider,
     QWidget,
 )
 
@@ -47,6 +48,7 @@ class TransportBar(QWidget):
     go_end = Signal()
     loop_toggled = Signal(bool)
     speed_changed = Signal(float)
+    volume_changed = Signal(float)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -106,6 +108,27 @@ class TransportBar(QWidget):
         for widget in (start, back10, back, self._play, forward, fwd10, end):
             layout.addWidget(widget)
         layout.addStretch(1)
+        self._mute = self._button("🔊", "Silenciar")
+        self._mute.setCheckable(True)
+        self._mute.toggled.connect(self._toggle_mute)
+
+        self._volume = QSlider(Qt.Horizontal)
+        self._volume.setRange(0, 100)
+        self._volume.setValue(80)
+        self._volume.setFixedWidth(84)
+        self._volume.setToolTip("Volumen")
+        self._volume.setStyleSheet("""
+            QSlider::groove:horizontal { height:4px; background:#2c3037; border-radius:2px; }
+            QSlider::sub-page:horizontal { background:#3f7d5c; border-radius:2px; }
+            QSlider::handle:horizontal {
+                width:11px; height:11px; margin:-4px 0; background:#d6dae0; border-radius:5px;
+            }
+        """)
+        self._volume.valueChanged.connect(
+            lambda v: self.volume_changed.emit(v / 100.0))
+
+        layout.addWidget(self._mute)
+        layout.addWidget(self._volume)
         layout.addWidget(self._loop)
         layout.addWidget(self._speed)
 
@@ -137,3 +160,11 @@ class TransportBar(QWidget):
         self._loop.blockSignals(True)
         self._loop.setChecked(enabled)
         self._loop.blockSignals(False)
+
+    def _toggle_mute(self, silenciado: bool) -> None:
+        self._mute.setText("🔇" if silenciado else "🔊")
+        self._volume.setEnabled(not silenciado)
+        self.volume_changed.emit(0.0 if silenciado else self._volume.value() / 100.0)
+
+    def volume(self) -> float:
+        return 0.0 if self._mute.isChecked() else self._volume.value() / 100.0

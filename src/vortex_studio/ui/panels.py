@@ -400,3 +400,123 @@ class ImagePanel(QDockWidget):
         self._y.set_value(50)
         self._scale.set_value(100)
         self._push()
+
+
+class ClipPanel(QDockWidget):
+    """Todo lo que se le puede hacer al clip seleccionado, con deslizadores.
+
+    Lo mismo que hay en el menú Clip, pero se puede tantear moviendo: para
+    ajustar un fundido o una transición uno quiere ver el resultado mientras
+    lo mueve, no elegir un número de una lista.
+    """
+
+    changed = Signal()
+    committed = Signal(str)
+
+    def __init__(self) -> None:
+        super().__init__("Clip")
+        self.setStyleSheet(PANEL_STYLE)
+        self.setAllowedAreas(Qt.RightDockWidgetArea | Qt.LeftDockWidgetArea)
+
+        self._item = None
+        self._loading = False
+
+        self._name = QLabel("Nada seleccionado")
+        self._name.setWordWrap(True)
+        self._name.setStyleSheet("color:#7d838c; font-size:10px;")
+
+        self._fade_in = SliderRow("Entrada", 0, 300, 0)      # décimas de segundo
+        self._fade_out = SliderRow("Salida", 0, 300, 0)
+        self._dissolve = SliderRow("Transición", 0, 300, 0)
+        self._speed = SliderRow("Velocidad", 10, 400, 100)   # porcentaje
+        self._gain = SliderRow("Volumen", 0, 200, 100)
+
+        for row in (self._fade_in, self._fade_out, self._dissolve,
+                    self._speed, self._gain):
+            row.changed.connect(self._push)
+        for row in (self._speed, self._dissolve):
+            # Velocidad y transición cambian la duración o piden decodificar
+            # de nuevo: se aplican al soltar, no en cada pixel del arrastre.
+            row._slider.sliderReleased.connect(self._commit_heavy)
+
+        self._info = QLabel("")
+        self._info.setWordWrap(True)
+        self._info.setStyleSheet("color:#6f757e; font-size:10px;")
+
+        self.setWidget(column(
+            self._name,
+            section("Fundidos (segundos)"), self._fade_in, self._fade_out,
+            section("Transición con el anterior"), self._dissolve,
+            section("Tiempo"), self._speed,
+            section("Audio"), self._gain,
+            self._info,
+            None,
+        ))
+        self.set_target(None, False)
+
+    # --- estado -----------------------------------------------------------
+
+    def set_target(self, item, es_audio: bool) -> None:
+        self._item = item
+        self._loading = True
+
+        tiene = item is not None
+        self._name.setText(f"Clip: {item.name}" if tiene else "Nada seleccionado")
+
+        es_clip = tiene and hasattr(item, "speed")
+        self._fade_in.setEnabled(tiene)
+        self._fade_out.setEnabled(tiene)
+        self._dissolve.setEnabled(es_clip and not es_audio)
+        self._speed.setEnabled(es_clip)
+        self._gain.setEnabled(es_clip and es_audio)
+
+        if tiene:
+            self._fade_in.set_value(int(round(item.fade_in * 10)))
+            self._fade_out.set_value(int(round(item.fade_out * 10)))
+            if es_clip:
+                self._dissolve.set_value(int(round(item.dissolve * 10)))
+                self._speed.set_value(int(round(item.speed * 100)))
+                self._gain.set_value(int(round(item.gain * 100)))
+            self._describe()
+        else:
+            self._info.setText("")
+
+        self._loading = False
+
+    def _describe(self) -> None:
+        item = self._item
+        partes = [f"{item.duration:.2f} s en la pista"]
+        if hasattr(item, "speed") and item.speed not in (0, 1.0):
+            partes.append(f"{item.duration * item.speed:.2f} s de material")
+        if getattr(item, "speed", 1.0) == 0:
+            partes.append("cuadro congelado")
+        self._info.setText("  ·  ".join(partes))
+
+    def _push(self) -> None:
+        if self._item is None or self._loading:
+            return
+
+        item = self._item
+        item.fade_in = self._fade_in.value() / 10.0
+        item.fade_out = self._fade_out.value() / 10.0
+        if hasattr(item, "gain"):
+            item.gain = self._gain.value() / 100.0
+
+        self._describe()
+        self.changed.emit()
+
+    def _commit_heavy(self) -> None:
+        """Velocidad y transición, al soltar el deslizador."""
+        if self._item is None or not hasattr(self._item, "speed"):
+            return
+
+        velocidad = self._speed.value() / 100.0
+        if abs(velocidad - self._item.speed) > 1e-6:
+            self._item.retime(velocidad)
+            self.committed.emit("Velocidad")
+
+        cruce = self._dissolve.value() / 10.0
+        if abs(cruce - self._item.dissolve) > 1e-6:
+            self.committed.emit(f"__dissolve__{cruce}")
+
+        self._describe()

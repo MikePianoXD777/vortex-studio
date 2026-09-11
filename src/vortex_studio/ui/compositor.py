@@ -117,14 +117,27 @@ def _draw_line(painter: QPainter, row: QRectF, line: str, font: QFont,
     painter.drawText(QPointF(x, baseline), line)
 
 
-def compose(width: int, height: int, frame: Frame | None,
+def draw_layers(painter: QPainter, target: QRectF,
+                layers: list[tuple[Frame, float]]) -> None:
+    """Pinta las capas de video de abajo hacia arriba.
+
+    Normalmente hay una sola. Durante una transición cruzada hay dos: la que
+    sale con opacidad decreciente y la que entra encima con la creciente.
+    """
+    for frame, alpha in layers:
+        if frame is None or alpha <= 0:
+            continue
+        painter.setOpacity(max(0.0, min(1.0, alpha)))
+        painter.drawImage(target, frame_to_image(frame))
+    painter.setOpacity(1.0)
+
+
+def compose(width: int, height: int, layers: list[tuple[Frame, float]],
             overlays: list[tuple[ImageOverlay, QImage]],
-            titles: list[Title], t: float | None = None,
-            frame_alpha: float = 1.0) -> QImage:
+            titles: list[Title], t: float | None = None) -> QImage:
     """Dibuja el cuadro completo sobre un lienzo nuevo del tamaño pedido.
 
-    Con `t`, cada elemento aplica su propio fundido. El del video se pasa
-    aparte porque lo calcula el clip, que el compositor no recibe.
+    Con `t`, cada elemento aplica su propio fundido.
     """
     canvas = QImage(width, height, QImage.Format_RGB888)
     canvas.fill(Qt.black)
@@ -135,10 +148,7 @@ def compose(width: int, height: int, frame: Frame | None,
     painter.setRenderHint(QPainter.SmoothPixmapTransform)
     target = QRectF(0, 0, width, height)
 
-    if frame is not None and frame_alpha > 0:
-        painter.setOpacity(max(0.0, min(1.0, frame_alpha)))
-        painter.drawImage(target, frame_to_image(frame))
-        painter.setOpacity(1.0)
+    draw_layers(painter, target, layers)
 
     for overlay, image in overlays:
         draw_overlay(painter, target, overlay, image,
