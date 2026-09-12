@@ -30,9 +30,13 @@ ANCHORS = {
 }
 
 
-@dataclass
+@dataclass(eq=False)
 class TimedItem:
-    """Lo mínimo para vivir en una pista: cuándo empieza y cuánto dura."""
+    """Lo mínimo para vivir en una pista: cuándo empieza y cuánto dura.
+
+    Como los clips, se comparan por identidad y no por valor: dos subtítulos
+    con el mismo texto y la misma duración son dos subtítulos distintos.
+    """
 
     start: float
     duration: float
@@ -71,7 +75,7 @@ class TimedItem:
         return alfa
 
 
-@dataclass
+@dataclass(eq=False)
 class Title(TimedItem):
     """Un texto sobre el video: título o subtítulo."""
 
@@ -92,7 +96,7 @@ class Title(TimedItem):
         return first[:28] + ("…" if len(first) > 28 else "")
 
 
-@dataclass
+@dataclass(eq=False)
 class ImageOverlay(TimedItem):
     """Una imagen encima del video: logo, marca de agua, gráfico."""
 

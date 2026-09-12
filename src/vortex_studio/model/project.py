@@ -15,9 +15,17 @@ from vortex_studio.model.overlays import ImageOverlay, Title
 from vortex_studio.model.transform import Transform
 
 
-@dataclass
+@dataclass(eq=False)
 class Clip:
-    """Un pedazo de un archivo fuente colocado en una pista."""
+    """Un pedazo de un archivo fuente colocado en una pista.
+
+    `eq=False` a propósito: dos clips con los mismos datos siguen siendo
+    cosas distintas en la línea de tiempo. Con la igualdad por valor que da
+    un dataclass, el clip de video y el de audio que salen del mismo archivo
+    resultaban iguales, y `lista.remove(x)`, `x in lista` y `lista.index(x)`
+    —que usan `==`— agarraban el equivocado: borrabas el audio y se iba el
+    video. Con `eq=False` la comparación es por identidad y cada uno es él.
+    """
 
     source: Path
     start: float  # dónde empieza dentro de la pista

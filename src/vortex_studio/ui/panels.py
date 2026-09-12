@@ -1,4 +1,11 @@
-"""Los paneles laterales: color y texto."""
+"""El panel de propiedades: una sola ventana con pestañas.
+
+Cinco ventanas acopladas apiladas —que es como estaba— dejan la mitad de la
+pantalla en controles que casi nunca se tocan a la vez, y es justo lo que
+hace ver pesado a After Effects. Aquí las cinco páginas viven en un panel con
+pestañas: se ve solo la del trabajo de este momento, y la pestaña se cambia
+sola según lo que selecciones.
+"""
 
 from __future__ import annotations
 
@@ -6,9 +13,12 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QCheckBox,
+    QDockWidget,
     QColorDialog,
     QComboBox,
-    QDockWidget,
+    QScrollArea,
+    QTabWidget,
+    QVBoxLayout,
     QDoubleSpinBox,
     QHBoxLayout,
     QLabel,
@@ -38,10 +48,6 @@ from vortex_studio.model.color import (
 from vortex_studio.ui.widgets import SliderRow, column, section
 
 PANEL_STYLE = """
-QDockWidget { color: #9aa1aa; font-size: 11px; }
-QDockWidget::title {
-    background: #212429; padding: 6px 10px; border-bottom: 1px solid #2e3238;
-}
 QWidget { background: #1b1d21; color: #d6dae0; }
 QPushButton {
     background: #2b2f34; border: 1px solid #3a3f46; border-radius: 4px;
@@ -61,15 +67,40 @@ QCheckBox { color: #b6bcc4; font-size: 11px; spacing: 6px; }
 """
 
 
-class ColorPanel(QDockWidget):
+class Page(QWidget):
+    """Base de las páginas del panel de propiedades.
+
+    Antes cada una era su propia ventana acoplable y quedaban cinco apiladas
+    a la derecha, todas abiertas a la vez. Con el contenido separado de la
+    ventana, las cinco caben en un solo panel con pestañas y solo se ve la
+    que importa.
+    """
+
+    TITULO = ""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._layout = QVBoxLayout(self)
+        self._layout.setContentsMargins(0, 0, 0, 0)
+        self._layout.setSpacing(0)
+
+    def _set_content(self, widget: QWidget) -> None:
+        area = QScrollArea()
+        area.setWidgetResizable(True)
+        area.setFrameShape(QScrollArea.NoFrame)
+        area.setWidget(widget)
+        self._layout.addWidget(area)
+
+
+class ColorPanel(Page):
+    TITULO = "Color"
+
     """Corrección de color del clip que está bajo el playhead."""
 
     changed = Signal()
 
     def __init__(self) -> None:
-        super().__init__("Color")
-        self.setStyleSheet(PANEL_STYLE)
-        self.setAllowedAreas(Qt.RightDockWidgetArea | Qt.LeftDockWidgetArea)
+        super().__init__()
 
         self._adjust: ColorAdjust | None = None
 
@@ -94,7 +125,7 @@ class ColorPanel(QDockWidget):
         reset = QPushButton("Restablecer")
         reset.clicked.connect(self._reset)
 
-        self.setWidget(column(
+        self._set_content(column(
             self._target,
             section("Look"), self._look,
             section("Ajustes"),
@@ -163,7 +194,9 @@ class ColorPanel(QDockWidget):
         self.changed.emit()
 
 
-class TextPanel(QDockWidget):
+class TextPanel(Page):
+    TITULO = "Texto"
+
     """Lista de textos y edición del que esté seleccionado."""
 
     changed = Signal()
@@ -171,9 +204,7 @@ class TextPanel(QDockWidget):
     delete_requested = Signal(object)
 
     def __init__(self) -> None:
-        super().__init__("Texto")
-        self.setStyleSheet(PANEL_STYLE)
-        self.setAllowedAreas(Qt.RightDockWidgetArea | Qt.LeftDockWidgetArea)
+        super().__init__()
 
         self._title: Title | None = None
         self._loading = False
@@ -239,7 +270,7 @@ class TextPanel(QDockWidget):
         styles.addWidget(self._italic)
         styles.addStretch(1)
 
-        self.setWidget(column(
+        self._set_content(column(
             self._list,
             buttons,
             section("Contenido"),
@@ -348,15 +379,15 @@ class TextPanel(QDockWidget):
         self.changed.emit()
 
 
-class ImagePanel(QDockWidget):
+class ImagePanel(Page):
+    TITULO = "Imagen"
+
     """Acomoda la imagen seleccionada sobre el video."""
 
     changed = Signal()
 
     def __init__(self) -> None:
-        super().__init__("Imagen")
-        self.setStyleSheet(PANEL_STYLE)
-        self.setAllowedAreas(Qt.RightDockWidgetArea | Qt.LeftDockWidgetArea)
+        super().__init__()
 
         self._overlay: ImageOverlay | None = None
         self._loading = False
@@ -393,7 +424,7 @@ class ImagePanel(QDockWidget):
         buttons.addWidget(center)
         buttons.addWidget(cover)
 
-        self.setWidget(column(
+        self._set_content(column(
             self._name,
             section("Posición"), self._x, self._y,
             section("Aspecto"), self._scale, self._opacity,
@@ -448,7 +479,9 @@ class ImagePanel(QDockWidget):
         self._push()
 
 
-class ClipPanel(QDockWidget):
+class ClipPanel(Page):
+    TITULO = "Clip"
+
     """Todo lo que se le puede hacer al clip seleccionado, con deslizadores.
 
     Lo mismo que hay en el menú Clip, pero se puede tantear moviendo: para
@@ -460,9 +493,7 @@ class ClipPanel(QDockWidget):
     committed = Signal(str)
 
     def __init__(self) -> None:
-        super().__init__("Clip")
-        self.setStyleSheet(PANEL_STYLE)
-        self.setAllowedAreas(Qt.RightDockWidgetArea | Qt.LeftDockWidgetArea)
+        super().__init__()
 
         self._item = None
         self._loading = False
@@ -489,7 +520,7 @@ class ClipPanel(QDockWidget):
         self._info.setWordWrap(True)
         self._info.setStyleSheet("color:#6f757e; font-size:10px;")
 
-        self.setWidget(column(
+        self._set_content(column(
             self._name,
             section("Fundidos (segundos)"), self._fade_in, self._fade_out,
             section("Transición con el anterior"), self._dissolve,
@@ -568,7 +599,9 @@ class ClipPanel(QDockWidget):
         self._describe()
 
 
-class TransformPanel(QDockWidget):
+class TransformPanel(Page):
+    TITULO = "Transformar"
+
     """Posición, tamaño, giro y opacidad, con animación por keyframes.
 
     La capacidad es la de After Effects; la interfaz, no. Cada propiedad
@@ -588,9 +621,7 @@ class TransformPanel(QDockWidget):
     ESCALAS = {"x": 100.0, "y": 100.0, "scale": 100.0, "rotation": 1.0, "opacity": 100.0}
 
     def __init__(self) -> None:
-        super().__init__("Transformar")
-        self.setStyleSheet(PANEL_STYLE)
-        self.setAllowedAreas(Qt.RightDockWidgetArea | Qt.LeftDockWidgetArea)
+        super().__init__()
 
         self._clip = None
         self._local = 0.0
@@ -642,7 +673,7 @@ class TransformPanel(QDockWidget):
         botones.addWidget(centrar)
         botones.addWidget(limpiar)
 
-        self.setWidget(column(
+        self._set_content(column(
             self._name,
             section("Transformación"), *filas,
             self._info, botones,
@@ -735,3 +766,78 @@ class TransformPanel(QDockWidget):
         self._clip.transform.clear_keys()
         self.set_target(self._clip, self._local)
         self.committed.emit("Quitar animación")
+
+
+TAB_STYLE = """
+QTabWidget::pane { border: none; background: #1b1d21; }
+QTabBar { background: #16181c; qproperty-drawBase: 0; }
+QTabBar::tab {
+    background: transparent; color: #808790; padding: 9px 14px 7px 14px;
+    border: none; border-bottom: 2px solid transparent;
+    font-size: 11px; min-width: 42px;
+}
+QTabBar::tab:hover { color: #c3c9d1; }
+QTabBar::tab:selected { color: #f0f3f6; border-bottom: 2px solid #e0574a; }
+QTabBar::tab:disabled { color: #464b52; }
+QScrollArea { border: none; background: #1b1d21; }
+QScrollBar:vertical {
+    background: transparent; width: 9px; margin: 2px;
+}
+QScrollBar::handle:vertical {
+    background: #3a3f46; border-radius: 4px; min-height: 24px;
+}
+QScrollBar::handle:vertical:hover { background: #4a5058; }
+QScrollBar::add-line, QScrollBar::sub-line { height: 0; }
+QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
+"""
+
+
+class PropertiesPanel(QDockWidget):
+    """Un solo panel con pestañas, en vez de cinco ventanas apiladas.
+
+    Las pestañas se encienden y apagan según lo que haya seleccionado: si no
+    hay texto, la de Texto se ve apagada. Y al seleccionar algo el panel se
+    cambia solo a su pestaña, para no tener que buscarla.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("Propiedades")
+        self.setStyleSheet(PANEL_STYLE)
+        self.setAllowedAreas(Qt.RightDockWidgetArea | Qt.LeftDockWidgetArea)
+        self.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable)
+
+        self.transform = TransformPanel()
+        self.color = ColorPanel()
+        self.clip = ClipPanel()
+        self.text = TextPanel()
+        self.image = ImagePanel()
+
+        self._tabs = QTabWidget()
+        self._tabs.setStyleSheet(TAB_STYLE)
+        self._tabs.setDocumentMode(True)
+        self._tabs.setUsesScrollButtons(False)
+
+        iconos = {"Transformar": "⤢", "Color": "◐", "Clip": "▮",
+                  "Texto": "T", "Imagen": "▣"}
+        for pagina in (self.transform, self.color, self.clip, self.text, self.image):
+            self._tabs.addTab(pagina, f"{iconos.get(pagina.TITULO, '')}  {pagina.TITULO}")
+
+        self.setWidget(self._tabs)
+
+    def show_page(self, pagina: QWidget) -> None:
+        indice = self._tabs.indexOf(pagina)
+        if indice >= 0:
+            self._tabs.setCurrentIndex(indice)
+
+    def current_is(self, *paginas) -> bool:
+        return self._tabs.currentWidget() in paginas
+
+    def set_enabled(self, pagina: QWidget, activa: bool) -> None:
+        """Apaga la pestaña de lo que no aplica, en vez de esconderla.
+
+        Esconderla haría bailar las pestañas de lugar cada vez que cambia la
+        selección, y uno acaba buscando dónde quedó la que quería.
+        """
+        indice = self._tabs.indexOf(pagina)
+        if indice >= 0:
+            self._tabs.setTabEnabled(indice, activa)

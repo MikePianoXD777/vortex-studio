@@ -31,6 +31,17 @@ las pruebas. Las tareas traen su variante de Windows.
 Hace falta **ffmpeg en el PATH** solo para correr las pruebas; la aplicación
 no lo necesita porque PyAV trae su propio FFmpeg.
 
+## Scripts
+
+```bash
+./correr.sh       # corre la app desde el código, sin compilar
+./probar.sh       # el banco de pruebas (acepta argumentos de pytest)
+./construir.sh    # compila el ejecutable
+```
+
+En Windows: `construir.bat` y `probar.bat`. Los tres crean el entorno
+virtual solos si no existe.
+
 ## Pruebas
 
 ```bash
@@ -56,6 +67,8 @@ abrir ventanas, así que funciona por SSH o en una máquina sin pantalla.
 | `test_reproduccion.py` | Sonido y sincronía con la imagen |
 | `test_transformar.py` | Transformación y animación por keyframes |
 | `test_looks.py` | Looks de color y formatos de secuencia |
+| `test_panel.py` | El panel de pestañas y su cambio automático |
+| `test_identidad.py` | Que dos elementos iguales sigan siendo distintos |
 | `test_portabilidad.py` | Que funcione igual en Linux y Windows |
 
 ## Atajos
@@ -103,6 +116,17 @@ sus bordes lo recorta, y todo se imanta a los cortes vecinos y al playhead.
 - `ui/` — ventana, preview, timeline, transporte y paneles. El compositor
   vive aparte y lo comparten el preview y la exportación: es lo que garantiza
   que el archivo final se vea igual que lo que viste al editar.
+
+## El panel de propiedades
+
+Una sola ventana a la derecha con cinco pestañas: Transformar, Color, Clip,
+Texto e Imagen. Antes eran cinco ventanas acopladas apiladas, que dejaban
+media pantalla en controles que casi nunca se tocan a la vez.
+
+La pestaña se cambia sola según lo que selecciones, pero solo cuando la de
+ese momento no aplica: si ya estabas en Color, seleccionar otro clip te deja
+en Color. Las que no aplican se apagan en vez de esconderse, para que no
+bailen de lugar.
 
 ## Animación
 

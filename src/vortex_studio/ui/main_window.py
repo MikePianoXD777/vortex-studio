@@ -46,13 +46,7 @@ from vortex_studio.model.history import History
 from vortex_studio.model.serialize import EXTENSION, load_project, save_project
 from vortex_studio.ui.audio_player import AudioPlayer
 from vortex_studio.ui.compositor import compose
-from vortex_studio.ui.panels import (
-    ClipPanel,
-    ColorPanel,
-    ImagePanel,
-    TextPanel,
-    TransformPanel,
-)
+from vortex_studio.ui.panels import PropertiesPanel
 from vortex_studio.ui.preview import PreviewWidget
 from vortex_studio.ui.timeline import TOOL_RAZOR, TOOL_SELECT, TimelineWidget
 from vortex_studio.ui.transport import SPEEDS, TransportBar
@@ -125,11 +119,14 @@ class MainWindow(QMainWindow):
         self.preview.set_canvas(self.sequence.width, self.sequence.height)
         self.timeline = TimelineWidget(self.sequence)
         self.transport = TransportBar()
-        self.color_panel = ColorPanel()
-        self.text_panel = TextPanel()
-        self.image_panel = ImagePanel()
-        self.clip_panel = ClipPanel()
-        self.transform_panel = TransformPanel()
+        # Un solo panel con pestañas. Los nombres de siempre apuntan a cada
+        # página, así que el resto del código no se entera del cambio.
+        self.panel = PropertiesPanel()
+        self.color_panel = self.panel.color
+        self.text_panel = self.panel.text
+        self.image_panel = self.panel.image
+        self.clip_panel = self.panel.clip
+        self.transform_panel = self.panel.transform
 
         self._build_layout()
         self._build_menu()
@@ -182,15 +179,8 @@ class MainWindow(QMainWindow):
         splitter.setChildrenCollapsible(False)
         self.setCentralWidget(splitter)
 
-        self.addDockWidget(Qt.RightDockWidgetArea, self.text_panel)
-        self.addDockWidget(Qt.RightDockWidgetArea, self.image_panel)
-        self.addDockWidget(Qt.RightDockWidgetArea, self.clip_panel)
-        self.addDockWidget(Qt.RightDockWidgetArea, self.transform_panel)
-        self.addDockWidget(Qt.RightDockWidgetArea, self.color_panel)
-        self.resizeDocks(
-            [self.text_panel, self.image_panel, self.clip_panel,
-             self.transform_panel, self.color_panel],
-            [250, 190, 230, 260, 210], Qt.Vertical)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.panel)
+        self.resizeDocks([self.panel], [330], Qt.Horizontal)
 
     def _build_menu(self) -> None:
         archivo = self.menuBar().addMenu("&Archivo")
@@ -301,11 +291,7 @@ class MainWindow(QMainWindow):
         self._action(ver, "Pantalla &completa", "F", self.toggle_fullscreen)
         self._action(ver, "&Ajustar timeline", "Shift+Z", self._fit_zoom)
         ver.addSeparator()
-        ver.addAction(self.text_panel.toggleViewAction())
-        ver.addAction(self.image_panel.toggleViewAction())
-        ver.addAction(self.clip_panel.toggleViewAction())
-        ver.addAction(self.transform_panel.toggleViewAction())
-        ver.addAction(self.color_panel.toggleViewAction())
+        ver.addAction(self.panel.toggleViewAction())
 
         self._update_history_actions()
         QApplication.instance().focusChanged.connect(self._focus_changed)
@@ -594,8 +580,8 @@ class MainWindow(QMainWindow):
         self.timeline.select(overlay)
         self.image_panel.set_target(overlay)
         self._commit("Insertar imagen")
-        self.image_panel.show()
-        self.image_panel.raise_()
+        self.panel.show()
+        self.panel.show_page(self.image_panel)
 
     def export_frame(self) -> None:
         image = self.preview.current_image()
@@ -946,16 +932,25 @@ class MainWindow(QMainWindow):
         if isinstance(item, Title):
             self._title = item
             self.text_panel.set_titles(self._titles_in_track(), item)
-            self.text_panel.raise_()
+            self.panel.show_page(self.text_panel)
         elif isinstance(item, ImageOverlay):
             self.image_panel.set_target(item)
-            self.image_panel.raise_()
+            self.panel.show_page(self.image_panel)
         elif isinstance(item, Clip):
             track = self._track_of(item)
-            self.clip_panel.set_target(item, bool(track and track.kind == "audio"))
+            es_audio = bool(track and track.kind == "audio")
+            self.clip_panel.set_target(item, es_audio)
             self.transform_panel.set_target(item, item.local(self.timeline.playhead))
             self.color_panel.set_target(item.color, item.name)
-            self.clip_panel.raise_()
+
+            # Solo se cambia de pestaña si la de ahora no aplica al clip. Si
+            # el usuario ya estaba en Color o en Transformar, se respeta:
+            # arrancarle la pestaña de abajo cada vez que selecciona algo es
+            # de las cosas que más estorban de un editor.
+            if not self.panel.current_is(self.transform_panel, self.color_panel,
+                                         self.clip_panel):
+                self.panel.show_page(self.clip_panel if es_audio
+                                     else self.transform_panel)
 
     def _titles_in_track(self) -> list[Title]:
         return [c for track in self.sequence.text_tracks() for c in track.clips]
@@ -974,8 +969,8 @@ class MainWindow(QMainWindow):
         self.timeline.select(title)
         self._commit("Insertar texto")
         self._sync_panels(self.timeline.playhead)
-        self.text_panel.show()
-        self.text_panel.raise_()
+        self.panel.show()
+        self.panel.show_page(self.text_panel)
 
     def delete_title(self, title: Title | None) -> None:
         if title is None:
@@ -1039,6 +1034,7 @@ class MainWindow(QMainWindow):
         self.transform_panel.set_target(
             objetivo, objetivo.local(t) if objetivo else 0.0)
 
+
         titles = self.sequence.titles_at(t)
         if self._title not in titles:
             self._title = titles[0] if titles else None
@@ -1049,6 +1045,14 @@ class MainWindow(QMainWindow):
         self.image_panel.set_target(
             selected if isinstance(selected, ImageOverlay) and selected in overlays
             else (overlays[-1] if overlays else None))
+
+        # Las pestañas que no aplican se apagan, no se esconden: esconderlas
+        # las haría bailar de lugar cada vez que cambia la selección.
+        self.panel.set_enabled(self.text_panel, bool(titles))
+        self.panel.set_enabled(self.image_panel, bool(overlays))
+        self.panel.set_enabled(self.clip_panel, objetivo is not None)
+        self.panel.set_enabled(self.transform_panel, objetivo is not None)
+        self.panel.set_enabled(self.color_panel, clip is not None)
 
     def _scrubbed(self, t: float) -> None:
         """Arrastrar el playhead reubica el origen del reloj sin cortar el play."""
