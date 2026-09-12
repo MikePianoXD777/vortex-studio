@@ -27,6 +27,7 @@ from PySide6.QtWidgets import QSizePolicy, QWidget
 from pathlib import Path
 
 from vortex_studio.model import Clip, ImageOverlay, Sequence, Title, timecode
+from vortex_studio.model.commands import slip as slip_clip
 from vortex_studio.ui.waveforms import WaveformCache
 
 HEADER_WIDTH = 72
@@ -38,6 +39,7 @@ SNAP_PIXELS = 9        # qué tan cerca hay que estar para que imante
 
 TOOL_SELECT = "seleccion"
 TOOL_RAZOR = "navaja"
+TOOL_SLIP = "deslizar"
 
 BG = QColor("#1b1d21")
 RULER_BG = QColor("#232629")
@@ -91,6 +93,7 @@ class TimelineWidget(QWidget):
     selection_changed = Signal(object)
     edit_finished = Signal(str)          # etiqueta para el historial
     cut_requested = Signal(object, float)
+    live_edit = Signal()                 # algo cambió a medio arrastre
 
     def __init__(self, sequence: Sequence, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -106,6 +109,10 @@ class TimelineWidget(QWidget):
         self._scrubbing = False
         self._drag: dict | None = None
         self._snap_at: float | None = None
+
+        # Cuánto dura el archivo de un clip. Lo pone la ventana, que es quien
+        # tiene el caché de sondeos; sin él, el slip solo se detiene en cero.
+        self.source_duration = None
 
         # La onda se calcula en un hilo aparte y se guarda: decodificar el
         # audio entero dentro del repintado congelaba la ventana.
@@ -134,7 +141,8 @@ class TimelineWidget(QWidget):
 
     def set_tool(self, tool: str) -> None:
         self.tool = tool
-        self.setCursor(Qt.CrossCursor if tool == TOOL_RAZOR else Qt.ArrowCursor)
+        cursores = {TOOL_RAZOR: Qt.CrossCursor, TOOL_SLIP: Qt.SplitHCursor}
+        self.setCursor(cursores.get(tool, Qt.ArrowCursor))
 
     def select(self, item) -> None:
         if item is not self.selected:
@@ -474,6 +482,7 @@ class TimelineWidget(QWidget):
         de milisegundos, que luego se ve como un parpadeo negro.
         """
         candidates = [0.0, self.playhead]
+        candidates += [m.time for m in self.sequence.markers]
         if self.mark_in is not None:
             candidates.append(self.mark_in)
         if self.mark_out is not None:
@@ -519,6 +528,19 @@ class TimelineWidget(QWidget):
             self.cut_requested.emit(item, self.time_for(pos.x()))
             return
 
+        if self.tool == TOOL_SLIP:
+            self.select(item)
+            if isinstance(item, Clip):
+                self._drag = {
+                    "item": item,
+                    "track": index,
+                    "zone": "slip",
+                    "grab": self.time_for(pos.x()),
+                    "in_point": item.in_point,
+                    "moved": False,
+                }
+            return
+
         self.select(item)
         self._drag = {
             "item": item,
@@ -544,11 +566,28 @@ class TimelineWidget(QWidget):
 
         self._drag["moved"] = True
         zone = self._drag["zone"]
-        if zone == "cuerpo":
+        if zone == "slip":
+            self._slip_drag(pos)
+            self.live_edit.emit()       # el preview tiene que seguir al arrastre
+        elif zone == "cuerpo":
             self._move_drag(pos)
         else:
             self._trim_drag(pos, zone)
         self.update()
+
+    def _slip_drag(self, pos) -> None:
+        """Arrastrar a la derecha mueve el contenido a la derecha.
+
+        Es decir, se ve material de **antes**: el punto de entrada baja.
+        Así funciona en Premiere, y se siente como agarrar la película por
+        dentro del clip y correrla.
+        """
+        drag = self._drag
+        clip = drag["item"]
+        corrido = self.time_for(pos.x()) - drag["grab"]
+        clip.in_point = drag["in_point"]
+        duracion = self.source_duration(clip) if self.source_duration else None
+        slip_clip(clip, -corrido * max(clip.speed, 0.0), duracion)
 
     def _move_drag(self, pos) -> None:
         drag = self._drag
@@ -593,7 +632,8 @@ class TimelineWidget(QWidget):
                 track = self.sequence.tracks[self._drag["track"]]
                 self._resolve_overlap(track, self._drag["item"])
                 track.clips.sort(key=lambda c: c.start)
-                label = "Mover clip" if self._drag["zone"] == "cuerpo" else "Recortar clip"
+                label = {"cuerpo": "Mover clip", "slip": "Deslizar contenido"}.get(
+                    self._drag["zone"], "Recortar clip")
                 self.edit_finished.emit(label)
             self._drag = None
             self.update()
@@ -623,7 +663,7 @@ class TimelineWidget(QWidget):
                     other.in_point += recorte
 
     def _update_cursor(self, pos) -> None:
-        if self.tool == TOOL_RAZOR:
+        if self.tool in (TOOL_RAZOR, TOOL_SLIP):
             return
         _, item, zone = self._item_at(pos.x(), pos.y())
         if item is None:

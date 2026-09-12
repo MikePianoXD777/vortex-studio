@@ -55,7 +55,8 @@ from vortex_studio.ui.compositor import Layer, clear_mask_cache, compose
 from vortex_studio.ui.panels import PropertiesPanel
 from vortex_studio.ui.preview import PreviewWidget
 from vortex_studio.ui.shortcuts import DEFAULTS, ShortcutsDialog, load_shortcuts
-from vortex_studio.ui.timeline import TOOL_RAZOR, TOOL_SELECT, TimelineWidget
+from vortex_studio.model.commands import RippleDelete, Slip, split_item
+from vortex_studio.ui.timeline import TOOL_RAZOR, TOOL_SELECT, TOOL_SLIP, TimelineWidget
 from vortex_studio.ui.transport import SPEEDS, TransportBar
 
 VIDEO_EXT = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v", ".mpg", ".mpeg"}
@@ -237,6 +238,7 @@ class MainWindow(QMainWindow):
         self._redo_action = self._action(editar, "&Rehacer", "editar.rehacer", self.redo)
         editar.addSeparator()
         self._action(editar, "&Cortar en el playhead", "editar.cortar", self.cut_at_playhead)
+        self._action(editar, "Di&vidir en el playhead", "editar.dividir", self.cut_at_playhead)
         self._action(editar, "&Duplicar", "editar.duplicar", self.duplicate_selected)
         self._action(editar, "&Eliminar", "editar.eliminar", self.delete_selected)
         self._action(editar, "Eliminar y &cerrar hueco", "editar.eliminar_hueco",
@@ -244,13 +246,21 @@ class MainWindow(QMainWindow):
         editar.addSeparator()
 
         herramientas = QActionGroup(self)
+        self._tool_actions = {}
         for label, clave, tool in (("Selección", "herramienta.seleccion", TOOL_SELECT),
-                                   ("Navaja", "herramienta.navaja", TOOL_RAZOR)):
+                                   ("Navaja", "herramienta.navaja", TOOL_RAZOR),
+                                   ("Deslizar (slip)", "herramienta.slip", TOOL_SLIP)):
             action = self._action(editar, f"Herramienta: {label}", clave,
                                   lambda _=False, t=tool: self.set_tool(t))
             action.setCheckable(True)
             action.setChecked(tool == TOOL_SELECT)
             herramientas.addAction(action)
+            self._tool_actions[tool] = action
+        editar.addSeparator()
+        self._action(editar, "Deslizar contenido un cuadro &atrás", "editar.slip_atras",
+                     lambda: self.slip_selected(-1))
+        self._action(editar, "Deslizar contenido un cuadro a&delante", "editar.slip_adelante",
+                     lambda: self.slip_selected(1))
         editar.addSeparator()
         self._action(editar, "Atajos de &teclado…", "editar.atajos", self.open_shortcuts)
 
@@ -437,6 +447,8 @@ class MainWindow(QMainWindow):
         self.timeline.selection_changed.connect(self._selected)
         self.timeline.edit_finished.connect(self._commit)
         self.timeline.cut_requested.connect(self._cut)
+        self.timeline.live_edit.connect(self._refresh)
+        self.timeline.source_duration = self._source_duration
 
         self.transport.play_pause.connect(self.toggle_play)
         self.transport.step.connect(self._step)
@@ -538,7 +550,8 @@ class MainWindow(QMainWindow):
         piezas = sum(len(track.clips) for track in seq.tracks)
         marcadores = (f"   ·   {len(seq.markers)} marcador"
                       f"{'es' if len(seq.markers) != 1 else ''}" if seq.markers else "")
-        herramienta = "Navaja" if self.timeline.tool == TOOL_RAZOR else "Selección"
+        herramienta = {TOOL_RAZOR: "Navaja", TOOL_SLIP: "Deslizar"}.get(
+            self.timeline.tool, "Selección")
         marcas = ""
         if self.timeline.mark_in is not None or self.timeline.mark_out is not None:
             inicio, fin = self._range()
@@ -935,6 +948,9 @@ class MainWindow(QMainWindow):
 
     def set_tool(self, tool: str) -> None:
         self.timeline.set_tool(tool)
+        accion = getattr(self, "_tool_actions", {}).get(tool)
+        if accion is not None and not accion.isChecked():
+            accion.setChecked(True)
         self._update_status()
 
     def cut_at_playhead(self) -> None:
@@ -942,27 +958,22 @@ class MainWindow(QMainWindow):
         t = self.timeline.playhead
         targets = ([self.timeline.selected] if self.timeline.selected
                    else [c for track in self.sequence.tracks for c in track.items_at(t)])
-        if any(self._cut(item, t, commit=False) for item in targets if item):
+        # Lista y no `any(...)` directo: `any` se detiene en el primer corte
+        # que sale bien, y sin nada seleccionado solo se cortaba la pista de
+        # hasta arriba — el video quedaba partido y su audio no.
+        cortes = [self._cut(item, t, commit=False) for item in targets if item]
+        if any(cortes):
             self._commit("Cortar")
 
     def _cut(self, item, t: float, commit: bool = True) -> bool:
-        """Parte un elemento en dos por el tiempo `t`."""
-        track = self._track_of(item)
-        if track is None or not (item.start < t < item.end):
+        """Parte un elemento en dos por el tiempo `t`.
+
+        La lógica vive en `model/commands.py`, donde se prueba sin ventana;
+        ahí está por qué cada mitad se lleva solo lo que le toca.
+        """
+        second = split_item(self.sequence, item, t)
+        if second is None:
             return False
-
-        left = t - item.start
-        right = item.duration - left
-
-        second = copy.deepcopy(item)
-        second.start = t
-        second.duration = right
-        if hasattr(second, "in_point"):
-            # La segunda mitad arranca más adelante del archivo original.
-            second.in_point = item.in_point + left
-
-        item.duration = left
-        track.add(second)
 
         if commit:
             self.timeline.select(second)
@@ -1169,18 +1180,44 @@ class MainWindow(QMainWindow):
     def ripple_delete(self) -> None:
         """Borra y recorre lo que sigue en esa pista, para no dejar hueco."""
         item = self.timeline.selected
-        track = self._track_of(item) if item else None
-        if track is None:
+        if item is None:
+            return
+        if self._run(RippleDelete(item=item)):
+            self.timeline.select(None)
+
+    def _run(self, command) -> bool:
+        """Aplica un comando de `model/commands.py` y lo registra con su nombre."""
+        if not command.apply(self.sequence):
+            return False
+        self._commit(command.name)
+        return True
+
+    def _source_duration(self, clip) -> float | None:
+        """Cuánto dura el archivo del clip, del caché de sondeos."""
+        try:
+            return self._media_info(clip.source).duration or None
+        except Exception:
+            return None
+
+    def slip_selected(self, frames: int) -> None:
+        """Desliza el contenido del clip seleccionado, de cuadro en cuadro.
+
+        Un cuadro de la secuencia, contado en tiempo de archivo: en un clip a
+        2× cada paso recorre dos cuadros del original, igual que al verlo.
+        """
+        clip = self.timeline.selected
+        if not isinstance(clip, Clip):
+            self.statusBar().showMessage("Selecciona un clip de video o de audio.", 4000)
             return
 
-        gap, start = item.duration, item.start
-        track.clips.remove(item)
-        for other in track.clips:
-            if other.start >= start:
-                other.start -= gap
-
-        self.timeline.select(None)
-        self._commit("Eliminar y cerrar hueco")
+        delta = frames * self.sequence.frame_duration * max(clip.speed, 0.0)
+        comando = Slip(clip=clip, delta=delta, source_duration=self._source_duration(clip))
+        if self._run(comando):
+            self.statusBar().showMessage(
+                f"Entrada en {timecode(clip.in_point, self.sequence.fps)}", 3000)
+        else:
+            lado = "antes" if frames < 0 else "después"
+            self.statusBar().showMessage(f"No hay más material {lado}.", 4000)
 
     def _selected(self, item) -> None:
         """Al seleccionar en el timeline, los paneles siguen la selección."""

@@ -72,6 +72,9 @@ DEFAULTS: dict[str, tuple[str, str]] = {
     "editar.deshacer": ("Deshacer", "Ctrl+Z"),
     "editar.rehacer": ("Rehacer", "Ctrl+Shift+Z"),
     "editar.cortar": ("Cortar en el playhead", "Ctrl+K"),
+    "editar.dividir": ("Dividir en el playhead", "S"),
+    "editar.slip_atras": ("Deslizar contenido un cuadro atrás", "Alt+,"),
+    "editar.slip_adelante": ("Deslizar contenido un cuadro adelante", "Alt+."),
     "editar.duplicar": ("Duplicar", "Ctrl+D"),
     "editar.eliminar": ("Eliminar", "Del"),
     "editar.eliminar_hueco": ("Eliminar y cerrar hueco", "Shift+Del"),
@@ -79,6 +82,7 @@ DEFAULTS: dict[str, tuple[str, str]] = {
 
     "herramienta.seleccion": ("Herramienta de selección", "V"),
     "herramienta.navaja": ("Herramienta navaja", "C"),
+    "herramienta.slip": ("Herramienta deslizar (slip)", "Y"),
 
     "clip.fundir": ("Fundir entrada y salida", "Ctrl+Shift+D"),
     "clip.transicion": ("Transición cruzada", "Ctrl+Shift+A"),
