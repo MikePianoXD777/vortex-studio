@@ -7,7 +7,7 @@ import time
 import uuid
 from pathlib import Path
 
-from PySide6.QtCore import QElapsedTimer, Qt, QTimer
+from PySide6.QtCore import QElapsedTimer, QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QActionGroup, QImage, QKeySequence
 from PySide6.QtWidgets import (
     QAbstractSlider,
@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
 
 from vortex_studio.media import HAS_PYAV, probe_media
 from vortex_studio.model.media import AUDIO, IMAGE, lookup
+from vortex_studio.media.frameserver import READ_AHEAD, FrameJob, FrameServer
 from vortex_studio.media.pool import SourcePool
 
 from vortex_studio.media.mixer import AudioMixer
@@ -117,6 +118,17 @@ def _is_plain_key(sequence: QKeySequence) -> bool:
     return not bool(sequence[0].keyboardModifiers() & HEAVY_MODIFIERS)
 
 
+class _FrameSignal(QObject):
+    """Lleva el aviso del hilo de decodificación al hilo de la interfaz.
+
+    El servidor de cuadros no sabe de Qt: avisa llamando a una función desde
+    su hilo. Emitir una señal desde ahí la encola hacia el hilo de la
+    ventana, que es el único que puede tocar los widgets.
+    """
+
+    ready = Signal()
+
+
 DEFAULT_TITLE_SECONDS = 3.0
 DEFAULT_IMAGE_SECONDS = 4.0
 
@@ -133,7 +145,13 @@ class MainWindow(QMainWindow):
         # transición entre dos mitades del mismo video saltara adelante y
         # atrás en cada cuadro, y la reproducción se caía a segundos por
         # cuadro.
-        self._sources = SourcePool()
+        self._sources = SourcePool()        # solo para exportar, en orden
+
+        # El preview decodifica en su propio hilo. Ver `media/frameserver.py`.
+        self._frame_signal = _FrameSignal()
+        self._frame_signal.ready.connect(self._frames_ready)
+        self.frames = FrameServer(on_ready=self._frame_signal.ready.emit)
+        self._ready_scheduled = False
         self._images: dict[Path, QImage] = {}
         self._title: Title | None = None
         self._path: Path | None = None
@@ -163,6 +181,7 @@ class MainWindow(QMainWindow):
 
         self.preview = PreviewWidget()
         self.preview.set_canvas(self.sequence.width, self.sequence.height)
+        self.preview.set_grab_hook(self._settle_preview)
         self.timeline = TimelineWidget(self.sequence)
         self.transport = TransportBar()
         # Un solo panel con pestañas. Los nombres de siempre apuntan a cada
@@ -1018,33 +1037,96 @@ class MainWindow(QMainWindow):
             t = start + index / fps
             yield compose(
                 ancho, alto,
-                self._layers_at(t),
+                self._layers_at(t, sync=True),
                 [(o, self._image_for(o.source)) for o in self.sequence.overlays_at(t)],
                 self.sequence.titles_at(t),
                 t,
             )
 
-    def _layers_at(self, t: float) -> list[Layer]:
+    def _jobs_at(self, t: float) -> list[tuple]:
+        """(clip, trabajo de decodificación, peso) de cada capa en ese instante."""
+        plan = []
+        for clip, peso in self.sequence.video_stack_at(t):
+            # El tiempo se puede salir del clip durante una transición: se
+            # recorta a su material para no pedirle al archivo lo que no tiene.
+            dentro = min(max(t, clip.start), clip.end - 1e-6)
+            trabajo = FrameJob.make(id(clip), clip.source, clip.source_time(dentro), clip.color)
+            plan.append((clip, trabajo, peso))
+        return plan
+
+    def _layers_at(self, t: float, sync: bool = False) -> list[Layer]:
         """Las capas de video del instante, de abajo hacia arriba.
 
         Quién va en la pila lo decide la secuencia: una capa por pista de
         video con material, más una extra por cada transición cruzada viva.
-        Aquí solo se le pone a cada una su cuadro ya corregido de color y su
-        transformación del momento.
+
+        Para el preview (`sync=False`) **nunca se decodifica aquí**: se toma
+        el cuadro del servidor si ya está, o el último que hubo de ese clip
+        mientras llega el nuevo, y se encarga lo que falte. Para exportar
+        (`sync=True`) sí se decodifica en orden, porque el archivo final no
+        puede llevar cuadros atrasados.
         """
         capas = []
-        for clip, peso in self.sequence.video_stack_at(t):
-            # El tiempo se puede salir del clip durante una transición: se
-            # recorta a su material para que el fundido no dé un salto.
+        trabajos = []
+        for clip, trabajo, peso in self._jobs_at(t):
+            if sync:
+                frame = self._frame_of(clip, t)
+            else:
+                frame = self.frames.get(trabajo) or self.frames.latest(trabajo.key)
+                trabajos.append(trabajo)
+
             dentro = min(max(t, clip.start), clip.end - 1e-6)
             capas.append(Layer(
-                self._frame_of(clip, t),
+                frame,
                 peso * clip.fade_at(dentro),
                 clip.transform.values_at(clip.local(t)),
                 clip.blend,
                 clip.mask,
             ))
+
+        if not sync and trabajos and HAS_PYAV:
+            self.frames.request(trabajos, self._ahead(t))
         return capas
+
+    def _ahead(self, t: float) -> list:
+        """Los cuadros que vienen, para que al reproducir ya estén listos."""
+        if not self._playing:
+            return []
+        paso = self.sequence.frame_duration * max(self._speed, 0.25)
+        adelante = []
+        for i in range(1, READ_AHEAD + 1):
+            adelante += [trabajo for _, trabajo, _ in self._jobs_at(t + i * paso)]
+        return adelante
+
+    def _frames_ready(self) -> None:
+        """Llegaron cuadros nuevos. Se repinta una vez, aunque lleguen varios.
+
+        El hilo avisa por cada cuadro; sin juntar los avisos, una lectura
+        adelantada de ocho cuadros serían ocho repintados seguidos.
+        """
+        if self._ready_scheduled:
+            return
+        self._ready_scheduled = True
+        QTimer.singleShot(0, self._apply_ready)
+
+    def _apply_ready(self) -> None:
+        self._ready_scheduled = False
+        self._render(self.timeline.playhead)
+
+    def _settle_preview(self) -> None:
+        """Antes de sacar el cuadro en limpio, espera al cuadro exacto.
+
+        Pintar la pantalla nunca espera: se ve el cuadro anterior mientras
+        llega el nuevo. Pero exportar un cuadro, o una prueba que mide
+        pixeles, no puede llevarse el anterior.
+        """
+        if not HAS_PYAV:
+            return
+        t = self.timeline.playhead
+        trabajos = [trabajo for _, trabajo, _ in self._jobs_at(t)]
+        if trabajos:
+            self.frames.wait_for(trabajos, timeout=10.0)
+        self._render(t)
 
     def _frame_of(self, clip, t: float):
         """El cuadro de ese clip en ese instante, ya corregido de color.
@@ -1554,6 +1636,7 @@ class MainWindow(QMainWindow):
         return self._images[path]
 
     def _close_sources(self) -> None:
+        self.frames.reset()
         self._sources.close_all()
         self._images.clear()
         clear_mask_cache()
@@ -1762,6 +1845,7 @@ class MainWindow(QMainWindow):
         # corre y la copia se queda para la próxima.
         self._clear_autosave()
         self._close_sources()
+        self.frames.close()
         super().closeEvent(event)
 
 

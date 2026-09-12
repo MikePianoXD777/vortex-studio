@@ -57,12 +57,7 @@ class ColorProcessor:
         if not HAS_PYAV or adjust is None or adjust.is_neutral:
             return frame
 
-        signature = (
-            adjust.brightness, adjust.contrast, adjust.saturation, adjust.gamma,
-            adjust.temperature, adjust.vignette,
-            adjust.curves.points(),
-            frame.width, frame.height, frame.format.name,
-        )
+        signature = adjust.signature + (frame.width, frame.height, frame.format.name)
         if signature != self._signature:
             self._build(frame, adjust)
             self._signature = signature

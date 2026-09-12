@@ -37,6 +37,20 @@ class ColorAdjust:
     curves: Curves = field(default_factory=Curves)
 
     @property
+    def signature(self) -> tuple:
+        """Todo lo que cambia la imagen, en una tupla que se puede comparar.
+
+        Un solo lugar para esto, porque ya hubo un bug por tenerlo repetido:
+        el decodificador comparaba solo brillo, contraste, saturación y
+        gamma. Con el video en pausa, mover la temperatura, la viñeta o la
+        curva no se reconocía como "mismo cuadro, otro color", y en vez de
+        recolorear el cuadro que ya tenía, decodificaba el siguiente: el
+        preview avanzaba un cuadro con cada movimiento del deslizador.
+        """
+        return (self.brightness, self.contrast, self.saturation, self.gamma,
+                self.temperature, self.vignette, tuple(self.curves.points()))
+
+    @property
     def is_neutral(self) -> bool:
         """Si nada está tocado, no vale la pena montar el filtro."""
         return ((self.brightness, self.contrast, self.saturation,

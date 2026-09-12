@@ -31,6 +31,10 @@ class PreviewWidget(QWidget):
         self._canvas = (1920, 1080)
         self._time: float | None = None
         self._alpha = 1.0
+        # Lo que hay que hacer antes de sacar el cuadro en limpio. La ventana
+        # lo usa para esperar al cuadro exacto: pintar la pantalla nunca
+        # espera, pero exportar un cuadro no puede salir con el anterior.
+        self._before_grab = None
         self._message = "Importa un video para empezar  ·  Ctrl+I"
 
         self.setMinimumSize(320, 180)
@@ -128,8 +132,13 @@ class PreviewWidget(QWidget):
             fit_w, fit_h = float(w), w / aspect
         return QRectF((w - fit_w) / 2, (h - fit_h) / 2, fit_w, fit_h)
 
+    def set_grab_hook(self, hook) -> None:
+        self._before_grab = hook
+
     def current_image(self) -> QImage | None:
         """El cuadro a resolución completa, para exportarlo."""
+        if self._before_grab is not None:
+            self._before_grab()
         if self.is_empty:
             return None
 

@@ -104,9 +104,12 @@ class VideoSource:
 
     @staticmethod
     def _settings(adjust: ColorAdjust | None) -> tuple:
+        """Ver `ColorAdjust.signature`: aquí antes se comparaban solo cuatro
+        ajustes, y cambiar cualquier otro con el video en pausa avanzaba un
+        cuadro en vez de recolorear el que ya estaba."""
         if adjust is None:
             return ()
-        return (adjust.brightness, adjust.contrast, adjust.saturation, adjust.gamma)
+        return adjust.signature
 
     def _seek(self, t: float) -> None:
         offset = int(t / self._stream.time_base)
