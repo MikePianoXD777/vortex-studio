@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import copy
+import time
+import uuid
 from pathlib import Path
 
 from PySide6.QtCore import QElapsedTimer, Qt, QTimer
@@ -50,6 +52,13 @@ from vortex_studio.model import (
     Sequence,
     Title,
     timecode,
+)
+from vortex_studio.model.autosave import (
+    AUTOSAVE_SECONDS,
+    discard,
+    list_recoverable,
+    load_recovery,
+    write_autosave,
 )
 from vortex_studio.model.history import History
 from vortex_studio.model.serialize import EXTENSION, load_project, save_project
@@ -187,6 +196,15 @@ class MainWindow(QMainWindow):
         self._commit_timer.setSingleShot(True)
         self._commit_timer.setInterval(700)
         self._commit_timer.timeout.connect(self._flush)
+
+        # Autoguardado. Ver `model/autosave.py`: la copia va a la carpeta de
+        # datos del sistema, nunca encima del proyecto del usuario.
+        self._session = uuid.uuid4().hex[:8]
+        self._autosave_path: Path | None = None
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.setInterval(AUTOSAVE_SECONDS * 1000)
+        self._autosave_timer.timeout.connect(self.autosave)
+        self._autosave_timer.start()
 
         self._elapsed = QElapsedTimer()
         self._origin = 0.0
@@ -481,6 +499,7 @@ class MainWindow(QMainWindow):
     def new_project(self) -> None:
         if not self._confirm_discard():
             return
+        self._clear_autosave()
         self._close_sources()
         self.project = Project()
         self._path = None
@@ -501,6 +520,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "No se pudo abrir", f"{Path(path).name}\n\n{error}")
             return
 
+        self._clear_autosave()
         self._close_sources()
         self.project = project
         self._path = Path(path)
@@ -518,6 +538,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "No se pudo guardar", str(error))
             return False
         self._dirty = False
+        self._clear_autosave()      # lo guardado ya está a salvo
         self._update_title()
         return True
 
@@ -529,6 +550,81 @@ class MainWindow(QMainWindow):
         self._path = Path(path)
         self.project.name = self._path.stem
         return self.save()
+
+    # --- autoguardado -----------------------------------------------------
+
+    def autosave(self) -> Path | None:
+        """Escribe la copia de seguridad si hay algo que salvar.
+
+        Sin cambios no escribe nada: autoguardar un proyecto recién guardado
+        solo gasta disco y deja una copia que luego habría que explicar.
+        """
+        self._flush()        # lo que se está tecleando también cuenta
+        if not self._dirty:
+            return None
+        try:
+            destino = write_autosave(self.project, self._path, self._session)
+        except OSError as error:
+            self.statusBar().showMessage(f"No se pudo autoguardar: {error}", 8000)
+            return None
+
+        # Si el proyecto cambió de nombre (Guardar como), la copia vieja ya
+        # no corresponde a nada.
+        if self._autosave_path is not None and self._autosave_path != destino:
+            discard(self._autosave_path)
+        self._autosave_path = destino
+        return destino
+
+    def _clear_autosave(self) -> None:
+        discard(self._autosave_path)
+        self._autosave_path = None
+
+    def offer_recovery(self) -> bool:
+        """Al arrancar: si quedó una copia de un cierre de golpe, ofrecerla.
+
+        Aquí sí va un diálogo: recuperar o tirar trabajo es una decisión que
+        el usuario tiene que ver, no un aviso que se pierda en la barra.
+        """
+        copias = list_recoverable()
+        if not copias:
+            return False
+
+        copia = copias[0]
+        cuando = time.strftime("%d/%m %H:%M", time.localtime(copia.saved_at))
+        donde = f"\n\nProyecto: {copia.original}" if copia.original else ""
+        respuesta = QMessageBox.question(
+            self, "Recuperar trabajo",
+            f"Vortex Studio se cerró sin guardar «{copia.name}».\n"
+            f"Hay una copia automática de las {cuando}.{donde}\n\n"
+            f"¿Recuperarla?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+
+        if respuesta != QMessageBox.Yes:
+            discard(copia.path)
+            return False
+        return self.recover(copia)
+
+    def recover(self, copia) -> bool:
+        try:
+            project = load_recovery(copia)
+        except Exception as error:
+            QMessageBox.critical(self, "No se pudo recuperar", str(error))
+            return False
+
+        self._close_sources()
+        self.project = project
+        self._path = copia.original
+        self._adopt(project.active, reset_history=True)
+        # Queda como "sin guardar" a propósito: lo recuperado todavía no
+        # está en el .vortex del usuario hasta que él lo guarde.
+        self._dirty = True
+        self._autosave_path = copia.path
+        self._update_title()
+        self.statusBar().showMessage(
+            f"Recuperado de la copia automática de las "
+            f"{time.strftime('%H:%M', time.localtime(copia.saved_at))}. "
+            f"Guarda para no perderlo.", 10000)
+        return True
 
     def _confirm_discard(self) -> bool:
         if not self._dirty:
@@ -1657,9 +1753,14 @@ class MainWindow(QMainWindow):
             return
 
         self._clock.stop()
+        self._autosave_timer.stop()
         self.audio.stop()
         if self._fullscreen:
             self.preview.close()
+        # Cierre normal: el usuario ya decidió guardar o descartar, así que
+        # la copia de emergencia sobra. Si el programa truena, esto nunca
+        # corre y la copia se queda para la próxima.
+        self._clear_autosave()
         self._close_sources()
         super().closeEvent(event)
 

@@ -28,6 +28,10 @@ os.environ.setdefault("VORTEX_CACHE_DIR", tempfile.mkdtemp(prefix="vortex-cache-
 # los atajos reales del usuario.
 os.environ.setdefault("VORTEX_CONFIG_DIR", tempfile.mkdtemp(prefix="vortex-config-"))
 
+# Y con los datos: los autoguardados de las pruebas no deben ofrecérsele al
+# usuario real la próxima vez que abra el editor.
+os.environ.setdefault("VORTEX_DATA_DIR", tempfile.mkdtemp(prefix="vortex-datos-"))
+
 
 def _ffmpeg(*args: str) -> None:
     subprocess.run([FFMPEG, "-y", "-loglevel", "error", *args], check=True)

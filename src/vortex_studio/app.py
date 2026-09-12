@@ -71,6 +71,7 @@ def main() -> int:
 
     window = MainWindow()
     window.show()
+    window.offer_recovery()     # si la vez pasada se cerró de golpe
 
     return app.exec()
 
