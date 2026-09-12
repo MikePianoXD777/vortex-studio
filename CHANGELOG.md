@@ -1,5 +1,7 @@
 # Changelog
 
+**Español** · [English](CHANGELOG.en.md)
+
 Todo lo que cambia en Vortex Studio, de lo más nuevo a lo más viejo.
 
 Las versiones siguen [versionado semántico](https://semver.org/lang/es/):
@@ -10,10 +12,12 @@ puede romper compatibilidad.
 
 Nada todavía.
 
-## [0.1.0] — 2026-09-12
+## [0.1.0a1] — 2026-09-12
 
-Primera versión funcional. De cero a un editor que corta, anima, suena y
-exporta.
+**Pre-alfa.** Primera versión con todo funcionando de punta a punta: corta,
+anima, suena y exporta. Pasa 167 pruebas automáticas, pero nadie la ha usado
+todavía con material propio, así que cuenta con que algo se rompa. El formato
+del archivo `.vortex` puede cambiar antes de la 0.1.0 de verdad.
 
 ### Reproductor
 

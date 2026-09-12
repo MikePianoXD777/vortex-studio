@@ -1,6 +1,28 @@
 # Vortex Studio
 
+**Español** · [English](README.en.md)
+
 Editor de video no lineal. Parte de Vortex Suite.
+
+Las funciones de DaVinci Resolve, CapCut, Premiere Pro y After Effects, pero
+fáciles de usar. La capacidad sí; la complejidad no.
+
+> ### ⚠️ Pre-alfa — `0.1.0a1`
+>
+> **Esto no está listo para trabajo real.** Pasa 167 pruebas automáticas,
+> pero nadie lo ha usado todavía con material propio de verdad. Eso no es lo
+> mismo que estar probado.
+>
+> Lo que puedes esperar:
+>
+> - Cosas que fallan de formas que no hemos visto
+> - El formato del archivo `.vortex` puede cambiar y romper proyectos viejos
+> - Material en 4K va a ir lento: la decodificación aún corre en el hilo de
+>   la interfaz
+> - Sin audio en pistas mezcladas, sin transiciones más allá del fundido
+>
+> Úsalo para curiosear y para reportar lo que se rompa. No para editar algo
+> que te importe sin respaldo.
 
 ## Arranque
 
@@ -178,15 +200,30 @@ No hay ningún atajo con `Ctrl+Alt`: en Windows con teclado latinoamericano
 `AltGr` manda exactamente eso, y escribir `@` o `\` dispararía comandos del
 editor. Hay una prueba que lo vigila.
 
+## Qué ya funciona
+
+- Cortar, mover, recortar, duplicar y borrar en el timeline, con imantado
+- Deshacer y rehacer
+- Texto y subtítulos, con contorno y caja
+- Imágenes sobre el video
+- Corrección de color con looks de un clic
+- Animación por keyframes de posición, tamaño, giro y opacidad
+- Fundidos, fundido cruzado, velocidad y congelar cuadro
+- Sonido al editar, con onda en las pistas de audio
+- Marcadores
+- Formatos vertical, cuadrado y cine
+- Exportar a MP4 con audio, y el cuadro actual a PNG
+- Guardar y abrir proyectos, portables entre carpetas y sistemas
+
 ## Pendiente
 
 - La mezcla no suma pistas: toma los clips de audio en orden y rellena los
   huecos con silencio. Dos clips encimados no se mezclan entre sí.
 - El sonido solo acompaña a velocidad normal. A 2× saldría con el tono
   cambiado, que es peor que no oírlo.
-- La decodificación de imagen sigue en el hilo de la interfaz: con 4K se va
-  a arrastrar.
-- La decodificación corre en el hilo de la interfaz: con 4K se va a arrastrar.
-  Va junto con el audio, en un rediseño con hilo de decodificación y buffer.
+- La decodificación de imagen corre en el hilo de la interfaz: con 4K se va
+  a arrastrar. Pide un rediseño con hilo de decodificación y buffer de
+  cuadros, y es lo más grande que falta.
 - La única transición es el fundido cruzado; no hay cortinillas ni efectos.
-- No hay escalado ni reposicionamiento del video dentro del cuadro.
+- No hay máscaras ni modos de fusión.
+- No hay curvas de color ni viñeta.
