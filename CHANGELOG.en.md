@@ -11,6 +11,111 @@ While we're on `0.x`, any minor version may break compatibility.
 
 Nothing yet.
 
+## [0.4.0a1] — 2026-09-12
+
+**Level 2 of the roadmap, complete: usable day to day.** The everyday editing
+that was missing: framing to turn horizontal into vertical, dips to color,
+audio that respects clip speed, linked video and audio, a clipboard, track
+switches, a media bin, proxies and exporting without stopping the edit.
+Still pre-alpha: it passes 608 automated tests — 115 more than 0.3.0a1 —
+but nobody has used it on their own footage yet.
+
+**The file format moved to version 4.** Projects from 0.1 through 0.3 open
+fine. Not the other way around.
+
+**A change you'll notice in older projects:** footage in a different aspect
+ratio than the sequence used to be **stretched** to fill the frame. That was
+a bug and it's gone: clips now come in as Fit, with bars. If you wanted the
+frame filled, use Sequence → Fill the frame with every clip.
+
+**Still no executables.** Binaries come when pre-alpha ends.
+
+### Audio at other speeds
+
+- **Fixed:** audio of a clip with speed other than 1× was read at normal
+  speed. A 2× clip sounded twice as long as its picture, and everything after
+  it on the track drifted. It was also read from the wrong point of the file
+  when playback started mid-clip.
+- Each clip picks what its sound does: **Keep pitch** (`atempo`, what
+  Premiere does), **Shift pitch** (`asetrate`, like tape) or **Mute**. The
+  audio lasts exactly as long as the picture, down to the sample.
+- The speed range is 0.25× to 4×.
+
+### Framing, crop and anchor point
+
+- Three modes per clip: **Fit**, **Fill** and **Stretch**. Fill is how a
+  vertical is made from a horizontal, and one command applies it to every
+  clip at once.
+- Per-edge crop, like Premiere's Crop effect: the cropped part turns
+  transparent and the picture stays where it was.
+- Anchor point, with nine presets: the clip scales and rotates from there
+  without shifting.
+- Nothing is painted outside the frame in the preview, even when a clip is
+  filled or scaled up.
+
+### Transitions
+
+- **Dip to black** and **to white**, besides the cross dissolve. In the first
+  half the outgoing clip is covered with the color, in the second the
+  incoming one is uncovered, without blending the two.
+
+### Titles
+
+- Font, outline color and width, and a drop shadow with color, distance, blur
+  and opacity. The blurred shadow uses the same trick as masks — shrink and
+  scale back up — which runs in C++.
+
+### Linking, clipboard and paste attributes
+
+- Video and its audio come in **linked**: they move, trim, cut, slip, change
+  speed and delete together. `Alt`+click grabs one side; `Ctrl+L` links or
+  unlinks. If they drift apart, the clip shows how many frames in red.
+- Multi-selection with `Ctrl`+click, and the selection drags together.
+- `Ctrl+C`, `Ctrl+X` and `Ctrl+V` for clips: paste lands at the playhead, each
+  item on its own track, overwriting what's underneath, and the playhead
+  moves to the end so you can paste again right after. While typing in a
+  text box, those keys belong to the text box.
+- `Ctrl+Shift+V` pastes attributes: transform, color, mask and blend, speed,
+  volume and fades, picking which.
+
+### Tracks
+
+- Buttons on every header: show and lock on video and text; mute, solo and
+  lock on audio. A hidden track isn't painted or exported; a locked one won't
+  let you select, move, cut or delete what's on it. Solo leads and mute wins,
+  in playback and in the file alike.
+
+### Markers
+
+- Name, **note** and **color**, in a dialog opened with `Shift+M` or by
+  double-clicking the marker. The note shows on hover.
+- **Markers inside clips** (`Alt+Shift+M`), which travel with the clip and
+  are split between halves when it's divided.
+- **Fixed:** the ruler marker's name was covered by the first track and never
+  showed.
+
+### Media bin and proxies
+
+- **Media bin** on the left: everything imported, with thumbnails, an
+  accent- and case-insensitive search and a filter by kind. Drag onto any
+  track or double-click to add. Thumbnails are extracted on another thread
+  and kept in the cache.
+- **540p proxies** with a global switch, remembered between sessions. They're
+  built in the background with a keyframe every 15 frames — seeking is
+  cheap — and keep the original's timestamps. The preview uses them; export
+  and the PNG frame always read the original.
+
+### Render queue
+
+- Exporting no longer stops the edit: each export goes to a queue, with its
+  own frozen copy of the sequence, its progress bar and its cancel button.
+  One job at a time. A failure is reported without taking the queue down.
+
+### Changed
+
+- With an audio clip selected, the Transform tab is disabled. It used to stay
+  enabled with sliders that did nothing.
+
 ## [0.3.0a1] — 2026-09-12
 
 **Level 1 of the roadmap, complete.** Everything an editor needs to be an

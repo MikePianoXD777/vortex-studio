@@ -7,19 +7,20 @@ Editor de video no lineal. Parte de Vortex Suite.
 Las funciones de DaVinci Resolve, CapCut, Premiere Pro y After Effects, pero
 fáciles de usar. La capacidad sí; la complejidad no.
 
-> ### ⚠️ Pre-alfa — `0.3.0a1`
+> ### ⚠️ Pre-alfa — `0.4.0a1`
 >
-> **Esto no está listo para trabajo real.** Pasa 493 pruebas automáticas,
+> **Esto no está listo para trabajo real.** Pasa 608 pruebas automáticas,
 > pero nadie lo ha usado todavía con material propio de verdad. Eso no es lo
 > mismo que estar probado.
 >
 > Lo que puedes esperar:
 >
 > - Cosas que fallan de formas que no hemos visto
-> - El formato del archivo `.vortex` subió a la versión 3: los proyectos de
->   la 0.1 y la 0.2 abren bien, pero al revés no
-> - El audio de un clip con velocidad distinta de 1× se desfasa de la imagen
-> - La única transición sigue siendo el fundido cruzado
+> - El formato del archivo `.vortex` subió a la versión 4: los proyectos de
+>   la 0.1 a la 0.3 abren bien, pero al revés no
+> - Un proyecto viejo con material de otra proporción que la secuencia se ve
+>   distinto: antes se estiraba, ahora entra ajustado con franjas
+> - En las transiciones de video, el audio sigue cortando seco
 >
 > Úsalo para curiosear y para reportar lo que se rompa. No para editar algo
 > que te importe sin respaldo.
@@ -118,6 +119,17 @@ abrir ventanas, así que funciona por SSH o en una máquina sin pantalla.
 | `test_looks.py` | Looks de color y formatos de secuencia |
 | `test_panel.py` | El panel de pestañas y su cambio automático |
 | `test_identidad.py` | Que dos elementos iguales sigan siendo distintos |
+| `test_velocidad_audio.py` | Audio a otra velocidad: tono, duración exacta y sincronía |
+| `test_encuadre.py` | Ajustar, rellenar, estirar, recorte y punto de anclaje |
+| `test_transicion_color.py` | Fundido a negro y a blanco |
+| `test_titulos_estilo.py` | Fuente, contorno y sombra de los títulos |
+| `test_pistas.py` | Mostrar, bloquear, silenciar y solo por pista |
+| `test_enlace.py` | Video y audio enlazados |
+| `test_portapapeles.py` | Copiar, cortar, pegar y pegar atributos |
+| `test_marcadores_clip.py` | Marcadores con nota y color, en la secuencia y en el clip |
+| `test_panel_medios.py` | Panel de medios, miniaturas, búsqueda y arrastrar |
+| `test_proxies.py` | Proxies de 540p y su interruptor |
+| `test_cola_render.py` | Exportar en segundo plano, con progreso y cancelar |
 | `test_portabilidad.py` | Que funcione igual en Linux y Windows |
 
 ## Atajos
@@ -144,6 +156,9 @@ Estos son los de fábrica:
 | `S` / `Ctrl+K` | Dividir en el playhead |
 | `Alt+,` / `Alt+.` | Deslizar el contenido un cuadro atrás / adelante |
 | `Ctrl+D` | Duplicar |
+| `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | Copiar / cortar / pegar clips |
+| `Ctrl+Shift+V` | Pegar atributos (color, transformación, velocidad…) |
+| `Ctrl+L` | Enlazar o desenlazar video y audio |
 | `Ctrl+/` | Atajos de teclado |
 | `Ctrl+Shift+D` | Fundir entrada y salida del clip |
 | `Ctrl+Shift+F` | Congelar el cuadro actual |
@@ -160,16 +175,19 @@ Estos son los de fábrica:
 | `Inicio` / `Fin` | Ir al inicio / al final |
 | `J` `K` `Shift+L` | Más lento / normal / más rápido |
 | `L` | Repetir |
-| `Ctrl+Shift+A` | Transición cruzada con el clip anterior |
+| `Ctrl+Shift+A` / `Ctrl+Shift+B` | Transición cruzada / fundido a negro con el clip anterior |
 | `I` `O` / `Ctrl+Shift+X` | Marcar entrada, salida / quitar marcas |
-| `M` / `Shift+M` | Poner marcador / marcador con nombre |
+| `M` / `Shift+M` | Poner marcador / editarlo: nombre, nota y color |
+| `Alt+Shift+M` | Marcador dentro del clip seleccionado |
 | `Shift+↓` `Shift+↑` | Marcador siguiente / anterior |
 | `F` | Pantalla completa |
 
 En el timeline: `Ctrl`+rueda hace zoom, arrastrar un clip lo mueve, arrastrar
 sus bordes lo recorta, y todo se imanta a los cortes vecinos, al playhead y
 a los marcadores. Con la herramienta slip (`Y`), arrastrar dentro de un clip
-cambia qué pedazo del archivo se ve sin moverlo.
+cambia qué pedazo del archivo se ve sin moverlo. `Ctrl`+clic suma clips a la
+selección, `Alt`+clic agarra un solo lado de un par enlazado, y doble clic
+en un marcador lo abre.
 
 ## Estructura
 
@@ -288,6 +306,38 @@ En el proyecto se guarda el nombre de la animación y su duración, no los
 keyframes que genera. Así, afinar una curva mejora los proyectos que ya
 existen en vez de romperlos.
 
+## Uso diario
+
+**Encuadre.** Cada clip trae su modo: *Ajustar* (entero, con franjas),
+*Rellenar* (llena el cuadro y lo que sobra se sale) o *Estirar*. Para pasar un
+horizontal a vertical: Secuencia → Vertical 9:16, y luego Secuencia →
+Rellenar el cuadro con todos los clips. En Transformar → Encuadre y recorte
+se recorta por orilla —lo recortado queda transparente, la imagen no se
+mueve— y se elige el punto de anclaje desde el que el clip crece y gira.
+
+**Transiciones.** Además de la cruzada, fundido a negro y a blanco. Se ponen
+desde el menú Clip o en la pestaña Clip, donde también se cambia el tipo.
+
+**Títulos.** Fuente, color, tamaño y alineación a la vista; contorno con
+color y grosor, y sombra con color, distancia, desenfoque y opacidad en un
+grupo aparte.
+
+**Enlace.** El video y su audio entran enlazados: se mueven, recortan,
+cortan, deslizan, cambian de velocidad y se borran juntos. `Alt`+clic agarra
+uno solo, y `Ctrl+L` los desenlaza. Si se desfasan, el clip marca en rojo
+cuántos cuadros.
+
+**Portapapeles.** `Ctrl+C` y `Ctrl+V` pegan en el playhead, cada cosa en su
+pista, y el playhead queda al final para pegar otra vez detrás. Lo pegado
+pisa lo que haya abajo. `Ctrl+Shift+V` pega solo los ajustes que elijas.
+
+**Pistas.** Cada cabecera tiene sus botones: mostrar y bloquear en video y
+texto; silenciar, solo y bloquear en audio. Una pista bloqueada no deja
+seleccionar, mover ni borrar nada de lo que tiene.
+
+**Marcadores.** Llevan nombre, nota y color, en la regla o dentro de un clip.
+Los del clip viajan con él. La nota aparece al pasar el cursor encima.
+
 ## Sonido
 
 Se oye mientras editas, con volumen y silencio en la barra de transporte. El
@@ -306,6 +356,11 @@ La suma puede pasarse y recortar, igual que en Premiere. Se deja recortar en
 vez de meter un limitador porque un limitador necesita mirar hacia adelante,
 y ese adelanto desfasaría el sonido de la imagen. Para eso está el volumen
 por clip.
+
+**A otra velocidad**, cada clip elige qué hace su sonido: *Mantener tono*
+(como Premiere: la voz se oye natural), *Cambiar tono* (como una cinta: más
+agudo al acelerar) o *Silenciar*. El rango es de 0.25× a 4×, y el audio dura
+exactamente lo que la imagen.
 
 ## Preview fluido
 
@@ -328,6 +383,16 @@ cuadros; si el hilo se atrasa se sueltan cuadros y el sonido sigue mandando.
 trae el archivo, no por su extensión. El audio suelto cae en la primera
 pista de audio libre en ese tramo.
 
+Todo lo importado queda en el **panel de medios**, a la izquierda, con
+miniatura y buscador (sin acentos ni mayúsculas, y por clase). De ahí se
+arrastra a la pista que quieras o se agrega con doble clic en el playhead.
+Archivo → Importar al panel de medios trae varios archivos sin ponerlos en
+el timeline.
+
+**Proxies.** Ver → Usar proxies (540p) hace que el preview lea copias
+livianas de los videos pesados; se crean solas en segundo plano. Exportar
+lee siempre de los originales. El interruptor se recuerda entre sesiones.
+
 Lo que se sabe de cada archivo —duración, resolución, códecs, canales— se
 guarda en el proyecto, y no se vuelve a abrir mientras el archivo no cambie.
 La onda de audio se guarda en la caché del sistema, así que al reabrir un
@@ -337,7 +402,11 @@ proyecto aparece al instante.
 
 `Ctrl+E` escribe un MP4 (H.264) con todo quemado: cortes, textos, imágenes y
 corrección de color. Si hay marcas de entrada y salida, exporta solo ese tramo.
-Se puede cancelar a media exportación; el archivo incompleto se borra.
+
+La exportación va a la **cola de render** y se puede seguir editando: se
+lleva una copia congelada de la secuencia, así que lo que edites después no
+cambia el archivo. Cada trabajo tiene su barra y su botón de cancelar; el
+archivo incompleto se borra.
 
 ## Autoguardado
 
@@ -376,9 +445,18 @@ editor. Hay una prueba que lo vigila.
 - Trece modos de fusión, y pistas de video apiladas
 - Cuadro dentro de cuadro de un clic
 - Animación por keyframes de posición, tamaño, giro y opacidad
-- Fundidos, fundido cruzado, velocidad y congelar cuadro
+- Fundidos, fundido cruzado, a negro y a blanco, y congelar cuadro
+- Velocidad de 0.25× a 4× con el audio sincronizado, manteniendo o cambiando
+  el tono
+- Encuadre ajustar, rellenar y estirar; recorte y punto de anclaje
+- Títulos con fuente, contorno de color y sombra
+- Video y audio enlazados; copiar, pegar y pegar atributos
+- Mostrar, bloquear, silenciar y solo por pista
+- Panel de medios con miniaturas, búsqueda y arrastrar al timeline
+- Proxies de 540p con interruptor global
+- Cola de render en segundo plano
 - Sonido al editar, con mezcla de pistas y onda en las pistas de audio
-- Marcadores
+- Marcadores con nota y color, en la secuencia y dentro de los clips
 - Formatos vertical, cuadrado y cine
 - Exportar a MP4 en el tamaño de la secuencia, 1080p o 4K, solo audio, y el
   cuadro actual a PNG
@@ -393,18 +471,17 @@ una advertencia literal.
 
 ## Pendiente
 
-- **El audio de un clip con velocidad distinta de 1× se lee a velocidad
-  normal**, así que se desfasa de la imagen, al reproducir y al exportar.
-  La velocidad del audio es del nivel 2.
-- La exportación todavía decodifica en el hilo de la interfaz, con la barra
-  de progreso encima. Sacarla de ahí es la cola de render, del nivel 2.
-- El sonido solo acompaña al reproducir a velocidad normal. A 2× saldría con
-  el tono cambiado, que es peor que no oírlo.
-- Con un clip de audio seleccionado, la pestaña Transformar queda activa con
-  deslizadores que no hacen nada.
+- En las transiciones de video, el audio corta seco: no hay fundido cruzado
+  de audio.
+- El sonido solo acompaña al reproducir con el transporte a velocidad normal
+  (J-K-L); la velocidad de cada clip sí se oye.
+- La selección múltiple es con `Ctrl`+clic; no hay selección con rectángulo.
+- El desfase en rojo solo se calcula entre clips enlazados del mismo archivo.
+- La cola exporta un trabajo a la vez, y salir del editor la cancela.
 - La mezcla de audio recorta si la suma se pasa de 1.0, y no hay medidores
   para verlo venir.
-- La única transición es el fundido cruzado; no hay cortinillas ni efectos.
+- No hay cortinillas ni efectos de transición más allá de cruzada, a negro y
+  a blanco.
 - La viñeta es el ajuste más caro que hay: unos 12 ms por cuadro en 1080p.
 - La máscara es de una sola forma por capa, y sin animar.
 - No hay máscaras animadas ni seguimiento de movimiento.

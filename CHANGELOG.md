@@ -12,6 +12,114 @@ puede romper compatibilidad.
 
 Nada todavía.
 
+## [0.4.0a1] — 2026-09-12
+
+**El nivel 2 del roadmap, completo: usable a diario.** Lo que se usa todos
+los días al editar y que faltaba: encuadre para pasar de horizontal a
+vertical, fundidos a color, audio que respeta la velocidad, enlace de video
+y audio, portapapeles, interruptores de pista, panel de medios, proxies y
+exportar sin detener la edición. Sigue en pre-alfa: pasa 608 pruebas
+automáticas —115 más que la 0.3.0a1—, pero nadie la ha usado con material
+propio de verdad.
+
+**El formato del archivo subió a la versión 4.** Los proyectos de la 0.1 a
+la 0.3 abren sin problema. Al revés no.
+
+**Un cambio que se nota en proyectos viejos:** el material de otra
+proporción que la secuencia se **estiraba** para llenar el cuadro. Era un
+error y ya no pasa: los clips entran en modo Ajustar, con franjas. Si
+querías el cuadro lleno, Secuencia → Rellenar el cuadro con todos los clips.
+
+**Sigue sin ejecutables.** Los binarios llegan al terminar la pre-alfa.
+
+### Audio a otra velocidad
+
+- **Arreglado:** el audio de un clip con velocidad distinta de 1× se leía a
+  velocidad normal. Un clip a 2× sonaba el doble de largo que su imagen, y
+  todo lo que venía detrás en la pista se desfasaba. También se leía desde
+  el punto equivocado del archivo cuando la lectura empezaba a media clip.
+- Cada clip elige qué hace su sonido: **Mantener tono** (`atempo`, lo que
+  hace Premiere), **Cambiar tono** (`asetrate`, como una cinta) o
+  **Silenciar**. El audio dura exactamente lo que la imagen, muestra por
+  muestra.
+- El rango de velocidad es de 0.25× a 4×.
+
+### Encuadre, recorte y punto de anclaje
+
+- Tres modos por clip: **Ajustar**, **Rellenar** y **Estirar**. Rellenar es
+  cómo se hace un vertical a partir de un horizontal, y hay un comando para
+  aplicarlo a todos los clips de un jalón.
+- Recorte por orilla, al estilo del efecto Recortar de Premiere: lo
+  recortado queda transparente y la imagen no se mueve de lugar.
+- Punto de anclaje, con nueve posiciones listas: el clip crece y gira desde
+  ahí sin desplazarse.
+- Nada se pinta fuera del cuadro en el preview, aunque el clip esté
+  rellenado o crecido.
+
+### Transiciones
+
+- **Fundido a negro** y **a blanco**, además de la cruzada. En la primera
+  mitad el clip que sale se cubre de color y en la segunda se descubre el
+  que entra, sin mezclar los dos.
+
+### Títulos
+
+- Fuente, color y grosor del contorno, y sombra con color, distancia,
+  desenfoque y opacidad. La sombra desenfocada usa el mismo truco de las
+  máscaras —encoger y volver a estirar—, que corre en C++.
+
+### Enlace, portapapeles y pegar atributos
+
+- El video y su audio entran **enlazados**: se mueven, recortan, cortan,
+  deslizan, cambian de velocidad y se borran juntos. `Alt`+clic agarra un
+  solo lado; `Ctrl+L` enlaza o desenlaza. Si se desfasan, el clip marca en
+  rojo cuántos cuadros.
+- Selección múltiple con `Ctrl`+clic, y lo seleccionado se arrastra junto.
+- `Ctrl+C`, `Ctrl+X` y `Ctrl+V` para clips: se pega en el playhead, cada cosa
+  en su pista, pisando lo de abajo, y el playhead queda al final para pegar
+  otra vez detrás. Mientras se escribe en un cuadro de texto, esas teclas son
+  del cuadro.
+- `Ctrl+Shift+V` pega atributos: transformación, color, máscara y fusión,
+  velocidad, volumen y fundidos, eligiendo cuáles.
+
+### Pistas
+
+- Botones en cada cabecera: mostrar y bloquear en video y texto; silenciar,
+  solo y bloquear en audio. Una pista oculta no se pinta ni se exporta; una
+  bloqueada no deja seleccionar, mover, cortar ni borrar lo que tiene. Solo
+  manda y silencio gana, igual en el play que en el archivo.
+
+### Marcadores
+
+- Nombre, **nota** y **color**, en un diálogo que abre `Shift+M` o el doble
+  clic sobre el marcador. La nota aparece al pasar el cursor.
+- **Marcadores dentro del clip** (`Alt+Shift+M`), que viajan con él y se
+  reparten al dividirlo.
+- **Arreglado:** el nombre del marcador de la regla quedaba tapado por la
+  primera pista y nunca se veía.
+
+### Panel de medios y proxies
+
+- **Panel de medios** a la izquierda: todo lo importado, con miniatura,
+  buscador sin acentos ni mayúsculas y filtro por clase. Se arrastra a la
+  pista que quieras o se agrega con doble clic. Las miniaturas se sacan en
+  otro hilo y se guardan en la caché.
+- **Proxies de 540p** con interruptor global, recordado entre sesiones. Se
+  crean en segundo plano con un keyframe cada 15 cuadros —saltar es barato—
+  y conservando las marcas de tiempo del original. El preview los usa; la
+  exportación y el cuadro PNG leen siempre del original.
+
+### Cola de render
+
+- Exportar ya no detiene la edición: cada exportación va a una cola, con
+  su copia congelada de la secuencia, su barra de progreso y su botón de
+  cancelar. Un trabajo a la vez. Un error se reporta sin tumbar la cola.
+
+### Cambiado
+
+- Con un clip de audio seleccionado, la pestaña Transformar se apaga. Antes
+  quedaba prendida con deslizadores que no hacían nada.
+
 ## [0.3.0a1] — 2026-09-12
 
 **El nivel 1 del roadmap, completo.** Todo lo que un editor necesita para

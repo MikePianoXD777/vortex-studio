@@ -7,20 +7,21 @@ A non-linear video editor. Part of Vortex Suite.
 The features of DaVinci Resolve, CapCut, Premiere Pro and After Effects, but
 easy to use. The capability, yes; the complexity, no.
 
-> ### ⚠️ Pre-alpha — `0.3.0a1`
+> ### ⚠️ Pre-alpha — `0.4.0a1`
 >
-> **This is not ready for real work.** It passes 493 automated tests, but
+> **This is not ready for real work.** It passes 608 automated tests, but
 > nobody has actually used it on their own footage yet. That is not the same
 > as being tested.
 >
 > What to expect:
 >
 > - Things breaking in ways we haven't seen
-> - The `.vortex` file format moved to version 3: projects from 0.1 and 0.2
->   open fine, but not the other way around
-> - Audio of a clip with speed other than 1× drifts out of sync with the
->   picture
-> - The only transition is still the cross dissolve
+> - The `.vortex` file format moved to version 4: projects from 0.1 through
+>   0.3 open fine, but not the other way around
+> - An older project with footage in a different aspect ratio than the
+>   sequence looks different: it used to be stretched, now it's fitted with
+>   bars
+> - During video transitions, audio still hard-cuts
 >
 > Use it to poke around and to report what breaks. Not to edit anything you
 > care about without a backup.
@@ -98,9 +99,17 @@ environment if it doesn't exist.
 - Thirteen blend modes, and stacked video tracks
 - One-click picture in picture
 - Keyframe animation of position, scale, rotation and opacity
-- Fades, cross dissolve, clip speed and freeze frame
+- Fades, cross dissolve, dip to black and to white, and freeze frame
+- Speed from 0.25× to 4× with synced audio, keeping or shifting pitch
+- Fit, fill and stretch framing; crop and anchor point
+- Titles with font, colored outline and drop shadow
+- Linked video and audio; copy, paste and paste attributes
+- Show, lock, mute and solo per track
+- Media bin with thumbnails, search and drag to the timeline
+- 540p proxies with a global switch
+- Background render queue
 - Sound while editing, with track mixing and waveforms on the audio tracks
-- Markers
+- Markers with notes and colors, on the sequence and inside clips
 - Vertical, square and cinema formats
 - Export to MP4 at sequence size, 1080p or 4K, audio only, and the current
   frame to PNG
@@ -147,6 +156,17 @@ without opening windows, so it works over SSH or on a headless machine.
 | `test_looks.py` | Color looks and sequence formats |
 | `test_panel.py` | The tabbed panel and its auto-switching |
 | `test_identidad.py` | That two equal items stay distinct |
+| `test_velocidad_audio.py` | Audio at other speeds: pitch, exact length and sync |
+| `test_encuadre.py` | Fit, fill, stretch, crop and anchor point |
+| `test_transicion_color.py` | Dip to black and to white |
+| `test_titulos_estilo.py` | Title font, outline and shadow |
+| `test_pistas.py` | Show, lock, mute and solo per track |
+| `test_enlace.py` | Linked video and audio |
+| `test_portapapeles.py` | Copy, cut, paste and paste attributes |
+| `test_marcadores_clip.py` | Markers with notes and colors, on the sequence and in clips |
+| `test_panel_medios.py` | Media bin, thumbnails, search and drag |
+| `test_proxies.py` | 540p proxies and their switch |
+| `test_cola_render.py` | Background export, with progress and cancel |
 | `test_portabilidad.py` | That it behaves the same on Linux and Windows |
 
 ## Shortcuts
@@ -173,6 +193,9 @@ These are the defaults:
 | `S` / `Ctrl+K` | Split at the playhead |
 | `Alt+,` / `Alt+.` | Slip the content one frame back / forward |
 | `Ctrl+D` | Duplicate |
+| `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | Copy / cut / paste clips |
+| `Ctrl+Shift+V` | Paste attributes (color, transform, speed…) |
+| `Ctrl+L` | Link or unlink video and audio |
 | `Ctrl+/` | Keyboard shortcuts |
 | `Ctrl+Shift+D` | Fade the clip in and out |
 | `Ctrl+Shift+F` | Freeze the current frame |
@@ -189,16 +212,19 @@ These are the defaults:
 | `Home` / `End` | Go to start / end |
 | `J` `K` `Shift+L` | Slower / normal / faster |
 | `L` | Loop |
-| `Ctrl+Shift+A` | Cross dissolve with the previous clip |
+| `Ctrl+Shift+A` / `Ctrl+Shift+B` | Cross dissolve / dip to black with the previous clip |
 | `I` `O` / `Ctrl+Shift+X` | Mark in, out / clear marks |
-| `M` / `Shift+M` | Add marker / named marker |
+| `M` / `Shift+M` | Add marker / edit it: name, note and color |
+| `Alt+Shift+M` | Marker inside the selected clip |
 | `Shift+↓` `Shift+↑` | Next / previous marker |
 | `F` | Fullscreen |
 
 On the timeline: `Ctrl`+wheel zooms, dragging a clip moves it, dragging its
 edges trims it, and everything snaps to neighbouring cuts, the playhead and
 markers. With the slip tool (`Y`), dragging inside a clip changes which part
-of the file is shown without moving it.
+of the file is shown without moving it. `Ctrl`+click adds clips to the
+selection, `Alt`+click grabs just one side of a linked pair, and
+double-clicking a marker opens it.
 
 ## Layout
 
@@ -315,6 +341,38 @@ The project stores the animation's name and duration, not the keyframes it
 generates. That way, tuning a curve improves projects that already exist
 instead of breaking them.
 
+## Everyday editing
+
+**Framing.** Every clip has its mode: *Fit* (whole, with bars), *Fill* (fills
+the frame and the excess spills out) or *Stretch*. To turn a horizontal edit
+vertical: Sequence → Vertical 9:16, then Sequence → Fill the frame with every
+clip. Under Transform → Framing and crop you crop per edge — the cropped part
+turns transparent and the picture doesn't move — and pick the anchor point
+the clip scales and rotates from.
+
+**Transitions.** Besides the cross dissolve, dip to black and to white. Add
+them from the Clip menu or the Clip tab, where the type can also be changed.
+
+**Titles.** Font, color, size and alignment up front; outline with color and
+width, and a drop shadow with color, distance, blur and opacity in a group
+of their own.
+
+**Linking.** Video and its audio come in linked: they move, trim, cut, slip,
+change speed and delete together. `Alt`+click grabs just one, and `Ctrl+L`
+unlinks them. If they drift apart, the clip shows how many frames in red.
+
+**Clipboard.** `Ctrl+C` and `Ctrl+V` paste at the playhead, each item on its
+own track, and the playhead lands at the end so you can paste again right
+after. What you paste overwrites what's underneath. `Ctrl+Shift+V` pastes
+only the settings you pick.
+
+**Tracks.** Every header has its buttons: show and lock on video and text;
+mute, solo and lock on audio. A locked track won't let you select, move or
+delete anything on it.
+
+**Markers.** They carry a name, a note and a color, on the ruler or inside a
+clip. Clip markers travel with the clip. The note shows up on hover.
+
 ## Sound
 
 You hear it while editing, with volume and mute on the transport bar. The
@@ -333,6 +391,11 @@ The sum can go past full scale and clip, same as Premiere. It's allowed to
 clip rather than adding a limiter, because a limiter needs to look ahead and
 that lookahead would push the sound out of sync with the picture. Per-clip
 gain is there for that.
+
+**At other speeds**, each clip chooses what its sound does: *Keep pitch* (like
+Premiere: a voice sounds natural), *Shift pitch* (like tape: higher when sped
+up) or *Mute*. The range is 0.25× to 4×, and the audio lasts exactly as long
+as the picture.
 
 ## Smooth preview
 
@@ -356,6 +419,16 @@ leading.
 file actually contains, not from its extension. Standalone audio lands on
 the first audio track that's free for that span.
 
+Everything imported stays in the **media bin**, on the left, with a thumbnail
+and a search box (accent- and case-insensitive, and by kind). From there you
+drag it onto any track or double-click to add it at the playhead. File →
+Import to the media bin brings in several files without placing them on the
+timeline.
+
+**Proxies.** View → Use proxies (540p) makes the preview read lightweight
+copies of heavy videos; they're created on their own in the background.
+Export always reads the originals. The switch is remembered between sessions.
+
 What's known about each file — duration, resolution, codecs, channels — is
 stored in the project and isn't read again while the file doesn't change.
 The audio waveform goes to the system cache, so it shows up instantly when a
@@ -365,7 +438,12 @@ project is reopened.
 
 `Ctrl+E` writes an MP4 (H.264) with everything burned in: cuts, text, images
 and color correction. If in and out marks are set, only that range is
-exported. It can be cancelled mid-export; the incomplete file is deleted.
+exported.
+
+Exports go to the **render queue** and you can keep editing: each one takes a
+frozen copy of the sequence, so whatever you edit afterwards doesn't change
+the file. Every job has its progress bar and cancel button; the incomplete
+file is deleted.
 
 ## Autosave
 
@@ -394,18 +472,17 @@ literal warning.
 
 ## Not there yet
 
-- **Audio of a clip with speed other than 1× is read at normal speed**, so it
-  drifts out of sync with the picture, in playback and export. Audio speed
-  belongs to level 2.
-- Export still decodes on the UI thread, with the progress bar on top.
-  Moving it off is the render queue, from level 2.
-- Sound only follows playback at normal speed. At 2× it would come out
-  pitch-shifted, which is worse than not hearing it.
-- With an audio clip selected, the Transform tab stays enabled with sliders
-  that do nothing.
+- During video transitions, audio hard-cuts: there's no audio crossfade.
+- Sound only follows playback with the transport at normal speed (J-K-L);
+  each clip's own speed is heard.
+- Multi-selection is `Ctrl`+click only; no rubber-band selection.
+- The red drift badge is only computed between linked clips from the same
+  file.
+- The queue exports one job at a time, and quitting the editor cancels it.
 - The audio mix clips when the sum goes past 1.0, and there are no meters to
   see it coming.
-- The only transition is the cross dissolve; no wipes, no effects.
+- No wipes or transition effects beyond cross, dip to black and dip to
+  white.
 - The vignette is the most expensive adjustment there is: around 12 ms per
   frame at 1080p.
 - One mask shape per layer, and it can't be animated.
