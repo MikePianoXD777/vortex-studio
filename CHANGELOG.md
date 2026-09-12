@@ -19,6 +19,9 @@ anima, suena y exporta. Pasa 167 pruebas automáticas, pero nadie la ha usado
 todavía con material propio, así que cuenta con que algo se rompa. El formato
 del archivo `.vortex` puede cambiar antes de la 0.1.0 de verdad.
 
+**Sin ejecutables.** No hay `.exe` ni binario de Linux: hay que compilarlo
+con `./correr.sh` o `construir.bat`. Habrá binarios cuando esté más estable.
+
 ### Reproductor
 
 - Reproducción guiada por reloj real: la posición se calcula contra el

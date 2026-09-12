@@ -18,6 +18,10 @@ animates, plays sound and exports. It passes 167 automated tests, but nobody
 has used it on their own footage yet, so expect things to break. The
 `.vortex` file format may change before a real 0.1.0.
 
+**No executables.** There is no `.exe` and no Linux binary: you have to build
+it with `./correr.sh` or `construir.bat`. Binaries will come once it's more
+stable.
+
 ### Player
 
 - Playback driven by a real clock: the position is computed against elapsed

@@ -24,6 +24,18 @@ fáciles de usar. La capacidad sí; la complejidad no.
 > Úsalo para curiosear y para reportar lo que se rompa. No para editar algo
 > que te importe sin respaldo.
 
+> ### 📦 No hay descarga lista para usar
+>
+> **No publicamos ejecutables todavía.** No hay `.exe` para Windows ni
+> binario para Linux: en este repo solo está el código fuente.
+>
+> Para usarlo **tienes que compilarlo tú**, y para eso necesitas Python 3.11
+> o más nuevo. Los pasos están justo abajo. Toma un par de minutos la
+> primera vez, casi todo bajando PySide6, que pesa unos 250 MB.
+>
+> Habrá binarios cuando esté más estable; en pre-alfa no tiene sentido
+> publicarlos.
+
 ## Arranque
 
 Linux y macOS:
@@ -214,6 +226,13 @@ editor. Hay una prueba que lo vigila.
 - Formatos vertical, cuadrado y cine
 - Exportar a MP4 con audio, y el cuadro actual a PNG
 - Guardar y abrir proyectos, portables entre carpetas y sistemas
+
+## Licencia
+
+[MIT](LICENSE). Puedes usarlo, modificarlo y distribuirlo, incluso en algo
+comercial; lo único que se pide es conservar el aviso de copyright. Sin
+garantía de ninguna clase — y en pre-alfa eso no es una fórmula legal, es
+una advertencia literal.
 
 ## Pendiente
 

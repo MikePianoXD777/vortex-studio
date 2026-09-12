@@ -23,6 +23,18 @@ easy to use. The capability, yes; the complexity, no.
 > Use it to poke around and to report what breaks. Not to edit anything you
 > care about without a backup.
 
+> ### 📦 There is no ready-made download
+>
+> **We don't publish executables yet.** There is no `.exe` for Windows and no
+> Linux binary: this repo is source code only.
+>
+> To use it you **have to build it yourself**, which needs Python 3.11 or
+> newer. The steps are right below. It takes a couple of minutes the first
+> time, mostly downloading PySide6, which is around 250 MB.
+>
+> Binaries will come once it's more stable; publishing them in pre-alpha
+> makes no sense.
+
 ## Getting started
 
 Linux and macOS:
@@ -217,6 +229,13 @@ opens. Only footage living elsewhere is stored with an absolute path.
 There is no `Ctrl+Alt` shortcut anywhere: on Windows with a Latin American
 keyboard, `AltGr` sends exactly that, and typing `@` or `\` would fire editor
 commands. A test watches for it.
+
+## License
+
+[MIT](LICENSE). You can use, modify and distribute it, including in something
+commercial; all that's asked is that you keep the copyright notice. No
+warranty of any kind — and in pre-alpha that isn't legal boilerplate, it's a
+literal warning.
 
 ## Not there yet
 
