@@ -35,7 +35,10 @@ from vortex_studio.model.media import AUDIO, IMAGE, lookup
 from vortex_studio.media.pool import SourcePool
 
 from vortex_studio.media.mixer import AudioMixer
-from vortex_studio.media.encoder import QUALITY, Cancelled, export_video
+from vortex_studio.media.encoder import QUALITY, Cancelled, export_audio, export_video
+from vortex_studio.media.presets import AUDIO as AUDIO_PRESET
+from vortex_studio.media.presets import DEFAULT as DEFAULT_PRESET
+from vortex_studio.media.presets import PRESETS, by_name, output_size
 from vortex_studio.model import (
     ANCHORS,
     BLENDS,
@@ -74,6 +77,7 @@ MEDIA_FILTER = (
 PROJECT_FILTER = f"Proyecto de Vortex Studio (*{EXTENSION});;Todos los archivos (*)"
 EXPORT_FILTER = "PNG (*.png);;JPEG (*.jpg)"
 VIDEO_OUT_FILTER = "Video MP4 (*.mp4)"
+AUDIO_OUT_FILTER = "Audio M4A (*.m4a)"
 
 HEAVY_MODIFIERS = Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier
 
@@ -797,23 +801,36 @@ class MainWindow(QMainWindow):
         if options.exec() != QDialog.Accepted:
             return
 
+        preset = options.preset()
+        solo_audio = preset.kind == AUDIO_PRESET
+        if solo_audio and not self._audio_clips():
+            self.statusBar().showMessage("No hay audio que exportar.", 5000)
+            return
+
+        nombre = self._path.stem if self._path else ("audio" if solo_audio else "video")
         path, _ = QFileDialog.getSaveFileName(
-            self, "Exportar video", f"{self._path.stem if self._path else 'video'}.mp4",
-            VIDEO_OUT_FILTER)
+            self, "Exportar audio" if solo_audio else "Exportar video",
+            f"{nombre}{preset.extension}",
+            AUDIO_OUT_FILTER if solo_audio else VIDEO_OUT_FILTER)
         if not path:
             return
 
         self._pause()
-        self._run_export(Path(path), start, end, options.quality(),
-                         options.with_audio())
+        self._run_export(Path(path).with_suffix(preset.extension), start, end,
+                         options.quality(), options.with_audio(), preset)
 
     def _audio_clips(self) -> list:
         return [c for track in self.sequence.audio_tracks() for c in track.clips]
 
     def _run_export(self, path: Path, start: float, end: float,
-                    quality: str, with_audio: bool) -> None:
+                    quality: str, with_audio: bool, preset=DEFAULT_PRESET) -> bool:
+        """Exporta con el preset elegido. Devuelve si el archivo quedó hecho."""
+        if preset.kind == AUDIO_PRESET:
+            return self._run_audio_export(path, start, end)
+
         fps = self.sequence.fps
         total = max(1, int(round((end - start) * fps)))
+        ancho, alto = output_size(preset, self.sequence.width, self.sequence.height)
 
         dialog = QProgressDialog("Exportando…", "Cancelar", 0, total, self)
         dialog.setWindowTitle("Exportar video")
@@ -830,10 +847,10 @@ class MainWindow(QMainWindow):
         try:
             export_video(
                 path,
-                self._frames(start, end, fps),
+                self._frames(start, end, fps, (ancho, alto)),
                 total,
-                self.sequence.width,
-                self.sequence.height,
+                ancho,
+                alto,
                 fps,
                 quality,
                 report,
@@ -842,32 +859,69 @@ class MainWindow(QMainWindow):
             )
         except Cancelled:
             dialog.close()
-            return
+            return False
         except Exception as error:
             dialog.close()
             QMessageBox.critical(self, "Falló la exportación", str(error))
-            return
+            return False
         finally:
             self._seek(self.timeline.playhead)
 
         dialog.close()
+        # A la barra de estado y no a un diálogo: terminar de exportar no
+        # amerita detener al usuario con un clic de "Aceptar".
         sonido = "con audio" if with_audio and self._audio_clips() else "sin audio"
-        QMessageBox.information(
-            self, "Exportado",
-            f"{path.name}\n\n{total} cuadros · {(end - start):.1f} s · {sonido}")
+        self.statusBar().showMessage(
+            f"Exportado: {path.name}  ·  {ancho}×{alto}  ·  {total} cuadros  ·  "
+            f"{(end - start):.1f} s  ·  {sonido}", 10000)
+        return True
 
-    def _frames(self, start: float, end: float, fps: float):
+    def _run_audio_export(self, path: Path, start: float, end: float) -> bool:
+        if not self._audio_clips():
+            self.statusBar().showMessage("No hay audio que exportar.", 5000)
+            return False
+
+        total = max(1, int(round((end - start) * 1000)))
+        dialog = QProgressDialog("Exportando audio…", "Cancelar", 0, total, self)
+        dialog.setWindowTitle("Exportar audio")
+        dialog.setWindowModality(Qt.WindowModal)
+        dialog.setMinimumDuration(0)
+        dialog.setAutoClose(False)
+
+        def report(done: int, of: int) -> bool:
+            dialog.setValue(done)
+            dialog.setLabelText(f"{done / 1000:.1f} de {of / 1000:.1f} s")
+            return not dialog.wasCanceled()
+
+        try:
+            export_audio(path, AudioMixer(self._audio_clips()).stream(start, end),
+                         end - start, report)
+        except Cancelled:
+            dialog.close()
+            return False
+        except Exception as error:
+            dialog.close()
+            QMessageBox.critical(self, "Falló la exportación", str(error))
+            return False
+
+        dialog.close()
+        self.statusBar().showMessage(
+            f"Exportado: {path.name}  ·  solo audio  ·  {(end - start):.1f} s", 10000)
+        return True
+
+    def _frames(self, start: float, end: float, fps: float, size=None):
         """Va entregando el cuadro compuesto de cada instante.
 
         Es un generador para que la codificación avance mientras se dibuja,
         en vez de armar todos los cuadros en memoria primero — una secuencia
         de un minuto en 1080p serían varios gigabytes.
         """
+        ancho, alto = size or (self.sequence.width, self.sequence.height)
         count = max(1, int(round((end - start) * fps)))
         for index in range(count):
             t = start + index / fps
             yield compose(
-                self.sequence.width, self.sequence.height,
+                ancho, alto,
                 self._layers_at(t),
                 [(o, self._image_for(o.source)) for o in self.sequence.overlays_at(t)],
                 self.sequence.titles_at(t),
@@ -1611,48 +1665,83 @@ class MainWindow(QMainWindow):
 
 
 class ExportDialog(QDialog):
-    """Qué se va a exportar y con qué calidad, antes de pedir el archivo."""
+    """Qué se va a exportar, con qué preset y qué calidad, antes de pedir el archivo."""
 
     def __init__(self, parent, start: float, end: float, sequence) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Exportar video")
-        self.setMinimumWidth(340)
+        self.setWindowTitle("Exportar")
+        self.setMinimumWidth(380)
+        self._sequence = sequence
 
         marked = (start, end) != (0.0, sequence.duration)
         rango = (f"{timecode(start, sequence.fps)} → {timecode(end, sequence.fps)}"
                  f"{'   (entre las marcas)' if marked else ''}")
+
+        self._preset = QComboBox()
+        self._preset.addItems([p.name for p in PRESETS])
+        self._preset.setCurrentText(DEFAULT_PRESET.name)
+
+        self._descripcion = QLabel()
+        self._descripcion.setWordWrap(True)
+        self._descripcion.setStyleSheet("color:#7d838c; font-size:11px;")
+
+        self._size = QLabel()
 
         self._quality = QComboBox()
         self._quality.addItems(QUALITY.keys())
         self._quality.setCurrentText("Normal")
 
         pistas = sum(len(t.clips) for t in sequence.audio_tracks())
+        self._hay_audio = pistas > 0
         self._audio = QCheckBox(f"Incluir audio ({pistas} clip{'s' if pistas != 1 else ''})")
-        self._audio.setChecked(pistas > 0)
-        self._audio.setEnabled(pistas > 0)
+        self._audio.setChecked(self._hay_audio)
+        self._audio.setEnabled(self._hay_audio)
 
         form = QFormLayout()
+        form.addRow("Preset:", self._preset)
+        form.addRow("", self._descripcion)
         form.addRow("Tramo:", QLabel(rango))
         form.addRow("Duración:", QLabel(f"{end - start:.2f} s"))
-        form.addRow("Tamaño:", QLabel(f"{sequence.width} × {sequence.height}"))
+        form.addRow("Tamaño:", self._size)
         form.addRow("Cuadros por segundo:", QLabel(f"{sequence.fps:g}"))
         form.addRow("Calidad:", self._quality)
-
-        aviso = QLabel("El audio se exporta al archivo, pero todavía no suena "
-                       "durante la edición: no hay motor de reproducción de sonido.")
-        aviso.setWordWrap(True)
-        aviso.setStyleSheet("color:#a8763d; font-size:10px;")
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.button(QDialogButtonBox.Ok).setText("Exportar")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
+        self._ok = buttons.button(QDialogButtonBox.Ok)
 
         layout = QVBoxLayout(self)
         layout.addLayout(form)
         layout.addWidget(self._audio)
-        layout.addWidget(aviso)
         layout.addWidget(buttons)
+
+        self._preset.currentTextChanged.connect(self._preset_changed)
+        self._preset_changed(self._preset.currentText())
+
+    def _preset_changed(self, nombre: str) -> None:
+        """Lo que no aplica al preset se apaga, en vez de ignorarse en silencio."""
+        preset = by_name(nombre)
+        self._descripcion.setText(preset.description)
+
+        if preset.kind == AUDIO_PRESET:
+            self._size.setText("solo audio")
+            self._quality.setEnabled(False)
+            self._audio.setChecked(self._hay_audio)
+            self._audio.setEnabled(False)
+            self._ok.setEnabled(self._hay_audio)
+            if not self._hay_audio:
+                self._descripcion.setText("La secuencia no tiene audio que exportar.")
+        else:
+            ancho, alto = output_size(preset, self._sequence.width, self._sequence.height)
+            self._size.setText(f"{ancho} × {alto}")
+            self._quality.setEnabled(True)
+            self._audio.setEnabled(self._hay_audio)
+            self._ok.setEnabled(True)
+
+    def preset(self):
+        return by_name(self._preset.currentText())
 
     def quality(self) -> str:
         return self._quality.currentText()

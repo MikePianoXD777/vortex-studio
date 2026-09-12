@@ -126,6 +126,48 @@ def export_video(
     return path
 
 
+def export_audio(
+    path: str | Path,
+    audio: Iterator,
+    seconds: float,
+    progress: Callable[[int, int], bool] | None = None,
+    rate: int = 48000,
+    layout: str = "stereo",
+) -> Path:
+    """Escribe solo el sonido, en AAC dentro de un .m4a.
+
+    `progress` recibe milisegundos (hechos, total) y devuelve False para
+    cancelar. Igual que con el video: si se cancela, el archivo a medias se
+    borra.
+
+    Se escribe de medio segundo en medio segundo y no de un jalón, para que
+    la barra de progreso se mueva y el botón de cancelar responda.
+    """
+    if not HAS_PYAV:
+        raise RuntimeError("PyAV no está instalado: no se puede exportar")
+
+    path = Path(path)
+    total = max(1, int(round(seconds * 1000)))
+    container = av.open(str(path), mode="w")
+    closed = False
+    try:
+        sound = _AudioWriter(container, audio, rate, layout)
+        hecho = 0
+        while hecho < total:
+            hecho = min(total, hecho + 500)
+            sound.advance(hecho / 1000.0)
+            if progress is not None and not progress(hecho, total):
+                container.close()
+                closed = True
+                path.unlink(missing_ok=True)
+                raise Cancelled()
+        sound.finish()
+    finally:
+        if not closed:
+            container.close()
+    return path
+
+
 class Cancelled(Exception):
     """La exportación se detuvo a petición del usuario."""
 
