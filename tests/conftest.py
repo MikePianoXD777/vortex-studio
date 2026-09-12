@@ -24,6 +24,10 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 # banco llenaría la carpeta de caché real del usuario.
 os.environ.setdefault("VORTEX_CACHE_DIR", tempfile.mkdtemp(prefix="vortex-cache-"))
 
+# Lo mismo con la configuración: sin esto, una prueba de atajos reescribiría
+# los atajos reales del usuario.
+os.environ.setdefault("VORTEX_CONFIG_DIR", tempfile.mkdtemp(prefix="vortex-config-"))
+
 
 def _ffmpeg(*args: str) -> None:
     subprocess.run([FFMPEG, "-y", "-loglevel", "error", *args], check=True)

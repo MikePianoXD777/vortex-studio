@@ -8,6 +8,7 @@ from pathlib import Path
 from PySide6.QtCore import QElapsedTimer, Qt, QTimer
 from PySide6.QtGui import QAction, QActionGroup, QImage, QKeySequence
 from PySide6.QtWidgets import (
+    QAbstractSlider,
     QAbstractSpinBox,
     QApplication,
     QCheckBox,
@@ -17,6 +18,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QInputDialog,
+    QKeySequenceEdit,
     QLabel,
     QLineEdit,
     QMainWindow,
@@ -52,6 +54,7 @@ from vortex_studio.ui.audio_player import AudioPlayer
 from vortex_studio.ui.compositor import Layer, clear_mask_cache, compose
 from vortex_studio.ui.panels import PropertiesPanel
 from vortex_studio.ui.preview import PreviewWidget
+from vortex_studio.ui.shortcuts import DEFAULTS, ShortcutsDialog, load_shortcuts
 from vortex_studio.ui.timeline import TOOL_RAZOR, TOOL_SELECT, TimelineWidget
 from vortex_studio.ui.transport import SPEEDS, TransportBar
 
@@ -73,11 +76,30 @@ VIDEO_OUT_FILTER = "Video MP4 (*.mp4)"
 
 HEAVY_MODIFIERS = Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier
 
+NAV_KEYS = {Qt.Key_Left, Qt.Key_Right, Qt.Key_Up, Qt.Key_Down,
+            Qt.Key_Home, Qt.Key_End, Qt.Key_PageUp, Qt.Key_PageDown}
+
+# Widgets donde el usuario escribe: ahí los atajos de tecla suelta se apagan.
+TYPING_WIDGETS = (QPlainTextEdit, QLineEdit, QAbstractSpinBox, QComboBox, QKeySequenceEdit)
+
+
+def _is_nav_key(sequence: QKeySequence) -> bool:
+    """¿El atajo usa flechas, Inicio, Fin o Re Pág / Av Pág?"""
+    return not sequence.isEmpty() and sequence[0].key() in NAV_KEYS
+
 
 def _is_plain_key(sequence: QKeySequence) -> bool:
-    """¿El atajo es una tecla suelta, sin Ctrl ni Alt?"""
+    """¿El atajo le estorba a quien está escribiendo?
+
+    Una tecla suelta, sin Ctrl ni Alt, sí: teclear una "c" activaría la
+    navaja. Y las de navegación también, **aunque lleven Ctrl**: `Ctrl+←`
+    salta una palabra dentro de un cuadro de texto, y como atajo del editor
+    se la robaría a quien está corrigiendo un subtítulo.
+    """
     if sequence.isEmpty():
         return False
+    if _is_nav_key(sequence):
+        return True
     return not bool(sequence[0].keyboardModifiers() & HEAVY_MODIFIERS)
 
 
@@ -108,6 +130,9 @@ class MainWindow(QMainWindow):
         # el bucle y borra el clip seleccionado, y las letras ni siquiera
         # llegan al cuadro de texto porque el atajo se las come antes.
         self._plain_actions: list[QAction] = []
+        self._nav_actions: list[QAction] = []
+        self._actions: dict[str, QAction] = {}      # clave del mapa -> acción
+        self.shortcuts, self.shortcut_problems = load_shortcuts()
 
         self._playing = False
         self._speed = 1.0
@@ -141,6 +166,7 @@ class MainWindow(QMainWindow):
         self._connect()
         self._update_title()
         self._update_status()
+        self._announce_shortcut_problems()
 
         # Reproducción guiada por reloj real, no por conteo de ticks.
         # `_origin` es el punto de la secuencia donde se dio play y `_elapsed`
@@ -191,42 +217,48 @@ class MainWindow(QMainWindow):
         self.resizeDocks([self.panel], [330], Qt.Horizontal)
 
     def _build_menu(self) -> None:
+        # Cada atajo se pide por su clave, no por su tecla: la tecla sale del
+        # mapa de atajos (`ui/shortcuts.py`), que el usuario puede cambiar.
         archivo = self.menuBar().addMenu("&Archivo")
-        self._action(archivo, "&Nuevo proyecto", QKeySequence.New, self.new_project)
-        self._action(archivo, "&Abrir proyecto…", QKeySequence.Open, self.open_project)
+        self._action(archivo, "&Nuevo proyecto", "archivo.nuevo", self.new_project)
+        self._action(archivo, "&Abrir proyecto…", "archivo.abrir", self.open_project)
         archivo.addSeparator()
-        self._action(archivo, "&Guardar", QKeySequence.Save, self.save)
-        self._action(archivo, "Guardar &como…", "Ctrl+Shift+S", self.save_as)
+        self._action(archivo, "&Guardar", "archivo.guardar", self.save)
+        self._action(archivo, "Guardar &como…", "archivo.guardar_como", self.save_as)
         archivo.addSeparator()
-        self._action(archivo, "&Importar…", "Ctrl+I", self.import_media)
-        self._action(archivo, "Exportar &video…", "Ctrl+E", self.export_video)
-        self._action(archivo, "Exportar &cuadro…", "Ctrl+Shift+E", self.export_frame)
+        self._action(archivo, "&Importar…", "archivo.importar", self.import_media)
+        self._action(archivo, "Exportar &video…", "archivo.exportar_video", self.export_video)
+        self._action(archivo, "Exportar &cuadro…", "archivo.exportar_cuadro", self.export_frame)
         archivo.addSeparator()
-        self._action(archivo, "&Salir", QKeySequence.Quit, self.close)
+        self._action(archivo, "&Salir", "archivo.salir", self.close)
 
         editar = self.menuBar().addMenu("&Editar")
-        self._undo_action = self._action(editar, "&Deshacer", QKeySequence.Undo, self.undo)
-        self._redo_action = self._action(editar, "&Rehacer", "Ctrl+Shift+Z", self.redo)
+        self._undo_action = self._action(editar, "&Deshacer", "editar.deshacer", self.undo)
+        self._redo_action = self._action(editar, "&Rehacer", "editar.rehacer", self.redo)
         editar.addSeparator()
-        self._action(editar, "&Cortar en el playhead", "Ctrl+K", self.cut_at_playhead)
-        self._action(editar, "&Duplicar", "Ctrl+D", self.duplicate_selected)
-        self._action(editar, "&Eliminar", "Delete", self.delete_selected)
-        self._action(editar, "Eliminar y &cerrar hueco", "Shift+Delete", self.ripple_delete)
+        self._action(editar, "&Cortar en el playhead", "editar.cortar", self.cut_at_playhead)
+        self._action(editar, "&Duplicar", "editar.duplicar", self.duplicate_selected)
+        self._action(editar, "&Eliminar", "editar.eliminar", self.delete_selected)
+        self._action(editar, "Eliminar y &cerrar hueco", "editar.eliminar_hueco",
+                     self.ripple_delete)
         editar.addSeparator()
 
         herramientas = QActionGroup(self)
-        for label, shortcut, tool in (("Selección", "V", TOOL_SELECT),
-                                      ("Navaja", "C", TOOL_RAZOR)):
-            action = self._action(editar, f"Herramienta: {label}", shortcut,
+        for label, clave, tool in (("Selección", "herramienta.seleccion", TOOL_SELECT),
+                                   ("Navaja", "herramienta.navaja", TOOL_RAZOR)):
+            action = self._action(editar, f"Herramienta: {label}", clave,
                                   lambda _=False, t=tool: self.set_tool(t))
             action.setCheckable(True)
             action.setChecked(tool == TOOL_SELECT)
             herramientas.addAction(action)
+        editar.addSeparator()
+        self._action(editar, "Atajos de &teclado…", "editar.atajos", self.open_shortcuts)
 
         # Nada de atajos con Ctrl+Alt: en Windows, con teclado latinoamericano,
-        # AltGr manda Ctrl+Alt, así que escribir @ o \ los dispararía.
+        # AltGr manda Ctrl+Alt, así que escribir @ o \ los dispararía. El mapa
+        # de atajos lo valida; ver `ui/shortcuts.py`.
         clip_menu = self.menuBar().addMenu("&Clip")
-        self._action(clip_menu, "&Fundir entrada y salida", "Ctrl+Shift+D",
+        self._action(clip_menu, "&Fundir entrada y salida", "clip.fundir",
                      lambda: self.set_fade(entrada=1.0, salida=1.0))
         self._action(clip_menu, "Fundido de &entrada (1 s)", None,
                      lambda: self.set_fade(entrada=1.0))
@@ -240,13 +272,13 @@ class MainWindow(QMainWindow):
             self._action(clip_menu, etiqueta, None,
                          lambda _=False, v=valor: self.set_clip_speed(v))
         clip_menu.addSeparator()
-        self._action(clip_menu, "&Transición cruzada (1 s)", "Ctrl+Shift+A",
+        self._action(clip_menu, "&Transición cruzada (1 s)", "clip.transicion",
                      lambda: self.set_dissolve(1.0))
         self._action(clip_menu, "Quitar &transición", None, lambda: self.set_dissolve(0.0))
         clip_menu.addSeparator()
-        self._action(clip_menu, "&Congelar cuadro", "Ctrl+Shift+F", self.freeze_frame)
+        self._action(clip_menu, "&Congelar cuadro", "clip.congelar", self.freeze_frame)
         clip_menu.addSeparator()
-        self._action(clip_menu, "Poner &keyframe de todo", "Ctrl+Shift+K",
+        self._action(clip_menu, "Poner &keyframe de todo", "clip.keyframe",
                      self.key_all_transform)
         self._action(clip_menu, "Quitar a&nimación", None, self.clear_transform_keys)
 
@@ -263,40 +295,59 @@ class MainWindow(QMainWindow):
         mascara.addSeparator()
         self._action(mascara, "&Invertir la máscara", None, self.invert_mask)
         capa.addSeparator()
-        self._action(capa, "&Cuadro dentro de cuadro", "Ctrl+Shift+P",
-                     self.picture_in_picture)
+        self._action(capa, "&Cuadro dentro de cuadro", "capa.pip", self.picture_in_picture)
         self._action(capa, "&Llenar el cuadro", None, self.fill_frame)
 
         insertar = self.menuBar().addMenu("&Insertar")
-        self._action(insertar, "&Texto", "Ctrl+T", self.add_title)
-        self._action(insertar, "&Subtítulo aquí", "Ctrl+Shift+T",
+        self._action(insertar, "&Texto", "insertar.texto", self.add_title)
+        self._action(insertar, "&Subtítulo aquí", "insertar.subtitulo",
                      lambda: self.add_title(anchor="Subtítulo"))
-        self._action(insertar, "&Imagen…", "Ctrl+Shift+I", self.import_image)
+        self._action(insertar, "&Imagen…", "insertar.imagen", self.import_image)
 
         reproducir = self.menuBar().addMenu("&Reproducción")
-        self._action(reproducir, "Reproducir / pausar", "Space", self.toggle_play)
+        self._action(reproducir, "Reproducir / pausar", "reproducir.play", self.toggle_play)
         reproducir.addSeparator()
-        self._action(reproducir, "Más lento", "J", lambda: self._shift_speed(-1))
-        self._action(reproducir, "Velocidad normal", "K", lambda: self.set_speed(1.0))
-        self._action(reproducir, "Más rápido", "Shift+L", lambda: self._shift_speed(1))
+        self._action(reproducir, "Más lento", "reproducir.lento", lambda: self._shift_speed(-1))
+        self._action(reproducir, "Velocidad normal", "reproducir.normal",
+                     lambda: self.set_speed(1.0))
+        self._action(reproducir, "Más rápido", "reproducir.rapido", lambda: self._shift_speed(1))
         reproducir.addSeparator()
-        self._loop_action = self._action(reproducir, "Repetir", "L", self.toggle_loop)
+        self._loop_action = self._action(reproducir, "Repetir", "reproducir.repetir",
+                                         self.toggle_loop)
         self._loop_action.setCheckable(True)
+        reproducir.addSeparator()
+
+        # Las flechas, Inicio y Fin eran teclas escritas dentro de
+        # `keyPressEvent`, fuera de cualquier mapa. Como acciones se pueden
+        # cambiar, aparecen en el menú, y se apagan solas al escribir.
+        navegar = reproducir.addMenu("&Navegar")
+        for texto, clave, slot in (
+            ("Cuadro anterior", "navegar.cuadro_atras", lambda: self._step(-1)),
+            ("Cuadro siguiente", "navegar.cuadro_adelante", lambda: self._step(1)),
+            ("Un segundo atrás", "navegar.segundo_atras", lambda: self._skip(-1.0)),
+            ("Un segundo adelante", "navegar.segundo_adelante", lambda: self._skip(1.0)),
+            ("Diez segundos atrás", "navegar.diez_atras", lambda: self._skip(-10.0)),
+            ("Diez segundos adelante", "navegar.diez_adelante", lambda: self._skip(10.0)),
+            ("Ir al inicio", "navegar.inicio", lambda: self._scrubbed(0.0)),
+            ("Ir al final", "navegar.final", lambda: self._scrubbed(self.sequence.duration)),
+        ):
+            self._action(navegar, texto, clave, slot)
 
         marcar = self.menuBar().addMenu("&Marcar")
-        self._action(marcar, "Marcar &entrada", "I", self.mark_in)
-        self._action(marcar, "Marcar &salida", "O", self.mark_out)
-        self._action(marcar, "&Quitar marcas", "Ctrl+Shift+X", self.clear_marks)
+        self._action(marcar, "Marcar &entrada", "marcar.entrada", self.mark_in)
+        self._action(marcar, "Marcar &salida", "marcar.salida", self.mark_out)
+        self._action(marcar, "&Quitar marcas", "marcar.quitar", self.clear_marks)
         marcar.addSeparator()
-        self._action(marcar, "Poner &marcador", "M", self.add_marker)
-        self._action(marcar, "Marcador con &nombre…", "Shift+M", self.add_named_marker)
-        self._action(marcar, "Marcador &siguiente", "Shift+Down", self.next_marker)
-        self._action(marcar, "Marcador &anterior", "Shift+Up", self.previous_marker)
-        self._action(marcar, "&Borrar marcadores", "Ctrl+Shift+M", self.clear_markers)
+        self._action(marcar, "Poner &marcador", "marcar.marcador", self.add_marker)
+        self._action(marcar, "Marcador con &nombre…", "marcar.marcador_nombre",
+                     self.add_named_marker)
+        self._action(marcar, "Marcador &siguiente", "marcar.siguiente", self.next_marker)
+        self._action(marcar, "Marcador &anterior", "marcar.anterior", self.previous_marker)
+        self._action(marcar, "&Borrar marcadores", "marcar.borrar", self.clear_markers)
         marcar.addSeparator()
-        self._action(marcar, "Ir a la entrada", "Shift+I",
+        self._action(marcar, "Ir a la entrada", "marcar.ir_entrada",
                      lambda: self._scrubbed(self.timeline.mark_in or 0.0))
-        self._action(marcar, "Ir a la salida", "Shift+O",
+        self._action(marcar, "Ir a la salida", "marcar.ir_salida",
                      lambda: self._scrubbed(self.timeline.mark_out or self.sequence.duration))
 
         formato = self.menuBar().addMenu("&Secuencia")
@@ -313,30 +364,73 @@ class MainWindow(QMainWindow):
         self._action(formato, "Ajustar al primer clip", None, self.format_from_clip)
 
         ver = self.menuBar().addMenu("&Ver")
-        self._action(ver, "Pantalla &completa", "F", self.toggle_fullscreen)
-        self._action(ver, "&Ajustar timeline", "Shift+Z", self._fit_zoom)
+        self._action(ver, "Pantalla &completa", "ver.pantalla_completa", self.toggle_fullscreen)
+        self._action(ver, "&Ajustar timeline", "ver.ajustar", self._fit_zoom)
         ver.addSeparator()
         ver.addAction(self.panel.toggleViewAction())
 
+        self._classify_actions()
         self._update_history_actions()
         QApplication.instance().focusChanged.connect(self._focus_changed)
 
     def _action(self, menu, text: str, shortcut, slot) -> QAction:
+        """Crea una acción del menú. `shortcut` es la clave del mapa de atajos.
+
+        Una tecla escrita directo aquí truena a propósito: si se pudiera, el
+        atajo nuevo no aparecería en el editor de atajos ni se podría
+        cambiar, que es justo lo que se quitó.
+        """
         action = QAction(text, self)
         if shortcut:
-            action.setShortcut(shortcut)
-            if _is_plain_key(action.shortcut()):
-                self._plain_actions.append(action)
+            if shortcut not in DEFAULTS:
+                raise KeyError(f"«{shortcut}» no está en el mapa de atajos (ui/shortcuts.py)")
+            action.setData(shortcut)
+            action.setShortcut(QKeySequence(self.shortcuts.get(shortcut, ""),
+                                            QKeySequence.PortableText))
+            self._actions[shortcut] = action
         action.triggered.connect(slot)
         # Los atajos deben responder aunque el foco esté en el timeline.
         action.setShortcutContext(Qt.ApplicationShortcut)
         menu.addAction(action)
         return action
 
+    def _classify_actions(self) -> None:
+        """Qué atajos se apagan al escribir, y cuáles solo en un deslizador."""
+        self._plain_actions = [a for a in self._actions.values() if _is_plain_key(a.shortcut())]
+        self._nav_actions = [a for a in self._plain_actions if _is_nav_key(a.shortcut())]
+
     def _focus_changed(self, old, new) -> None:
-        typing = isinstance(new, (QPlainTextEdit, QLineEdit, QAbstractSpinBox, QComboBox))
+        """Apaga los atajos que le robarían la tecla al widget con el foco.
+
+        Escribiendo, se apagan todos los de tecla suelta y los de navegación.
+        En un deslizador solo los de navegación: las flechas mueven el
+        deslizador, pero `Espacio` tiene que seguir reproduciendo.
+        """
+        typing = isinstance(new, TYPING_WIDGETS)
+        slider = isinstance(new, QAbstractSlider)
         for action in self._plain_actions:
-            action.setEnabled(not typing)
+            action.setEnabled(not typing and not (slider and action in self._nav_actions))
+
+    def apply_shortcuts(self, mapping: dict[str, str]) -> None:
+        """Cambia las teclas en vivo, sin reiniciar la ventana."""
+        self.shortcuts = dict(mapping)
+        for clave, action in self._actions.items():
+            action.setShortcut(QKeySequence(mapping.get(clave, ""), QKeySequence.PortableText))
+        self._classify_actions()
+        self._focus_changed(None, QApplication.focusWidget())
+
+    def open_shortcuts(self) -> None:
+        dialogo = ShortcutsDialog(self, self.shortcuts)
+        if dialogo.exec() == QDialog.Accepted:
+            self.apply_shortcuts(dialogo.mapping)
+            self.statusBar().showMessage("Atajos guardados.", 4000)
+
+    def _announce_shortcut_problems(self) -> None:
+        if self.shortcut_problems:
+            primero = self.shortcut_problems[0]
+            resto = len(self.shortcut_problems) - 1
+            self.statusBar().showMessage(
+                f"Atajos: {primero}" + (f"  (y {resto} más)" if resto else ""), 15000)
 
     def _connect(self) -> None:
         self.timeline.playhead_moved.connect(self._scrubbed)
@@ -1456,19 +1550,11 @@ class MainWindow(QMainWindow):
     # --- teclado ----------------------------------------------------------
 
     def keyPressEvent(self, event) -> None:
-        key = event.key()
-        shift = event.modifiers() & Qt.ShiftModifier
-        ctrl = event.modifiers() & Qt.ControlModifier
-
-        if key == Qt.Key_Left:
-            self._skip(-10.0) if ctrl else (self._skip(-1.0) if shift else self._step(-1))
-        elif key == Qt.Key_Right:
-            self._skip(10.0) if ctrl else (self._skip(1.0) if shift else self._step(1))
-        elif key == Qt.Key_Home:
-            self._scrubbed(0.0)
-        elif key == Qt.Key_End:
-            self._scrubbed(self.sequence.duration)
-        elif key == Qt.Key_Escape:
+        # Las flechas, Inicio y Fin ya son acciones del mapa de atajos. Aquí
+        # solo queda Escape, que no se deja cambiar: en todo el sistema es la
+        # tecla de "suelta lo que estoy haciendo", y un editor que la usara
+        # para otra cosa sorprendería.
+        if event.key() == Qt.Key_Escape:
             self.timeline.select(None)
         else:
             super().keyPressEvent(event)
