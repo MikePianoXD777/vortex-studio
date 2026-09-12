@@ -1,16 +1,19 @@
-"""Lectura de audio: forma de onda para el timeline y mezcla para exportar.
+"""Lectura de audio: picos para el timeline y el audio de cada clip.
 
-La forma de onda se calcula bajando el audio a mono 8 kHz y sacando el pico
-de cada cubo. Se saca el pico y no el promedio a propósito: promediar aplana
-los golpes, que es justo lo que uno busca cuando mira una onda para cortar.
+La onda completa, con mínimo y máximo y caché en disco, vive en
+`media/waveform.py`. Aquí queda `peaks()`, que la resume en picos de 0 a 1.
+Se saca el pico y no el promedio a propósito: promediar aplana los golpes,
+que es justo lo que uno busca cuando mira una onda para cortar.
 """
 
 from __future__ import annotations
 
-import array
-from fractions import Fraction
 from pathlib import Path
 from typing import Iterator
+
+import numpy as np
+
+from vortex_studio.media.waveform import compute as compute_waveform
 
 try:
     import av
@@ -59,41 +62,37 @@ def has_audio(path: str | Path) -> bool:
 
 def peaks(path: str | Path, per_second: int = 60) -> list[float]:
     """Picos normalizados de 0 a 1, `per_second` por cada segundo de audio."""
-    if not HAS_PYAV:
+    datos = compute_waveform(path, per_second)
+    if datos.shape[1] == 0:
         return []
+    return np.maximum(np.abs(datos[0]), np.abs(datos[1])).clip(0.0, 1.0).tolist()
 
-    try:
-        container = av.open(str(path))
-        stream = container.streams.audio[0]
-    except Exception:
-        return []
 
-    resampler = AudioResampler(format="s16", layout="mono", rate=PEAK_RATE)
-    samples = array.array("h")
+def fade_envelope(clip, tiempos: np.ndarray) -> np.ndarray:
+    """La opacidad de los fundidos, muestra por muestra.
 
-    try:
-        for frame in container.decode(stream):
-            for chunk in resampler.resample(frame):
-                # El plano viene con relleno al final: hay que cortarlo a las
-                # muestras reales o la onda se llena de ceros fantasma.
-                data = bytes(chunk.planes[0])[: chunk.samples * 2]
-                block = array.array("h")
-                block.frombytes(data)
-                samples.extend(block)
-    except Exception:
-        pass
-    finally:
-        container.close()
+    Es la misma cuenta que `fade_at` del modelo, pero sobre un arreglo de
+    tiempos en vez de un solo instante: si los dos fundidos no caben en el
+    clip se reparten a prorrata, y cada uno es una rampa lineal.
+    """
+    alfa = np.ones_like(tiempos, dtype=np.float64)
+    entrada = float(getattr(clip, "fade_in", 0.0))
+    salida = float(getattr(clip, "fade_out", 0.0))
+    if entrada <= 0 and salida <= 0:
+        return alfa
 
-    if not samples:
-        return []
+    duracion = float(clip.duration)
+    total = entrada + salida
+    if total > duracion > 0:
+        factor = duracion / total
+        entrada, salida = entrada * factor, salida * factor
 
-    bucket = max(1, PEAK_RATE // max(1, per_second))
-    out: list[float] = []
-    for index in range(0, len(samples), bucket):
-        chunk = samples[index:index + bucket]
-        out.append(max(max(chunk), -min(chunk)) / 32768.0)
-    return out
+    dentro = tiempos - clip.start
+    if entrada > 0:
+        alfa = np.minimum(alfa, np.clip(dentro / entrada, 0.0, 1.0))
+    if salida > 0:
+        alfa = np.minimum(alfa, np.clip((duracion - dentro) / salida, 0.0, 1.0))
+    return alfa
 
 
 class AudioRenderer:
@@ -143,40 +142,38 @@ class AudioRenderer:
     def _apply_level(self, frame, clip, cuando: float):
         """Aplica volumen y fundidos del clip a un bloque de audio.
 
-        Se hace con el filtro `volume` de FFmpeg y no multiplicando muestras
-        en Python: son 48 000 valores por segundo y por canal, y un bucle
-        aquí se comería el tiempo de la exportación entera.
+        Con una rampa **muestra por muestra**, multiplicando con NumPy.
 
-        El nivel se calcula al centro del bloque. Con bloques de un segundo
-        el fundido queda escalonado, pero cada escalón dura lo que un bloque
-        y el oído no distingue la escalera de una rampa continua.
+        Antes el nivel se calculaba una sola vez al centro de cada bloque y
+        se aplicaba con el filtro `volume` de FFmpeg. Con bloques de un
+        segundo, un fundido de tres segundos eran tres escalones de volumen:
+        yo había escrito que el oído no distinguía la escalera de la rampa,
+        y en una voz sí se oye, como tres saltos. Con NumPy la multiplicación
+        corre en C igual que el filtro, pero con un nivel por muestra.
         """
-        nivel = getattr(clip, "gain", 1.0)
-        if hasattr(clip, "fade_at"):
-            centro = cuando + frame.samples / self.rate / 2
-            nivel *= clip.fade_at(min(max(centro, clip.start), clip.end - 1e-9))
+        n = frame.samples
+        tiempos = cuando + np.arange(n, dtype=np.float64) / self.rate
+        nivel = max(0.0, float(getattr(clip, "gain", 1.0))) * fade_envelope(clip, tiempos)
 
-        if abs(nivel - 1.0) < 1e-3:
-            return frame
-        return self._volume(frame, max(0.0, nivel))
+        if np.all(np.abs(nivel - 1.0) < 1e-4):
+            return frame            # nada que hacer: ni se copia el bloque
 
-    def _volume(self, frame, nivel: float):
-        graph = av.filter.Graph()
-        source = graph.add(
-            "abuffer",
-            f"sample_rate={self.rate}:sample_fmt={self.format}"
-            f":channel_layout={self.layout}:time_base=1/{self.rate}",
-        )
-        volumen = graph.add("volume", f"volume={nivel:.4f}")
-        sink = graph.add("abuffersink")
-        source.link_to(volumen)
-        volumen.link_to(sink)
-        graph.configure()
+        datos = frame.to_ndarray()
+        if frame.format.is_planar:
+            datos = datos * nivel[np.newaxis, :]
+        else:
+            canales = len(frame.layout.channels)
+            datos = datos * np.repeat(nivel, canales)[np.newaxis, :]
 
-        frame.pts = None
-        graph.push(frame)
-        salida = graph.pull()
+        original = frame.to_ndarray().dtype
+        if np.issubdtype(original, np.integer):
+            limites = np.iinfo(original)
+            datos = np.clip(np.rint(datos), limites.min, limites.max)
+        salida = av.AudioFrame.from_ndarray(
+            np.ascontiguousarray(datos.astype(original)),
+            format=frame.format.name, layout=frame.layout.name)
         salida.sample_rate = self.rate
+        salida.pts = None
         return salida
 
     def _silence(self, seconds: float) -> Iterator:
@@ -223,8 +220,25 @@ class AudioRenderer:
                 if faltan <= 0:
                     break
 
-            while faltan > 0:
-                salida = fifo.read(min(self.rate, faltan))
+            # Al terminar el archivo: lo que quedó adentro del resampler, y
+            # luego el FIFO hasta vaciarlo.
+            #
+            # Antes se pedía `fifo.read(1 segundo)` también aquí, y `read`
+            # devuelve None si no hay tantas muestras. El pedazo final —hasta
+            # un segundo— nunca se leía y se cambiaba por silencio: un clip
+            # que llegaba al final de su archivo perdía el cierre de su audio,
+            # en el play y en la exportación. Lo destapó una prueba de otra
+            # cosa que medía el nivel justo en ese segundo.
+            if faltan > 0:
+                try:
+                    for chunk in resampler.resample(None):
+                        chunk.pts = None
+                        fifo.write(chunk)
+                except Exception:
+                    pass
+
+            while faltan > 0 and fifo.samples > 0:
+                salida = fifo.read(min(self.rate, faltan, fifo.samples))
                 if salida is None:
                     break
                 faltan -= salida.samples

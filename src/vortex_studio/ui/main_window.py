@@ -592,6 +592,7 @@ class MainWindow(QMainWindow):
         if info.has_audio:
             audio = self.sequence.audio_tracks()[0]
             audio.add(Clip(source=path, start=clip.start, duration=duration))
+            self.timeline.waves.get(path)   # la onda empieza a calcularse ya
 
         if first:
             self.sequence.fps = info.fps or self.sequence.fps
@@ -638,6 +639,7 @@ class MainWindow(QMainWindow):
             start = destino.duration
 
         clip = destino.add(Clip(source=path, start=start, duration=info.duration))
+        self.timeline.waves.get(path)       # la onda empieza a calcularse ya
         self._fit_zoom()
         self.timeline.select(clip)
         self._commit("Importar audio")

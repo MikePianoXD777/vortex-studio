@@ -378,11 +378,16 @@ class TimelineWidget(QWidget):
     def _draw_wave(self, painter: QPainter, clip, rect: QRectF) -> None:
         """Dibuja la onda del clip, recortada a la parte que se ve.
 
-        Solo se calculan las columnas visibles: con el zoom muy afuera un
-        clip largo cabe en pocos pixeles, y no tiene caso mirar cada pico.
+        Cada columna de pixeles toma el mínimo y el máximo de **todos** los
+        cubos que le tocan. Con el zoom muy afuera un pixel cubre muchos
+        cubos, y tomar solo uno —como antes— se saltaba los golpes que
+        cayeran entre columna y columna.
+
+        La onda ya está calculada: hacer zoom solo cambia qué pedazo del
+        arreglo se lee, nunca se vuelve a decodificar.
         """
         data = self._wave_for(clip.source)
-        if not data:
+        if data is None or data.ndim != 2 or data.shape[1] == 0:
             return
 
         visible = rect.intersected(QRectF(HEADER_WIDTH, rect.top(),
@@ -392,18 +397,26 @@ class TimelineWidget(QWidget):
 
         middle = rect.center().y()
         half = rect.height() / 2 - 3
+        velocidad = getattr(clip, "speed", 1.0) or 1.0
+        entrada = getattr(clip, "in_point", 0.0)
+        cubos_por_pixel = velocidad * PEAKS_PER_SECOND / self.pixels_per_second
+        total = data.shape[1]
 
         painter.setPen(QPen(WAVE, 1))
         for x in range(int(visible.left()), int(visible.right())):
             # De pixel a tiempo del clip, y de ahí a tiempo del archivo.
             dentro = (x - rect.left()) / self.pixels_per_second
-            indice = int((getattr(clip, "in_point", 0.0) + dentro) * PEAKS_PER_SECOND)
-            if not (0 <= indice < len(data)):
+            desde = int((entrada + dentro * velocidad) * PEAKS_PER_SECOND)
+            hasta = max(desde + 1, int(desde + cubos_por_pixel))
+            if desde >= total or hasta <= 0:
                 continue
-            alto = data[indice] * half
-            painter.drawLine(QPointF(x, middle - alto), QPointF(x, middle + alto))
+            desde, hasta = max(0, desde), min(total, hasta)
+            bajo = float(data[0, desde:hasta].min())
+            alto = float(data[1, desde:hasta].max())
+            painter.drawLine(QPointF(x, middle - alto * half),
+                             QPointF(x, middle - bajo * half))
 
-    def _wave_for(self, source) -> list[float]:
+    def _wave_for(self, source):
         return self.waves.get(source)
 
     def _draw_range(self, painter: QPainter) -> None:

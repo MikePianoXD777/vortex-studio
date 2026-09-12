@@ -12,12 +12,17 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
 
 # Debe quedar puesto ANTES de que cualquier import cree la QApplication.
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+# Las ondas de los videos de prueba van a una caché desechable: sin esto, el
+# banco llenaría la carpeta de caché real del usuario.
+os.environ.setdefault("VORTEX_CACHE_DIR", tempfile.mkdtemp(prefix="vortex-cache-"))
 
 
 def _ffmpeg(*args: str) -> None:

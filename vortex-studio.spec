@@ -16,7 +16,9 @@ a = Analysis(
         "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets", "PySide6.QtWebEngineQuick",
         "PySide6.Qt3DCore", "PySide6.Qt3DRender", "PySide6.QtCharts", "PySide6.QtDataVisualization",
         "PySide6.QtQuick3D", "PySide6.QtBluetooth", "PySide6.QtNfc", "PySide6.QtDesigner",
-        "tkinter", "numpy", "matplotlib",
+        # numpy YA NO va aquí: desde la 0.3 calcula la onda y los fundidos
+        # de audio. Excluido, el ejecutable tronaba al abrir un clip.
+        "tkinter", "matplotlib",
     ],
     noarchive=False,
 )

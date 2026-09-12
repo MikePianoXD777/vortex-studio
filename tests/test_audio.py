@@ -2,6 +2,8 @@
 
 import struct
 
+import pytest
+
 from vortex_studio.media.audio import RATE, AudioRenderer, has_audio, peaks
 from vortex_studio.model import Clip
 
@@ -91,3 +93,44 @@ def test_el_fundido_de_audio_baja_el_inicio(media):
 def test_el_volumen_no_cambia_la_duracion(media):
     frames = render(media, gain=0.3, fade_in=2.0, fade_out=2.0)
     assert abs(sum(f.samples for f in frames) - 6 * RATE) < RATE * 0.05
+
+
+# --- el final del archivo -------------------------------------------------
+
+@pytest.mark.parametrize("formato", ["fltp", "s16"])
+def test_el_final_del_archivo_no_se_pierde(media, formato):
+    """El bug: un clip que llegaba al final de su archivo perdía hasta un
+    segundo del cierre, cambiado por silencio. El FIFO solo soltaba bloques
+    completos de un segundo y el pedazo sobrante nunca se leía."""
+    import numpy as np
+
+    clip = Clip(source=media["tono"], start=0.0, duration=3.0)
+    frames = list(AudioRenderer([clip], fmt=formato).stream(0.0, 3.0))
+    datos = np.concatenate([
+        (f.to_ndarray()[0] if f.format.is_planar
+         else f.to_ndarray()[0, ::len(f.layout.channels)]).astype(np.float64)
+        for f in frames])
+
+    def nivel(desde, hasta):
+        tramo = datos[int(desde * RATE):int(hasta * RATE)]
+        return float(np.sqrt(np.mean(tramo * tramo)))
+
+    assert nivel(2.2, 2.9) > nivel(0.5, 1.5) * 0.8, "el último segundo salió en silencio"
+
+
+def test_el_final_del_archivo_llega_en_la_mezcla(media):
+    """La mezcla usa el mismo renderizador: tiene que heredar el arreglo."""
+    from vortex_studio.media.mixer import AudioMixer
+
+    clip = Clip(source=media["tono"], start=0.0, duration=3.0)
+    frames = list(AudioMixer([clip, Clip(source=media["tono"], start=0.0, duration=3.0)])
+                  .stream(0.0, 3.0))
+    assert energia(frames, 2.2, 2.9) > energia(frames, 0.5, 1.5) * 0.8
+
+
+def test_pedir_mas_audio_del_que_hay_rellena_con_silencio(media):
+    """El arreglo no puede inventar audio: más allá del archivo, silencio."""
+    clip = Clip(source=media["tono"], start=0.0, duration=5.0)
+    frames = list(AudioRenderer([clip]).stream(0.0, 5.0))
+    assert abs(sum(f.samples for f in frames) - 5 * RATE) < RATE * 0.02
+    assert energia(frames, 3.3, 4.8) < 0.001
