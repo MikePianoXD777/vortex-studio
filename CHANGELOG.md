@@ -12,6 +12,159 @@ puede romper compatibilidad.
 
 Nada todavía.
 
+## [0.2.0a1] — 2026-09-12
+
+**Sigue en pre-alfa.** Pasa 286 pruebas automáticas —119 más que la entrega
+anterior— pero nadie la ha usado con material propio de verdad.
+
+**El formato del archivo subió a la versión 2.** Los proyectos de la
+`0.1.0a1` abren sin problema y sus campos nuevos se llenan con su valor
+neutro. Al revés no: la `0.1.0a1` se niega a abrir un proyecto de esta, con
+un aviso claro en vez de abrirlo a medias y perder los ajustes al guardar.
+
+**Sigue sin ejecutables.** No hay `.exe` ni binario de Linux.
+
+### Mezcla de audio — el bug más caro de esta entrega
+
+- **Dos clips de audio encimados ahora se oyen los dos.** Antes no. El
+  renderizador iba hacia adelante y nunca regresaba, así que cuando llegaba
+  el segundo clip el cursor ya iba pasado y ese clip se perdía completo, sin
+  ningún aviso: música y voz encimadas sonaban a música sola.
+- Los clips se reparten en **carriles** sin traslape, cada carril se
+  renderiza aparte y los carriles se suman con `amix` de FFmpeg. Los
+  carriles no son las pistas del timeline a propósito: así también se
+  resuelve el caso de dos clips encimados dentro de la misma pista, que con
+  una mezcla pista por pista se seguiría perdiendo.
+- Con un solo carril no se monta ningún filtro. El caso común —una voz, una
+  música, sin encimar— no paga nada por que exista la mezcla.
+- `amix` lleva `normalize=0`. Por omisión divide entre el número de
+  entradas, así que agregar una pista muda habría bajado a la mitad el
+  volumen de las demás.
+- La suma puede pasarse de 1.0 y recortar, igual que en Premiere. Se deja
+  recortar en vez de meter un limitador: un limitador necesita mirar hacia
+  adelante, y ese adelanto desfasaría el sonido de la imagen.
+
+### Pistas de video apiladas
+
+- **V1 y V2 se ven las dos.** Antes solo se pintaba la pista más alta con
+  material, así que poner algo en V2 hacía desaparecer V1 por completo: no
+  había manera de armar un cuadro dentro de cuadro, y un modo de fusión no
+  habría tenido con qué fusionarse.
+- `Ctrl+Shift+P` deja armado un cuadro dentro de cuadro de un clic, y
+  "Llenar el cuadro" lo deshace.
+- Las pistas de abajo se dejan de mirar en cuanto una de arriba las tapa del
+  todo —opaca, sin máscara, sin fusión, sin fundido a medias y sin
+  encogerse—. Sin esa cuenta, tener dos pistas costaría el doble de
+  decodificación aunque la de abajo quedara invisible.
+
+### Máscaras
+
+- Cuatro formas: rectángulo, círculo, corte recto y ninguna. Con posición,
+  tamaño, giro, suavizado del borde e invertir.
+- La máscara se mide sobre el **cuadro de salida**, como en CapCut, no sobre
+  la capa como en After Effects: uno la coloca mirando el preview, y si el
+  clip se anima la máscara se queda donde la pusiste.
+- El suavizado del borde se hace encogiendo y volviendo a estirar el mapa de
+  opacidad. Suena a truco pero es exactamente un desenfoque de caja, lo hace
+  Qt en C++ y sale gratis. El filtro `boxblur` de FFmpeg, que sería la otra
+  opción, no viene en las ruedas de PyAV.
+- La forma se dibuja sobre un lienzo más grande y luego se recorta. Sin ese
+  margen el desenfoque también difuminaba las orillas del cuadro, y una
+  máscara lineal que tapa media pantalla salía con los cuatro bordes
+  lavados en vez de solo la línea del corte.
+- Invertir no voltea pixeles: es el otro modo de composición
+  (`DestinationOut` en vez de `DestinationIn`). Voltear una imagen
+  premultiplicada da basura.
+- Los mapas de opacidad se guardan en caché por tamaño y valores. Sin eso
+  sería un desenfoque por cuadro.
+
+### Modos de fusión
+
+- Trece: multiplicar, oscurecer, subexponer, trama, aclarar, sobreexponer,
+  sumar, superponer, luz fuerte, luz suave, diferencia, exclusión y normal.
+- Se traducen a modos de composición de Qt, que los trae de fábrica: un modo
+  de fusión no cuesta más que un dibujo normal.
+- Un modo que esta versión no conozca se pinta normal. Más vale que la capa
+  se vea de más que que desaparezca.
+
+### Curva de color y viñeta
+
+- Curva de cinco puntos —negros, sombras, medios, luces, blancos— con su
+  gráfica al lado. La misma capacidad que una curva de DaVinci, sin puntos
+  que arrastrar.
+- Curvas listas: Contraste en S, Negros lavados, Abrir sombras, Bajar luces
+  y Plano de cine.
+- La gráfica dibuja exactamente lo que se le manda a FFmpeg. Se logra
+  mandando la curva ya muestreada en diecisiete puntos: con los cinco
+  anclajes pelones, el filtro `curves` interpolaría distinto y la gráfica
+  mentiría un poco.
+- La interpolación es Hermite monótona (Fritsch–Carlson) y no una spline
+  natural: la natural se pasa del anclaje entre dos puntos separados, y eso
+  aparece como un rebote de brillo donde el usuario no puso nada.
+- Viñeta de 0 a 100, con el filtro `vignette`.
+- Los looks de Cine, Noche, Vívido, Suave y Blanco y negro ahora traen curva
+  —y los dos primeros también viñeta—. Con puros brillo y contraste el look
+  se quedaba a medias.
+- **La viñeta cuesta:** unos 12 ms por cuadro en 1080p, contra medio
+  milisegundo de la curva. Es matemática por pixel, no una tabla. Con ella
+  puesta el preview baja de unos 270 cuadros por segundo a unos 47: sigue
+  reproduciendo de sobra a 30, pero es el ajuste más caro que hay.
+
+### Animaciones de texto
+
+- Diez de entrada y nueve de salida: aparecer, subir, escribiéndose,
+  acercarse, alejarse, y deslizar desde los cuatro lados. Se escogen de una
+  lista y se les pone cuánto duran.
+- "Acercarse" se pasa un poco de tamaño y regresa. Ese sobretiro es lo que
+  lo hace ver hecho a mano; sin él el texto solo crece y se ve barato.
+- La máquina de escribir mide el ancho sobre el texto completo, no sobre el
+  que ya se escribió: si se midiera sobre el visible, un texto centrado se
+  iría acomodando letra por letra y se vería como un temblor.
+- La salida no ofrece la máquina de escribir. Des-escribirse se ve como un
+  error, no como un efecto.
+- Si la entrada y la salida juntas no caben en el elemento, se reparten a
+  prorrata. Encimadas, el texto nunca llegaría a estar quieto en su lugar.
+- En el proyecto se guarda el nombre de la animación y su duración, no los
+  keyframes que genera. Así, afinar una curva mejora los proyectos que ya
+  existen en vez de romperlos.
+- Las imágenes encima del video también las aceptan.
+
+### Interfaz
+
+- Pestaña nueva de **Máscara**, con la fusión arriba y la máscara abajo: se
+  usan juntas, y en CapCut viven en el mismo lugar por la misma razón.
+- La curva de color va en un grupo que arranca cerrado. Con ella a la vista,
+  el panel de Color eran once deslizadores y ahí se acababa el "fácil de
+  usar". El grupo se abre solo si el clip ya traía curva, para que un look de
+  cine no deje escondido lo que le está haciendo a la imagen.
+- Los controles que no aplican a la forma de máscara escogida se apagan. Un
+  control encendido que no hace nada parece un programa roto.
+- El campo de duración del texto se llama ahora "Duración del texto": en el
+  mismo panel hay otra duración, la de la animación, y dos campos con el
+  mismo nombre a la vista no se distinguen.
+
+### Arreglado
+
+- `amix` devolvía el formato que a él le acomodaba para sumar: se le pedía
+  `s16` y salía `flt` empaquetado. Leído como enteros de 16 bits eso se oye
+  como ruido blanco a todo volumen, y solo al darle play — la exportación se
+  veía perfecta. Lo atrapó una prueba antes de salir.
+- La serialización no reconstruía los dataclasses anidados: `clip.color`
+  volvía siendo un `dict` y todo lo que le pedía un atributo tronaba, pero
+  varios pasos después.
+- Seleccionar un clip de audio dejaba encendida la pestaña de Máscara con el
+  panel vacío.
+
+### Por dentro
+
+- 286 pruebas automáticas que corren en 27 segundos sin abrir ventanas.
+- El modelo sigue siendo Python puro: las animaciones de texto, la curva y
+  la máscara se prueban sin Qt. La traducción a Qt —modos de composición y
+  mapas de opacidad— vive toda en el compositor.
+- Un solo compositor para el preview y la exportación, ahora también para
+  las máscaras y la fusión. Hay pruebas que comprueban que la máscara sale
+  quemada en el archivo final.
+
 ## [0.1.0a1] — 2026-09-12
 
 **Pre-alfa.** Primera versión con todo funcionando de punta a punta: corta,

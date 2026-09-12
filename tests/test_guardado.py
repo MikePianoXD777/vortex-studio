@@ -6,6 +6,7 @@ import pytest
 
 from vortex_studio.model import ColorAdjust, ImageOverlay, Sequence, Title
 from vortex_studio.model.serialize import (
+    FORMAT_VERSION,
     load_project,
     project_from_dict,
     save_project,
@@ -48,7 +49,8 @@ def test_archivo_en_disco(tmp_path, poblada):
     destino = save_project(proyecto, tmp_path / "p")
 
     assert destino.suffix == ".vortex"
-    assert json.loads(destino.read_text(encoding="utf-8"))["formato"] == 1
+    assert json.loads(destino.read_text(encoding="utf-8"))["formato"] \
+        == FORMAT_VERSION
 
     vuelto = load_project(destino)
     assert vuelto.name == "prueba"
@@ -62,3 +64,33 @@ def test_rechaza_formato_mas_nuevo():
 
 def test_proyecto_vacio_trae_secuencia():
     assert len(project_from_dict({"formato": 1}).active.tracks) == 6
+
+
+def test_abre_proyectos_del_formato_viejo():
+    """Un .vortex del formato 1 no traía máscara, fusión ni curva.
+
+    Tiene que abrir igual y llenar esos campos con su valor neutro, no
+    tronar ni dejarlos en `None`.
+    """
+    viejo = {
+        "formato": 1,
+        "name": "de antes",
+        "sequences": [{
+            "name": "S", "fps": 30.0, "width": 1920, "height": 1080,
+            "tracks": [{"name": "V1", "kind": "video", "clips": [{
+                "tipo": "clip", "source": "video.mp4", "start": 0.0,
+                "duration": 2.0, "in_point": 0.0, "name": "v", "speed": 1.0,
+                "fade_in": 0.0, "fade_out": 0.0, "gain": 1.0, "dissolve": 0.0,
+                "color": {"brightness": 10, "contrast": 100,
+                          "saturation": 100, "gamma": 100, "temperature": 0},
+            }]}],
+            "markers": [],
+        }],
+    }
+
+    clip = project_from_dict(viejo).active.tracks[0].clips[0]
+    assert clip.color.brightness == 10          # lo que sí traía se conserva
+    assert clip.blend == "Normal"
+    assert clip.mask.is_off
+    assert clip.color.curves.is_neutral
+    assert clip.color.vignette == 0

@@ -7,15 +7,23 @@ que dibuja sobre un lienzo del tamaño real de la secuencia.
 Tener una sola implementación es lo que garantiza que lo exportado se vea
 igual que lo que viste al editar. Si fueran dos, tarde o temprano un
 subtítulo saldría en otro lugar en el archivo final.
+
+Aquí es también donde se traduce el modelo a Qt: los nombres de los modos de
+fusión a modos de composición, y las máscaras a mapas de opacidad. El modelo
+sigue sin saber que Qt existe.
 """
 
 from __future__ import annotations
+
+from typing import NamedTuple
 
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QFontMetricsF, QImage, QPainter, QPainterPath, QPen
 
 from vortex_studio.media import Frame
-from vortex_studio.model import ImageOverlay, Title
+from vortex_studio.model import ImageOverlay, Mask, Title
+from vortex_studio.model.animation import AnimState, anim_state, visible_text
+from vortex_studio.model.blend import NORMAL, is_normal
 
 OUTLINE = QColor(0, 0, 0, 235)
 CAPTION_BOX = QColor(0, 0, 0, 150)
@@ -26,6 +34,42 @@ ALIGN_OFFSET = {
     "derecha": 1.0,
 }
 
+# Nombre del modelo -> modo de composición de Qt. Qt los trae de fábrica, así
+# que un modo de fusión no cuesta más que un dibujo normal: el trabajo lo
+# hace el mismo código en C++ que ya pinta todo lo demás.
+BLEND_MODES = {
+    "Multiplicar": QPainter.CompositionMode_Multiply,
+    "Oscurecer": QPainter.CompositionMode_Darken,
+    "Subexponer": QPainter.CompositionMode_ColorBurn,
+    "Trama": QPainter.CompositionMode_Screen,
+    "Aclarar": QPainter.CompositionMode_Lighten,
+    "Sobreexponer": QPainter.CompositionMode_ColorDodge,
+    "Sumar": QPainter.CompositionMode_Plus,
+    "Superponer": QPainter.CompositionMode_Overlay,
+    "Luz fuerte": QPainter.CompositionMode_HardLight,
+    "Luz suave": QPainter.CompositionMode_SoftLight,
+    "Diferencia": QPainter.CompositionMode_Difference,
+    "Exclusión": QPainter.CompositionMode_Exclusion,
+}
+
+MASK_CACHE_LIMIT = 12
+_mask_cache: dict[tuple, QImage] = {}
+
+
+class Layer(NamedTuple):
+    """Una capa de video lista para pintar.
+
+    Es una tupla con nombres a propósito: el código que ya existía armaba
+    capas como tuplas de dos o tres elementos, y así sigue funcionando sin
+    tocarlo.
+    """
+
+    frame: Frame | None
+    alpha: float = 1.0
+    values: dict | None = None
+    blend: str = NORMAL
+    mask: Mask | None = None
+
 
 def frame_to_image(frame: Frame) -> QImage:
     """Envuelve los bytes del cuadro sin copiarlos."""
@@ -33,51 +77,284 @@ def frame_to_image(frame: Frame) -> QImage:
                   frame.stride, QImage.Format_RGB888)
 
 
-def draw_overlay(painter: QPainter, target: QRectF,
-                 overlay: ImageOverlay, image: QImage, alpha: float = 1.0) -> None:
+# --- máscaras -------------------------------------------------------------
+
+def mask_image(width: int, height: int, mask: Mask) -> QImage:
+    """Mapa de opacidad del tamaño pedido: opaco donde la capa se ve.
+
+    El suavizado del borde se hace **encogiendo y volviendo a estirar** la
+    imagen. Suena a truco pero es exactamente un desenfoque de caja, lo hace
+    Qt en C++ y sale gratis; el filtro `boxblur` de FFmpeg, que sería la
+    otra opción, no viene en las ruedas de PyAV.
+
+    La forma se dibuja sobre un lienzo más grande y luego se recorta. Sin
+    ese margen, el desenfoque también difumina las orillas del cuadro: una
+    máscara lineal que tapa media pantalla salía con los cuatro bordes
+    lavados en vez de solo la línea del corte.
+    """
+    clave = (width, height, mask.shape, round(mask.x, 4), round(mask.y, 4),
+             round(mask.width, 4), round(mask.height, 4),
+             round(mask.rotation, 2), round(mask.feather, 4))
+    listo = _mask_cache.get(clave)
+    if listo is not None:
+        return listo
+
+    radio = max(0.0, mask.feather) * height
+    margen = int(radio * 2) + 2
+
+    lienzo = QImage(width + margen * 2, height + margen * 2,
+                    QImage.Format_ARGB32_Premultiplied)
+    lienzo.fill(Qt.transparent)
+
+    painter = QPainter(lienzo)
+    painter.setRenderHint(QPainter.Antialiasing)
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(QColor(255, 255, 255))
+    painter.translate(margen + width * mask.x, margen + height * mask.y)
+    painter.rotate(mask.rotation)
+    _draw_shape(painter, width, height, mask)
+    painter.end()
+
+    if radio >= 1.0:
+        lienzo = _soften(lienzo, radio)
+
+    recorte = lienzo.copy(margen, margen, width, height)
+
+    if len(_mask_cache) >= MASK_CACHE_LIMIT:
+        _mask_cache.clear()
+    _mask_cache[clave] = recorte
+    return recorte
+
+
+def _draw_shape(painter: QPainter, width: int, height: int, mask: Mask) -> None:
+    """La forma, centrada en el origen y ya girada por quien llama."""
+    if mask.shape == "Lineal":
+        # Un corte recto: se tapa todo lo que quede de un lado de la línea.
+        # El rectángulo se hace más grande que la diagonal del cuadro para
+        # que su propio borde nunca entre en escena al girarlo.
+        largo = (width * width + height * height) ** 0.5 * 1.5
+        painter.drawRect(QRectF(-largo, -largo, largo * 2, largo))
+        return
+
+    medio_ancho = width * max(0.0, mask.width) / 2
+    medio_alto = height * max(0.0, mask.height) / 2
+    caja = QRectF(-medio_ancho, -medio_alto, medio_ancho * 2, medio_alto * 2)
+
+    if mask.shape == "Círculo":
+        painter.drawEllipse(caja)
+    else:
+        painter.drawRect(caja)
+
+
+def _soften(image: QImage, radio: float) -> QImage:
+    """Desenfoque de caja hecho con dos escalados suaves."""
+    ancho, alto = image.width(), image.height()
+    chico_w = max(1, int(ancho / radio))
+    chico_h = max(1, int(alto / radio))
+    chico = image.scaled(chico_w, chico_h, Qt.IgnoreAspectRatio,
+                         Qt.SmoothTransformation)
+    return chico.scaled(ancho, alto, Qt.IgnoreAspectRatio,
+                        Qt.SmoothTransformation)
+
+
+def clear_mask_cache() -> None:
+    """Tira las máscaras guardadas. Se usa al cambiar de proyecto."""
+    _mask_cache.clear()
+
+
+def _apply_mask(painter: QPainter, width: int, height: int, mask: Mask) -> None:
+    """Recorta lo ya dibujado con la máscara.
+
+    `DestinationIn` conserva el destino donde la máscara es opaca;
+    `DestinationOut` hace lo contrario. Por eso invertir una máscara no
+    necesita voltear pixeles: es el otro modo de composición y ya.
+    """
+    painter.setCompositionMode(
+        QPainter.CompositionMode_DestinationOut if mask.invert
+        else QPainter.CompositionMode_DestinationIn)
+    painter.drawImage(0, 0, mask_image(width, height, mask))
+    painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
+
+
+# --- capas de video -------------------------------------------------------
+
+def _place(painter: QPainter, target: QRectF, valores: dict | None) -> None:
+    """Aplica desplazamiento, tamaño y giro alrededor del centro del cuadro.
+
+    Alrededor del centro y no de la esquina: es lo que uno espera al rotar
+    algo.
+    """
+    if not valores:
+        return
+    centro = target.center()
+    painter.translate(centro.x() + target.width() * valores.get("x", 0.0),
+                      centro.y() + target.height() * valores.get("y", 0.0))
+    painter.rotate(valores.get("rotation", 0.0))
+    escala = max(0.01, valores.get("scale", 1.0))
+    painter.scale(escala, escala)
+    painter.translate(-centro.x(), -centro.y())
+
+
+def draw_layers(painter: QPainter, target: QRectF, layers: list) -> None:
+    """Pinta las capas de video de abajo hacia arriba.
+
+    Normalmente hay una sola. Durante una transición cruzada hay dos: la que
+    sale con opacidad decreciente y la que entra encima con la creciente. Y
+    con material en V1 y V2 hay una por pista, que es lo que permite el
+    cuadro dentro del cuadro.
+
+    Cada capa puede traer su transformación, su modo de fusión y su máscara.
+    """
+    for capa in layers:
+        frame, alpha = capa[0], capa[1]
+        valores = capa[2] if len(capa) > 2 else None
+        blend = capa[3] if len(capa) > 3 else NORMAL
+        mask = capa[4] if len(capa) > 4 else None
+        if frame is None or alpha <= 0:
+            continue
+
+        opacidad = alpha * (valores.get("opacity", 1.0) if valores else 1.0)
+        if opacidad <= 0:
+            continue
+
+        painter.save()
+        painter.setOpacity(max(0.0, min(1.0, opacidad)))
+        if not is_normal(blend):
+            painter.setCompositionMode(BLEND_MODES[blend])
+
+        if mask is not None and not mask.is_off:
+            painter.drawImage(target, _masked_layer(target, frame, valores, mask))
+        else:
+            _place(painter, target, valores)
+            painter.drawImage(target, frame_to_image(frame))
+
+        painter.restore()
+
+    painter.setOpacity(1.0)
+    painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
+
+
+def _masked_layer(target: QRectF, frame: Frame,
+                  valores: dict | None, mask: Mask) -> QImage:
+    """La capa ya transformada y recortada, en una imagen aparte.
+
+    Hay que pasar por una imagen intermedia porque la máscara se mide sobre
+    el cuadro de salida, no sobre la capa: el usuario la coloca mirando el
+    preview, como en CapCut. Si se midiera sobre la capa —como en After
+    Effects— la máscara se movería junto con el clip al animarlo, y eso es
+    justo lo contrario de lo que uno quiere al tapar algo que está quieto.
+    """
+    ancho = max(1, round(target.width()))
+    alto = max(1, round(target.height()))
+
+    capa = QImage(ancho, alto, QImage.Format_ARGB32_Premultiplied)
+    capa.fill(Qt.transparent)
+
+    dentro = QRectF(0, 0, ancho, alto)
+    painter = QPainter(capa)
+    painter.setRenderHint(QPainter.SmoothPixmapTransform)
+    painter.save()
+    _place(painter, dentro, valores)
+    painter.drawImage(dentro, frame_to_image(frame))
+    painter.restore()
+    _apply_mask(painter, ancho, alto, mask)
+    painter.end()
+
+    return capa
+
+
+# --- imágenes encima ------------------------------------------------------
+
+def draw_overlay(painter: QPainter, target: QRectF, overlay: ImageOverlay,
+                 image: QImage, alpha: float = 1.0,
+                 t: float | None = None) -> None:
     if image.isNull() or alpha <= 0:
         return
 
-    width = target.width() * overlay.scale
+    estado = anim_state(overlay, t) if t is not None else AnimState()
+    if estado.opacity <= 0:
+        return
+
+    width = target.width() * overlay.scale * estado.scale
     height = width * (image.height() / image.width())
-    rect = QRectF(target.left() + target.width() * overlay.x - width / 2,
-                  target.top() + target.height() * overlay.y - height / 2,
-                  width, height)
+    rect = QRectF(
+        target.left() + target.width() * (overlay.x + estado.dx) - width / 2,
+        target.top() + target.height() * (overlay.y + estado.dy) - height / 2,
+        width, height)
+
+    mask = getattr(overlay, "mask", None)
+    blend = getattr(overlay, "blend", NORMAL)
 
     painter.save()
-    painter.setOpacity(max(0.0, min(1.0, overlay.opacity)) * alpha)
-    painter.drawImage(rect, image)
-    painter.restore()
+    painter.setOpacity(max(0.0, min(1.0, overlay.opacity * alpha * estado.opacity)))
+    if not is_normal(blend):
+        painter.setCompositionMode(BLEND_MODES[blend])
 
+    if mask is not None and not mask.is_off:
+        ancho = max(1, round(target.width()))
+        alto = max(1, round(target.height()))
+        capa = QImage(ancho, alto, QImage.Format_ARGB32_Premultiplied)
+        capa.fill(Qt.transparent)
+        interno = QPainter(capa)
+        interno.setRenderHint(QPainter.SmoothPixmapTransform)
+        interno.drawImage(rect.translated(-target.left(), -target.top()), image)
+        _apply_mask(interno, ancho, alto, mask)
+        interno.end()
+        painter.drawImage(target, capa)
+    else:
+        painter.drawImage(rect, image)
+
+    painter.restore()
+    painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
+
+
+# --- texto ----------------------------------------------------------------
 
 def draw_title(painter: QPainter, target: QRectF, title: Title,
-               alpha: float = 1.0) -> None:
+               alpha: float = 1.0, t: float | None = None) -> None:
+    """Dibuja el título, con su animación de entrada y de salida.
+
+    La animación se calcula en el modelo (`model/animation.py`) y aquí solo
+    se pinta: así el efecto se puede probar sin abrir una ventana, y el
+    preview y la exportación aplican exactamente el mismo movimiento.
+    """
     if not title.text.strip() or alpha <= 0:
         return
 
+    estado = anim_state(title, t) if t is not None else AnimState()
+    if estado.opacity <= 0 or estado.chars <= 0:
+        return
+
     painter.save()
-    painter.setOpacity(alpha)
+    painter.setOpacity(max(0.0, min(1.0, alpha * estado.opacity)))
     try:
-        _draw_title_body(painter, target, title)
+        _draw_title_body(painter, target, title, estado)
     finally:
         painter.restore()
 
 
-def _draw_title_body(painter: QPainter, target: QRectF, title: Title) -> None:
+def _draw_title_body(painter: QPainter, target: QRectF, title: Title,
+                     estado: AnimState) -> None:
 
     font = QFont()
-    font.setPixelSize(max(8, int(target.height() * title.size)))
+    font.setPixelSize(max(8, int(target.height() * title.size * estado.scale)))
     font.setBold(title.bold)
     font.setItalic(title.italic)
 
     metrics = QFontMetricsF(font)
-    lines = title.text.splitlines() or [""]
+    texto = visible_text(title.text, estado.chars)
+    lines = texto.splitlines() or [""]
     line_height = metrics.height()
     block_height = line_height * len(lines)
-    widest = max(metrics.horizontalAdvance(line) for line in lines)
 
-    anchor_x = target.left() + target.width() * title.x
-    anchor_y = target.top() + target.height() * title.y
+    # El ancho se mide sobre el texto COMPLETO, no sobre el que ya se
+    # escribió: si se midiera sobre el visible, un texto centrado se iría
+    # acomodando letra por letra y se vería como un temblor.
+    completo = title.text.splitlines() or [""]
+    widest = max(metrics.horizontalAdvance(line) for line in completo)
+
+    anchor_x = target.left() + target.width() * (title.x + estado.dx)
+    anchor_y = target.top() + target.height() * (title.y + estado.dy)
     left = anchor_x - widest * ALIGN_OFFSET.get(title.align, 0.5)
     block = QRectF(left, anchor_y - block_height / 2, widest, block_height)
 
@@ -117,50 +394,14 @@ def _draw_line(painter: QPainter, row: QRectF, line: str, font: QFont,
     painter.drawText(QPointF(x, baseline), line)
 
 
-def draw_layers(painter: QPainter, target: QRectF, layers: list[tuple]) -> None:
-    """Pinta las capas de video de abajo hacia arriba.
+# --- el cuadro completo ---------------------------------------------------
 
-    Normalmente hay una sola. Durante una transición cruzada hay dos: la que
-    sale con opacidad decreciente y la que entra encima con la creciente.
-
-    Cada capa puede traer su transformación: desplazamiento, tamaño y giro.
-    Se aplica girando el lienzo alrededor del centro del cuadro, no de la
-    esquina, que es lo que uno espera al rotar algo.
-    """
-    for capa in layers:
-        frame, alpha = capa[0], capa[1]
-        valores = capa[2] if len(capa) > 2 else None
-        if frame is None or alpha <= 0:
-            continue
-
-        opacidad = alpha * (valores.get("opacity", 1.0) if valores else 1.0)
-        if opacidad <= 0:
-            continue
-
-        painter.save()
-        painter.setOpacity(max(0.0, min(1.0, opacidad)))
-
-        if valores:
-            centro = target.center()
-            painter.translate(centro.x() + target.width() * valores.get("x", 0.0),
-                              centro.y() + target.height() * valores.get("y", 0.0))
-            painter.rotate(valores.get("rotation", 0.0))
-            escala = max(0.01, valores.get("scale", 1.0))
-            painter.scale(escala, escala)
-            painter.translate(-centro.x(), -centro.y())
-
-        painter.drawImage(target, frame_to_image(frame))
-        painter.restore()
-
-    painter.setOpacity(1.0)
-
-
-def compose(width: int, height: int, layers: list[tuple[Frame, float]],
+def compose(width: int, height: int, layers: list,
             overlays: list[tuple[ImageOverlay, QImage]],
             titles: list[Title], t: float | None = None) -> QImage:
     """Dibuja el cuadro completo sobre un lienzo nuevo del tamaño pedido.
 
-    Con `t`, cada elemento aplica su propio fundido.
+    Con `t`, cada elemento aplica su propio fundido y su animación.
     """
     canvas = QImage(width, height, QImage.Format_RGB888)
     canvas.fill(Qt.black)
@@ -175,10 +416,10 @@ def compose(width: int, height: int, layers: list[tuple[Frame, float]],
 
     for overlay, image in overlays:
         draw_overlay(painter, target, overlay, image,
-                     overlay.fade_at(t) if t is not None else 1.0)
+                     overlay.fade_at(t) if t is not None else 1.0, t)
     for title in titles:
         draw_title(painter, target, title,
-                   title.fade_at(t) if t is not None else 1.0)
+                   title.fade_at(t) if t is not None else 1.0, t)
     painter.end()
 
     return canvas

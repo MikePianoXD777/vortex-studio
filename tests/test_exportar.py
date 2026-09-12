@@ -99,3 +99,88 @@ def test_dimensiones_impares_se_ajustan(tmp_path, proyecto):
 
     info = datos(salida)
     assert (info["ancho"], info["alto"]) == (320, 180)
+
+
+# --- lo nuevo llega al archivo final --------------------------------------
+
+def test_lo_exportado_trae_la_mascara_quemada(tmp_path, ventana, media):
+    """Si el compositor de la exportación no la aplicara, se vería al
+    editar y no en el archivo. Es el bug que evita tener un solo
+    compositor para las dos cosas."""
+    from vortex_studio.media import VideoSource
+
+    ventana._place_video(media["gris"])
+    clip = ventana.sequence.top_clip_at(0.5)
+    clip.mask.shape = "Círculo"
+    clip.mask.width = clip.mask.height = 0.5
+    clip.mask.feather = 0.0
+
+    salida = tmp_path / "mascara.mp4"
+    total = 15
+    export_video(salida, ventana._frames(0.0, 0.5, 30), total,
+                 ventana.sequence.width, ventana.sequence.height,
+                 30, "Máxima")
+
+    fuente = VideoSource(salida)
+    try:
+        f = fuente.frame_at(0.2)
+        centro = sum(f.data[(f.height // 2) * f.stride + (f.width // 2) * 3:]
+                     [:3])
+        esquina = sum(f.data[2 * f.stride + 6:2 * f.stride + 9])
+        assert centro > 250, "el centro tenía que seguir gris"
+        assert esquina < 60, "la esquina tenía que salir negra"
+    finally:
+        fuente.close()
+
+
+def test_lo_exportado_trae_las_dos_pistas_de_audio_mezcladas(tmp_path, ventana, media):
+    """Con el bug de la mezcla, el segundo clip salía mudo en el archivo."""
+    from vortex_studio.media.mixer import AudioMixer
+    from vortex_studio.model import Clip
+
+    ventana._place_video(media["sonoro"])
+    segunda = ventana.sequence.audio_tracks()[1]
+    segunda.add(Clip(source=media["sonoro"], start=0.0, duration=3.0))
+
+    def exportar(nombre, clips):
+        salida = tmp_path / nombre
+        export_video(salida, ventana._frames(0.0, 2.0, 30), 60,
+                     ventana.sequence.width, ventana.sequence.height,
+                     30, "Borrador", None,
+                     AudioMixer(clips).stream(0.0, 2.0))
+        return max(peaks(salida, 40))
+
+    una = exportar("una.mp4", ventana.sequence.audio_tracks()[0].clips)
+    dos = exportar("dos.mp4", ventana._audio_clips())
+
+    assert una > 0.2
+    assert dos > una * 1.3, "las dos pistas no se sumaron"
+
+
+def test_lo_exportado_trae_la_animacion_del_texto(tmp_path, ventana, media):
+    """A la mitad de la entrada el texto va transparente: el archivo
+    tiene que verse distinto ahí que cuando ya está puesto."""
+    from vortex_studio.media import VideoSource
+
+    ventana._place_video(media["gris"])
+    ventana._seek(0.0)
+    ventana.add_title()
+    t = ventana._title
+    t.text, t.start, t.duration = "MMMM", 0.0, 2.0
+    t.anim_in, t.anim_time = "Escribiéndose", 1.0
+
+    salida = tmp_path / "animado.mp4"
+    export_video(salida, ventana._frames(0.0, 1.5, 30), 45,
+                 ventana.sequence.width, ventana.sequence.height,
+                 30, "Máxima")
+
+    def banda(f) -> bytes:
+        """La franja del cuadro donde va el subtítulo."""
+        inicio = int(f.height * 0.86) * f.stride
+        return bytes(f.data[inicio: inicio + f.width * 3])
+
+    fuente = VideoSource(salida)
+    try:
+        assert banda(fuente.frame_at(0.05)) != banda(fuente.frame_at(1.2))
+    finally:
+        fuente.close()

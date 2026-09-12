@@ -1,10 +1,14 @@
 """El panel de propiedades: una sola ventana con pestañas.
 
-Cinco ventanas acopladas apiladas —que es como estaba— dejan la mitad de la
-pantalla en controles que casi nunca se tocan a la vez, y es justo lo que
-hace ver pesado a After Effects. Aquí las cinco páginas viven en un panel con
+Varias ventanas acopladas apiladas —que es como estaba— dejan la mitad de
+la pantalla en controles que casi nunca se tocan a la vez, y es justo lo que
+hace ver pesado a After Effects. Aquí las páginas viven en un panel con
 pestañas: se ve solo la del trabajo de este momento, y la pestaña se cambia
 sola según lo que selecciones.
+
+Lo que se usa a diario va a la vista; lo que se usa de vez en cuando —la
+curva de color, por ejemplo— va en un grupo que arranca cerrado. Es la
+misma idea aplicada adentro de cada página.
 """
 
 from __future__ import annotations
@@ -31,21 +35,37 @@ from PySide6.QtWidgets import (
 
 from vortex_studio.model import (
     ANCHORS,
+    BLENDS,
+    CURVE_LOOKS,
+    IN_ANIMS,
+    OUT_ANIMS,
     PROPS,
     RANGES,
+    SHAPES,
     ColorAdjust,
     ImageOverlay,
+    Mask,
     Title,
 )
+from vortex_studio.model.animation import DEFAULT_TIME
 from vortex_studio.model.color import (
     BRIGHTNESS,
     CONTRAST,
+    CURVE_POINT,
     GAMMA,
     LOOKS,
     SATURATION,
     TEMPERATURE,
+    VIGNETTE,
 )
-from vortex_studio.ui.widgets import SliderRow, column, section
+from vortex_studio.model.mask import NONE as MASK_NONE
+from vortex_studio.ui.widgets import (
+    Collapsible,
+    CurveView,
+    SliderRow,
+    column,
+    section,
+)
 
 PANEL_STYLE = """
 QWidget { background: #1b1d21; color: #d6dae0; }
@@ -113,17 +133,38 @@ class ColorPanel(Page):
         self._saturation = SliderRow("Saturación", *SATURATION)
         self._gamma = SliderRow("Gamma", *GAMMA)
         self._temperature = SliderRow("Temperatura", *TEMPERATURE)
+        self._vignette = SliderRow("Viñeta", *VIGNETTE)
 
         self._look = QComboBox()
         self._look.addItems(LOOKS.keys())
         self._look.setToolTip("Combinaciones listas; luego puedes seguir ajustando")
         self._look.currentTextChanged.connect(self._apply_look)
 
+        # La curva: cinco deslizadores y la gráfica que dice qué están
+        # haciendo. Sin gráfica, "sombras" y "luces" son dos números que no
+        # le dicen nada a nadie; con ella no hace falta arrastrar puntos.
+        self._graph = CurveView()
+        self._curve_rows = {
+            "blacks": SliderRow("Negros", *CURVE_POINT),
+            "shadows": SliderRow("Sombras", *CURVE_POINT),
+            "mids": SliderRow("Medios", *CURVE_POINT),
+            "highs": SliderRow("Luces", *CURVE_POINT),
+            "whites": SliderRow("Blancos", *CURVE_POINT),
+        }
+        self._curve_look = QComboBox()
+        self._curve_look.addItems(CURVE_LOOKS.keys())
+        self._curve_look.setToolTip("Curvas listas; se pueden seguir ajustando")
+        self._curve_look.currentTextChanged.connect(self._apply_curve_look)
+
         for row in self._rows():
             row.changed.connect(self._push)
 
-        reset = QPushButton("Restablecer")
+        reset = QPushButton("Restablecer todo")
         reset.clicked.connect(self._reset)
+
+        self._curve_group = Collapsible(
+            "Curva", self._graph, self._curve_look,
+            *self._curve_rows.values())
 
         self._set_content(column(
             self._target,
@@ -131,6 +172,8 @@ class ColorPanel(Page):
             section("Ajustes"),
             self._brightness, self._contrast, self._saturation,
             self._gamma, self._temperature,
+            self._curve_group,
+            section("Viñeta"), self._vignette,
             reset,
             None,
         ))
@@ -138,7 +181,8 @@ class ColorPanel(Page):
 
     def _rows(self) -> list[SliderRow]:
         return [self._brightness, self._contrast, self._saturation,
-                self._gamma, self._temperature]
+                self._gamma, self._temperature, self._vignette,
+                *self._curve_rows.values()]
 
     def set_target(self, adjust: ColorAdjust | None, name: str) -> None:
         """Apunta el panel a un clip. Sin clip, los controles se apagan."""
@@ -149,12 +193,23 @@ class ColorPanel(Page):
             row.setEnabled(adjust is not None)
         self._look.setEnabled(adjust is not None)
 
+        self._curve_look.setEnabled(adjust is not None)
+
         if adjust is not None:
             self._brightness.set_value(adjust.brightness)
             self._contrast.set_value(adjust.contrast)
             self._saturation.set_value(adjust.saturation)
             self._gamma.set_value(adjust.gamma)
             self._temperature.set_value(adjust.temperature)
+            self._vignette.set_value(adjust.vignette)
+            for prop, row in self._curve_rows.items():
+                row.set_value(getattr(adjust.curves, prop))
+            # El grupo se abre solo si el clip ya traía curva: así un look
+            # de cine no deja escondido lo que le está haciendo a la imagen.
+            if not adjust.curves.is_neutral:
+                self._curve_group.abrir()
+
+        self._graph.set_curves(adjust.curves if adjust else None)
 
     def _push(self) -> None:
         if self._adjust is None:
@@ -164,6 +219,19 @@ class ColorPanel(Page):
         self._adjust.saturation = self._saturation.value()
         self._adjust.gamma = self._gamma.value()
         self._adjust.temperature = self._temperature.value()
+        self._adjust.vignette = self._vignette.value()
+        for prop, row in self._curve_rows.items():
+            setattr(self._adjust.curves, prop, row.value())
+        self._graph.set_curves(self._adjust.curves)
+        self.changed.emit()
+
+    def _apply_curve_look(self, nombre: str) -> None:
+        if self._adjust is None or nombre not in CURVE_LOOKS:
+            return
+        self._adjust.curves.apply(CURVE_LOOKS[nombre])
+        for prop, row in self._curve_rows.items():
+            row.set_value(getattr(self._adjust.curves, prop))
+        self._graph.set_curves(self._adjust.curves)
         self.changed.emit()
 
     def _apply_look(self, nombre: str) -> None:
@@ -187,9 +255,11 @@ class ColorPanel(Page):
         if self._adjust is None:
             return
         self._adjust.reset()
-        self._look.blockSignals(True)
-        self._look.setCurrentText("Ninguno")
-        self._look.blockSignals(False)
+        for combo, neutro in ((self._look, "Ninguno"),
+                              (self._curve_look, "Ninguna")):
+            combo.blockSignals(True)
+            combo.setCurrentText(neutro)
+            combo.blockSignals(False)
         self.set_target(self._adjust, self._target.text().removeprefix("Clip: "))
         self.changed.emit()
 
@@ -252,8 +322,11 @@ class TextPanel(Page):
         self._duration.setSuffix(" s")
         self._duration.valueChanged.connect(self._push)
 
+        # "Duración del texto" y no "Duración": en el mismo panel hay otra
+        # duración, la de la animación, y dos campos con el mismo nombre a
+        # la vista no se distinguen.
         duration_row = QHBoxLayout()
-        duration_row.addWidget(QLabel("Duración"))
+        duration_row.addWidget(QLabel("Duración del texto"))
         duration_row.addWidget(self._duration, 1)
 
         self._bold = QCheckBox("Negrita")
@@ -270,11 +343,37 @@ class TextPanel(Page):
         styles.addWidget(self._italic)
         styles.addStretch(1)
 
+        # Animación. Dos listas y un tiempo: es todo lo que hace falta para
+        # el efecto que en After Effects son cuatro keyframes por propiedad.
+        self._anim_in = QComboBox()
+        self._anim_in.addItems(IN_ANIMS)
+        self._anim_in.setToolTip("Cómo entra el texto")
+        self._anim_out = QComboBox()
+        self._anim_out.addItems(OUT_ANIMS)
+        self._anim_out.setToolTip("Cómo sale el texto")
+        for combo in (self._anim_in, self._anim_out):
+            combo.currentTextChanged.connect(self._push)
+
+        self._anim_time = QDoubleSpinBox()
+        self._anim_time.setRange(0.05, 5.0)
+        self._anim_time.setSingleStep(0.05)
+        self._anim_time.setDecimals(2)
+        self._anim_time.setValue(DEFAULT_TIME)
+        self._anim_time.setSuffix(" s")
+        self._anim_time.setToolTip("Lo que tarda la entrada, y lo que tarda la salida")
+        self._anim_time.valueChanged.connect(self._push)
+
+        anim_in_row = self._labelled("Entrada", self._anim_in)
+        anim_out_row = self._labelled("Salida", self._anim_out)
+        anim_time_row = self._labelled("Duración", self._anim_time)
+
         self._set_content(column(
             self._list,
             buttons,
             section("Contenido"),
             self._text,
+            section("Animación"),
+            anim_in_row, anim_out_row, anim_time_row,
             section("Posición"),
             self._anchor, self._align, self._size,
             section("Estilo"),
@@ -284,6 +383,17 @@ class TextPanel(Page):
             None,
         ))
         self.set_titles([], None)
+
+    @staticmethod
+    def _labelled(texto: str, widget: QWidget) -> QHBoxLayout:
+        etiqueta = QLabel(texto)
+        etiqueta.setStyleSheet("color:#9aa1aa; font-size:11px;")
+        etiqueta.setMinimumWidth(74)
+        fila = QHBoxLayout()
+        fila.setSpacing(8)
+        fila.addWidget(etiqueta)
+        fila.addWidget(widget, 1)
+        return fila
 
     # --- lista ------------------------------------------------------------
 
@@ -321,10 +431,17 @@ class TextPanel(Page):
         enabled = title is not None
         for widget in (self._text, self._anchor, self._align, self._size,
                        self._color_button, self._duration, self._bold,
-                       self._italic, self._outline, self._background, self._delete):
+                       self._italic, self._outline, self._background,
+                       self._anim_in, self._anim_out, self._anim_time,
+                       self._delete):
             widget.setEnabled(enabled)
 
         if title is not None:
+            self._anim_in.setCurrentText(
+                title.anim_in if title.anim_in in IN_ANIMS else "Ninguna")
+            self._anim_out.setCurrentText(
+                title.anim_out if title.anim_out in OUT_ANIMS else "Ninguna")
+            self._anim_time.setValue(max(0.05, min(5.0, title.anim_time)))
             self._text.setPlainText(title.text)
             self._align.setCurrentText(title.align)
             self._size.set_value(int(round(title.size * 100)))
@@ -375,6 +492,9 @@ class TextPanel(Page):
         self._title.outline = self._outline.isChecked()
         self._title.background = self._background.isChecked()
         self._title.x, self._title.y = ANCHORS[self._anchor.currentText()]
+        self._title.anim_in = self._anim_in.currentText()
+        self._title.anim_out = self._anim_out.currentText()
+        self._title.anim_time = self._anim_time.value()
 
         self.changed.emit()
 
@@ -768,6 +888,171 @@ class TransformPanel(Page):
         self.committed.emit("Quitar animación")
 
 
+class MaskPanel(Page):
+    TITULO = "Máscara"
+
+    """Máscara y modo de fusión del clip o la imagen seleccionada.
+
+    Las dos cosas van juntas porque se usan juntas: la máscara dice *qué
+    parte* de la capa se ve y la fusión dice *cómo* se mezcla con lo de
+    abajo. En CapCut viven en el mismo lugar por la misma razón.
+
+    La máscara se mide sobre el cuadro de salida, como en CapCut, no sobre
+    la capa como en After Effects: uno la coloca mirando el preview, y si
+    el clip se anima la máscara se queda donde la pusiste.
+    """
+
+    changed = Signal()
+    committed = Signal(str)
+
+    def __init__(self) -> None:
+        super().__init__()
+
+        self._item = None
+        self._loading = False
+
+        self._target = QLabel("Nada seleccionado")
+        self._target.setWordWrap(True)
+        self._target.setStyleSheet("color:#7d838c; font-size:10px;")
+
+        self._blend = QComboBox()
+        self._blend.addItems(BLENDS)
+        self._blend.setToolTip("Cómo se mezcla esta capa con la pista de abajo")
+        self._blend.currentTextChanged.connect(self._push)
+
+        self._shape = QComboBox()
+        self._shape.addItems(SHAPES)
+        self._shape.setToolTip("La forma de lo que se deja ver")
+        self._shape.currentTextChanged.connect(self._shape_changed)
+
+        self._rows = {
+            "x": SliderRow("Posición X", 0, 100, 50),
+            "y": SliderRow("Posición Y", 0, 100, 50),
+            "width": SliderRow("Ancho", 1, 200, 60),
+            "height": SliderRow("Alto", 1, 200, 60),
+            "rotation": SliderRow("Giro", -180, 180, 0),
+            "feather": SliderRow("Suavizado", 0, 50, 3),
+        }
+        for row in self._rows.values():
+            row.changed.connect(self._push)
+
+        self._invert = QCheckBox("Invertir: tapar lo de dentro")
+        self._invert.toggled.connect(self._push)
+
+        self._clear = QPushButton("Quitar máscara")
+        self._clear.clicked.connect(self._reset)
+
+        self._hint = QLabel(
+            "Un corte recto: la posición dice por dónde pasa y el giro "
+            "hacia dónde apunta.")
+        self._hint.setWordWrap(True)
+        self._hint.setStyleSheet("color:#6f757e; font-size:10px;")
+        self._hint.setVisible(False)
+
+        self._set_content(column(
+            self._target,
+            section("Fusión"), self._blend,
+            section("Máscara"), self._shape, self._hint,
+            *self._rows.values(),
+            self._invert,
+            self._clear,
+            None,
+        ))
+        self.set_target(None)
+
+    # --- estado -----------------------------------------------------------
+
+    @property
+    def target(self):
+        """La capa que el panel está editando, o `None` si no aplica."""
+        return self._item
+
+    def set_target(self, item) -> None:
+        """Apunta el panel a un clip o a una imagen. `None` lo apaga."""
+        self._item = item
+        self._loading = True
+
+        activo = item is not None and hasattr(item, "mask")
+        self._target.setText(
+            f"Capa: {item.name}" if activo else "Nada seleccionado")
+        for widget in (self._blend, self._shape, self._invert, self._clear):
+            widget.setEnabled(activo)
+
+        if activo:
+            mask = item.mask
+            self._blend.setCurrentText(
+                item.blend if item.blend in BLENDS else "Normal")
+            self._shape.setCurrentText(
+                mask.shape if mask.shape in SHAPES else MASK_NONE)
+            self._rows["x"].set_value(round(mask.x * 100))
+            self._rows["y"].set_value(round(mask.y * 100))
+            self._rows["width"].set_value(round(mask.width * 100))
+            self._rows["height"].set_value(round(mask.height * 100))
+            self._rows["rotation"].set_value(round(mask.rotation))
+            self._rows["feather"].set_value(round(mask.feather * 100))
+            self._invert.setChecked(mask.invert)
+
+        self._loading = False
+        self._describe()
+
+    def _describe(self) -> None:
+        """Apaga los controles que no aplican a la forma escogida.
+
+        Dejarlos encendidos y muertos es peor que apagarlos: uno mueve el
+        ancho de una máscara lineal, no pasa nada, y se queda pensando que
+        el programa está roto.
+        """
+        mask = getattr(self._item, "mask", None)
+        viva = mask is not None and not mask.is_off
+
+        for nombre, row in self._rows.items():
+            aplica = viva
+            if nombre in ("width", "height"):
+                aplica = viva and mask.uses_size
+            row.setEnabled(aplica)
+
+        self._invert.setEnabled(viva)
+        self._clear.setEnabled(viva)
+        self._hint.setVisible(viva and mask.shape == "Lineal")
+
+    # --- edición ----------------------------------------------------------
+
+    def _push(self) -> None:
+        if self._item is None or self._loading:
+            return
+
+        self._item.blend = self._blend.currentText()
+        mask = self._item.mask
+        mask.shape = self._shape.currentText()
+        mask.x = self._rows["x"].value() / 100.0
+        mask.y = self._rows["y"].value() / 100.0
+        mask.width = self._rows["width"].value() / 100.0
+        mask.height = self._rows["height"].value() / 100.0
+        mask.rotation = float(self._rows["rotation"].value())
+        mask.feather = self._rows["feather"].value() / 100.0
+        mask.invert = self._invert.isChecked()
+
+        self.changed.emit()
+
+    def _shape_changed(self, nombre: str) -> None:
+        """Cambiar de forma reajusta los controles y entra al historial.
+
+        Va por `committed` y no por `changed` porque no es un arrastre: es
+        una decisión, y merece su propio paso de deshacer.
+        """
+        self._push()
+        self._describe()
+        if not self._loading:
+            self.committed.emit(f"Máscara: {nombre.lower()}")
+
+    def _reset(self) -> None:
+        if self._item is None:
+            return
+        self._item.mask.reset()
+        self.set_target(self._item)
+        self.committed.emit("Quitar máscara")
+
+
 TAB_STYLE = """
 QTabWidget::pane { border: none; background: #1b1d21; }
 QTabBar { background: #16181c; qproperty-drawBase: 0; }
@@ -808,6 +1093,7 @@ class PropertiesPanel(QDockWidget):
 
         self.transform = TransformPanel()
         self.color = ColorPanel()
+        self.mask = MaskPanel()
         self.clip = ClipPanel()
         self.text = TextPanel()
         self.image = ImagePanel()
@@ -817,9 +1103,10 @@ class PropertiesPanel(QDockWidget):
         self._tabs.setDocumentMode(True)
         self._tabs.setUsesScrollButtons(False)
 
-        iconos = {"Transformar": "⤢", "Color": "◐", "Clip": "▮",
-                  "Texto": "T", "Imagen": "▣"}
-        for pagina in (self.transform, self.color, self.clip, self.text, self.image):
+        iconos = {"Transformar": "⤢", "Color": "◐", "Máscara": "⬭",
+                  "Clip": "▮", "Texto": "T", "Imagen": "▣"}
+        for pagina in (self.transform, self.color, self.mask, self.clip,
+                       self.text, self.image):
             self._tabs.addTab(pagina, f"{iconos.get(pagina.TITULO, '')}  {pagina.TITULO}")
 
         self.setWidget(self._tabs)

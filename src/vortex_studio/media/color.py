@@ -5,8 +5,10 @@ recorrerlos en un bucle sería inservible. Un grafo de libavfilter corre en C
 y sostiene reproducción en vivo.
 
 Los filtros usados son `lutrgb` (brillo, contraste y gamma, con una tabla de
-256 entradas por canal) y `hue` (saturación). El filtro `eq`, que haría todo
-junto, es GPL y no viene en las ruedas de PyAV, que se compilan LGPL.
+256 entradas por canal), `hue` (saturación), `colorchannelmixer`
+(temperatura), `curves` (la curva de cinco puntos) y `vignette`. El filtro
+`eq`, que haría brillo, contraste, gamma y saturación de un jalón, es GPL y
+no viene en las ruedas de PyAV, que se compilan LGPL.
 """
 
 from __future__ import annotations
@@ -57,7 +59,9 @@ class ColorProcessor:
 
         signature = (
             adjust.brightness, adjust.contrast, adjust.saturation, adjust.gamma,
-            adjust.temperature, frame.width, frame.height, frame.format.name,
+            adjust.temperature, adjust.vignette,
+            adjust.curves.points(),
+            frame.width, frame.height, frame.format.name,
         )
         if signature != self._signature:
             self._build(frame, adjust)
@@ -91,6 +95,23 @@ class ColorProcessor:
             chain.append(graph.add(
                 "colorchannelmixer",
                 f"rr={1 + calor:.4f}:gg=1.0:bb={1 - calor:.4f}"))
+
+        # La curva va después del resto y no antes: el usuario la ajusta
+        # mirando la imagen ya corregida, así que tiene que ser lo último
+        # que toque los niveles. Se le manda muestreada —ver
+        # `model/curves.py`— para que la gráfica del panel y el resultado
+        # sean la misma curva.
+        if not adjust.curves.is_neutral:
+            chain.append(graph.add(
+                "curves", f"master={adjust.curves.ffmpeg_points()}"))
+
+        # La viñeta hasta el final, encima de todo lo demás. Si fuera antes,
+        # el contraste y la curva la deformarían y el deslizador ya no
+        # querría decir lo mismo en cada clip.
+        if adjust.vignette > 0:
+            chain.append(graph.add(
+                "vignette", f"a={adjust.vignette_angle:.4f}:mode=forward"))
+
         chain += [
             graph.add("format", "rgb24"),
             graph.add("buffersink"),

@@ -112,10 +112,10 @@ class PreviewWidget(QWidget):
         t = self._time
         for overlay, image in self._overlays:
             draw_overlay(painter, target, overlay, image,
-                         overlay.fade_at(t) if t is not None else 1.0)
+                         overlay.fade_at(t) if t is not None else 1.0, t)
         for title in self._titles:
             draw_title(painter, target, title,
-                       title.fade_at(t) if t is not None else 1.0)
+                       title.fade_at(t) if t is not None else 1.0, t)
 
         painter.end()
 

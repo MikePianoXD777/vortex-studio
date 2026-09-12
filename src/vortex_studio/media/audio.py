@@ -28,6 +28,25 @@ LAYOUT = "stereo"
 FORMAT = "fltp"
 
 
+def silence(seconds: float, rate: int = RATE,
+            layout: str = LAYOUT, fmt: str = FORMAT) -> Iterator:
+    """Bloques de silencio que suman `seconds`.
+
+    Vive suelta y no dentro de `AudioRenderer` porque el mezclador también
+    la necesita: cuando no hay ninguna pista con sonido, la salida sigue
+    teniendo que durar lo mismo que la imagen.
+    """
+    pendientes = int(round(seconds * rate))
+    while pendientes > 0:
+        bloque = min(pendientes, rate)
+        frame = av.AudioFrame(format=fmt, layout=layout, samples=bloque)
+        frame.sample_rate = rate
+        for plane in frame.planes:
+            plane.update(bytes(plane.buffer_size))
+        yield frame
+        pendientes -= bloque
+
+
 def has_audio(path: str | Path) -> bool:
     if not HAS_PYAV:
         return False
@@ -119,8 +138,6 @@ class AudioRenderer:
         if cursor < end:
             yield from self._silence(end - cursor)
 
-    # --- piezas -----------------------------------------------------------
-
     # --- volumen y fundidos -----------------------------------------------
 
     def _apply_level(self, frame, clip, cuando: float):
@@ -163,15 +180,7 @@ class AudioRenderer:
         return salida
 
     def _silence(self, seconds: float) -> Iterator:
-        pendientes = int(round(seconds * self.rate))
-        while pendientes > 0:
-            bloque = min(pendientes, self.rate)
-            frame = av.AudioFrame(format=self.format, layout=self.layout, samples=bloque)
-            frame.sample_rate = self.rate
-            for plane in frame.planes:
-                plane.update(bytes(plane.buffer_size))
-            yield frame
-            pendientes -= bloque
+        yield from silence(seconds, self.rate, self.layout, self.format)
 
     def _from_clip(self, clip, source_start: float, seconds: float) -> Iterator:
         """Saca `seconds` de audio del archivo, desde `source_start`."""

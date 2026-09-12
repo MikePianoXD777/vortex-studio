@@ -7,18 +7,19 @@ A non-linear video editor. Part of Vortex Suite.
 The features of DaVinci Resolve, CapCut, Premiere Pro and After Effects, but
 easy to use. The capability, yes; the complexity, no.
 
-> ### ⚠️ Pre-alpha — `0.1.0a1`
+> ### ⚠️ Pre-alpha — `0.2.0a1`
 >
-> **This is not ready for real work.** It passes 167 automated tests, but
+> **This is not ready for real work.** It passes 286 automated tests, but
 > nobody has actually used it on their own footage yet. That is not the same
 > as being tested.
 >
 > What to expect:
 >
 > - Things breaking in ways we haven't seen
-> - The `.vortex` file format may change and break old projects
+> - The `.vortex` file format moved to version 2 in this release: projects
+>   from `0.1.0a1` open fine, but not the other way around
 > - 4K footage will crawl: decoding still runs on the UI thread
-> - No mixing across audio tracks, no transitions beyond the cross dissolve
+> - The only transition is still the cross dissolve
 >
 > Use it to poke around and to report what breaks. Not to edit anything you
 > care about without a backup.
@@ -83,11 +84,16 @@ environment if it doesn't exist.
 - Cut, move, trim, duplicate and delete on the timeline, with snapping
 - Undo and redo
 - Text and subtitles, with outline and caption box
+- Ready-made text animations, in and out
 - Images over the video
 - Color correction with one-click looks
+- A five-point color curve, with its graph, and a vignette
+- Rectangle, ellipse and linear masks, with a soft edge
+- Thirteen blend modes, and stacked video tracks
+- One-click picture in picture
 - Keyframe animation of position, scale, rotation and opacity
 - Fades, cross dissolve, clip speed and freeze frame
-- Sound while editing, with waveforms on the audio tracks
+- Sound while editing, with track mixing and waveforms on the audio tracks
 - Markers
 - Vertical, square and cinema formats
 - Export to MP4 with audio, and the current frame to PNG
@@ -110,6 +116,11 @@ without opening windows, so it works over SSH or on a headless machine.
 | `test_edicion.py` | Cut, drag, trim, delete, duplicate |
 | `test_color.py` | Brightness, contrast, saturation, gamma |
 | `test_audio.py` | Waveforms and mixing with gaps |
+| `test_mezcla.py` | That two overlapping audio tracks sum |
+| `test_mascara.py` | Masks, their soft edge and their crop |
+| `test_fusion.py` | Stacked video tracks and blend modes |
+| `test_curvas.py` | The five-point color curve and the vignette |
+| `test_animacion.py` | Ready-made text animations |
 | `test_exportar.py` | That the file comes out looking like the edit |
 | `test_clip.py` | Fades, speed, freeze frame |
 | `test_marcadores.py` | Markers and navigating them |
@@ -140,6 +151,7 @@ without opening windows, so it works over SSH or on a headless machine.
 | `Ctrl+Shift+D` | Fade the clip in and out |
 | `Ctrl+Shift+F` | Freeze the current frame |
 | `Ctrl+Shift+K` | Key every transform property |
+| `Ctrl+Shift+P` | Picture in picture |
 | `Del` / `Shift+Del` | Delete / ripple delete |
 | `Ctrl+T` / `Ctrl+Shift+T` | Insert text / subtitle |
 
@@ -171,14 +183,18 @@ playhead.
 
 ## The properties panel
 
-One window on the right with five tabs: Transform, Color, Clip, Text and
-Image. They used to be five stacked docks, which took half the screen for
-controls you rarely touch at the same time.
+One window on the right with six tabs: Transform, Color, Mask, Clip, Text
+and Image. They used to be several stacked docks, which took half the screen
+for controls you rarely touch at the same time.
 
 The tab switches itself based on your selection, but only when the current
 one doesn't apply: if you were already on Color, selecting another clip
 leaves you on Color. The ones that don't apply are disabled rather than
 hidden, so they don't shuffle around.
+
+The same idea applies inside each tab: what you use daily stays in sight,
+and what you use now and then — the color curve — goes in a group that
+starts collapsed and opens with a click.
 
 ## Animation
 
@@ -206,12 +222,89 @@ The Color panel ships ready-made looks (Warm, Cool, Cinema, Vivid, Soft,
 Black and white, Night). They aren't a separate layer: they write into the
 same sliders, so you can start from one and keep adjusting by hand.
 
+## Color curve and vignette
+
+The curve is five sliders — blacks, shadows, midtones, highlights, whites —
+and a graph that draws what they're doing. It's the same capability as a
+DaVinci curve: any S-curve, lifting shadows without blowing highlights, the
+washed-blacks film look. What's missing is points to drag, which is the part
+that scares people off when they first open an editor.
+
+Ready-made curves ship with it: S-curve contrast, Washed blacks, Open
+shadows, Pull highlights and Flat film.
+
+The graph draws exactly the curve that goes to FFmpeg. That works by sending
+it already sampled at seventeen points: with the five bare anchors, FFmpeg
+would interpolate differently and the graph would lie a little.
+
+The vignette is a 0-to-100 slider that closes down the corners. Together with
+washed blacks it's where the "looks like film" feeling comes from, which is
+why the Cinema and Night looks already ship with it.
+
+**It costs.** The vignette is around 12 ms per frame at 1080p — per-pixel
+math, not a lookup table — against half a millisecond for the curve. With it
+on, the preview drops from roughly 270 frames per second to roughly 47: still
+plenty for 30 fps playback, but it's the most expensive adjustment there is.
+
+## Masks and blend modes
+
+Four shapes: rectangle, ellipse, a straight cut, or none. Each with
+position, size, rotation, edge softness and invert. That covers what actually
+gets used — hiding a face, revealing half the screen, framing something in a
+circle — without a path editor and bezier handles.
+
+The mask is measured against the output frame, like CapCut, not against the
+layer like After Effects. The difference matters: you place it looking at the
+preview, and if the clip is animated the mask stays where you put it, which
+is exactly what you want when covering something that isn't moving.
+
+The thirteen blend modes are the usual ones: multiply, screen, overlay,
+darken, lighten, color dodge, color burn, hard light, soft light,
+difference, exclusion and plus.
+
+For a blend mode to have anything to blend with, **video tracks now stack**:
+V1 and V2 are both visible. Before, only the highest track with footage was
+painted, so putting something on V2 made V1 disappear entirely.
+`Ctrl+Shift+P` sets up picture in picture in one click.
+
+Lower tracks stop being looked at as soon as one above covers them
+completely. Without that check, having two tracks would cost twice the
+decoding even when the lower one is invisible.
+
+## Text animation
+
+Ten in animations and nine out: appear, rise, typewriter, zoom in, zoom out,
+and slide from each of the four sides. You pick one from a list and set how
+long it takes; there are no keyframes to place.
+
+It's what makes CapCut fast, and in After Effects the same effect is four
+keyframes per property plus an expression for the typewriter.
+
+The out list deliberately doesn't offer the typewriter: un-typing reads as a
+bug, not as an effect.
+
+The project stores the animation's name and duration, not the keyframes it
+generates. That way, tuning a curve improves projects that already exist
+instead of breaking them.
+
 ## Sound
 
 You hear it while editing, with volume and mute on the transport bar. The
 playhead follows what has actually left the sound card, not the UI clock:
 audio can't be sped up or skipped without it being audible, so it leads and
 the picture follows.
+
+**Tracks really do mix now.** Clips are split into non-overlapping lanes,
+each lane is rendered separately and the lanes are summed with `amix`.
+Before, the renderer moved forward and never went back, so two overlapping
+clips couldn't be heard together: the second one was lost with no warning.
+The lanes deliberately aren't the timeline's tracks, so the case of two
+overlapping clips on the same track is solved too.
+
+The sum can go past full scale and clip, same as Premiere. It's allowed to
+clip rather than adding a limiter, because a limiter needs to look ahead and
+that lookahead would push the sound out of sync with the picture. Per-clip
+gain is there for that.
 
 ## Export
 
@@ -239,15 +332,17 @@ literal warning.
 
 ## Not there yet
 
-- Mixing doesn't sum tracks: it takes the audio clips in order and fills the
-  gaps with silence. Two overlapping clips don't blend.
-- Sound only follows at normal speed. At 2× it would come out pitch-shifted,
-  which is worse than not hearing it.
 - Picture decoding runs on the UI thread: 4K will crawl. It needs a redesign
   with a decoding thread and a frame buffer, and it's the biggest thing left.
+- Sound only follows at normal speed. At 2× it would come out pitch-shifted,
+  which is worse than not hearing it.
+- The audio mix clips when the sum goes past 1.0, and there are no meters to
+  see it coming.
 - The only transition is the cross dissolve; no wipes, no effects.
-- No masks and no blend modes.
-- No color curves and no vignette.
+- The vignette is the most expensive adjustment there is: around 12 ms per
+  frame at 1080p.
+- One mask shape per layer, and it can't be animated.
+- No animated masks and no motion tracking.
 
 ## Language
 

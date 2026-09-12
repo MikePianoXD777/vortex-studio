@@ -86,3 +86,34 @@ def test_las_extensiones_no_distinguen_mayusculas(ventana, media, tmp_path):
 
     assert Path("FOTO.PNG").suffix.lower() in IMAGE_EXT
     assert Path("VIDEO.MP4").suffix.lower() in VIDEO_EXT
+
+
+def test_la_version_dice_lo_mismo_en_los_dos_lados():
+    """El número vive en `pyproject.toml` y en `__init__.py`.
+
+    Al subir de versión es fácil mover uno y olvidar el otro, y entonces el
+    ejecutable dice una cosa y el paquete instalado otra. Ya casi pasó.
+    """
+    import re
+    from pathlib import Path
+
+    import vortex_studio
+
+    raiz = Path(__file__).resolve().parent.parent
+    texto = (raiz / "pyproject.toml").read_text(encoding="utf-8")
+    declarada = re.search(r'^version = "([^"]+)"', texto, re.MULTILINE)
+
+    assert declarada is not None, "pyproject.toml no declara versión"
+    assert declarada.group(1) == vortex_studio.__version__
+
+
+def test_el_changelog_menciona_la_version_actual():
+    """Una release sin su entrada en el changelog es una release a ciegas."""
+    from pathlib import Path
+
+    import vortex_studio
+
+    raiz = Path(__file__).resolve().parent.parent
+    for nombre in ("CHANGELOG.md", "CHANGELOG.en.md"):
+        texto = (raiz / nombre).read_text(encoding="utf-8")
+        assert f"[{vortex_studio.__version__}]" in texto, nombre

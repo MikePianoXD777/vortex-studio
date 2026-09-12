@@ -7,19 +7,20 @@ Editor de video no lineal. Parte de Vortex Suite.
 Las funciones de DaVinci Resolve, CapCut, Premiere Pro y After Effects, pero
 fáciles de usar. La capacidad sí; la complejidad no.
 
-> ### ⚠️ Pre-alfa — `0.1.0a1`
+> ### ⚠️ Pre-alfa — `0.2.0a1`
 >
-> **Esto no está listo para trabajo real.** Pasa 167 pruebas automáticas,
+> **Esto no está listo para trabajo real.** Pasa 286 pruebas automáticas,
 > pero nadie lo ha usado todavía con material propio de verdad. Eso no es lo
 > mismo que estar probado.
 >
 > Lo que puedes esperar:
 >
 > - Cosas que fallan de formas que no hemos visto
-> - El formato del archivo `.vortex` puede cambiar y romper proyectos viejos
+> - El formato del archivo `.vortex` subió a la versión 2 en esta entrega:
+>   los proyectos de la `0.1.0a1` abren bien, pero al revés no
 > - Material en 4K va a ir lento: la decodificación aún corre en el hilo de
 >   la interfaz
-> - Sin audio en pistas mezcladas, sin transiciones más allá del fundido
+> - La única transición sigue siendo el fundido cruzado
 >
 > Úsalo para curiosear y para reportar lo que se rompa. No para editar algo
 > que te importe sin respaldo.
@@ -93,6 +94,11 @@ abrir ventanas, así que funciona por SSH o en una máquina sin pantalla.
 | `test_edicion.py` | Cortar, arrastrar, recortar, eliminar, duplicar |
 | `test_color.py` | Brillo, contraste, saturación, gamma |
 | `test_audio.py` | Onda y mezcla con huecos |
+| `test_mezcla.py` | Que dos pistas de audio encimadas se sumen |
+| `test_mascara.py` | Máscaras, su borde suave y su recorte |
+| `test_fusion.py` | Pistas de video apiladas y modos de fusión |
+| `test_curvas.py` | Curva de color de cinco puntos y viñeta |
+| `test_animacion.py` | Animaciones de texto listas |
 | `test_exportar.py` | Que el archivo salga como se ve al editar |
 | `test_clip.py` | Fundidos, velocidad, congelar cuadro |
 | `test_marcadores.py` | Marcadores y su navegación |
@@ -123,6 +129,7 @@ abrir ventanas, así que funciona por SSH o en una máquina sin pantalla.
 | `Ctrl+Shift+D` | Fundir entrada y salida del clip |
 | `Ctrl+Shift+F` | Congelar el cuadro actual |
 | `Ctrl+Shift+K` | Poner keyframe de toda la transformación |
+| `Ctrl+Shift+P` | Cuadro dentro de cuadro |
 | `Supr` / `Shift+Supr` | Eliminar / eliminar cerrando el hueco |
 | `Ctrl+T` / `Ctrl+Shift+T` | Insertar texto / subtítulo |
 
@@ -153,14 +160,19 @@ sus bordes lo recorta, y todo se imanta a los cortes vecinos y al playhead.
 
 ## El panel de propiedades
 
-Una sola ventana a la derecha con cinco pestañas: Transformar, Color, Clip,
-Texto e Imagen. Antes eran cinco ventanas acopladas apiladas, que dejaban
-media pantalla en controles que casi nunca se tocan a la vez.
+Una sola ventana a la derecha con seis pestañas: Transformar, Color,
+Máscara, Clip, Texto e Imagen. Antes eran varias ventanas acopladas
+apiladas, que dejaban media pantalla en controles que casi nunca se tocan a
+la vez.
 
 La pestaña se cambia sola según lo que selecciones, pero solo cuando la de
 ese momento no aplica: si ya estabas en Color, seleccionar otro clip te deja
 en Color. Las que no aplican se apagan en vez de esconderse, para que no
 bailen de lugar.
+
+Adentro de cada pestaña se aplica la misma idea: lo que se usa a diario
+queda a la vista y lo que se usa de vez en cuando —la curva de color— va en
+un grupo que arranca cerrado y se abre con un clic.
 
 ## Animación
 
@@ -188,12 +200,90 @@ El panel de Color trae looks listos (Cálido, Frío, Cine, Vívido, Suave,
 Blanco y negro, Noche). No son una capa aparte: escriben en los mismos
 deslizadores, así que se puede partir de uno y seguir ajustando a mano.
 
+## Curva de color y viñeta
+
+La curva son cinco deslizadores —negros, sombras, medios, luces y blancos—
+y una gráfica que dibuja lo que están haciendo. Es la misma capacidad que
+una curva de DaVinci: cualquier curva en S, levantar las sombras sin quemar
+las luces, el "film look" de negros lavados. Lo que no hay es puntos que
+arrastrar, que es de lo que más asusta al abrir un editor por primera vez.
+
+Vienen curvas listas: Contraste en S, Negros lavados, Abrir sombras, Bajar
+luces y Plano de cine.
+
+La gráfica dibuja exactamente la curva que se le manda a FFmpeg. Se logra
+mandándola ya muestreada en diecisiete puntos: con los cinco anclajes
+pelones, FFmpeg interpolaría distinto y la gráfica mentiría un poco.
+
+La viñeta es un deslizador de 0 a 100 que cierra las esquinas. Junto con los
+negros lavados es de donde sale la sensación de "se ve como película", y por
+eso los looks de Cine y Noche ya la traen puesta.
+
+**Cuesta.** La viñeta son unos 12 ms por cuadro en 1080p —matemática por
+pixel, no una tabla— contra medio milisegundo de la curva. Con ella puesta
+el preview baja de unos 270 cuadros por segundo a unos 47: sigue
+reproduciendo de sobra a 30, pero es el ajuste más caro que hay.
+
+## Máscaras y modos de fusión
+
+Cuatro formas: rectángulo, círculo, un corte recto, o ninguna. Cada una con
+posición, tamaño, giro, suavizado del borde e invertir. Con eso se cubre lo
+que de verdad se usa —tapar una cara, revelar media pantalla, encerrar algo
+en un círculo— sin un editor de trazados con puntos bezier.
+
+La máscara se mide sobre el cuadro de salida, como en CapCut, no sobre la
+capa como en After Effects. La diferencia importa: uno la coloca mirando el
+preview, y si el clip se anima la máscara se queda donde la pusiste, que es
+justo lo que se quiere al tapar algo que está quieto.
+
+Los trece modos de fusión son los de siempre: multiplicar, trama,
+superponer, oscurecer, aclarar, sobreexponer, subexponer, luz fuerte, luz
+suave, diferencia, exclusión y sumar.
+
+Para que un modo de fusión tenga con qué fusionarse, **las pistas de video
+ahora se apilan**: V1 y V2 se ven las dos. Antes solo se pintaba la más alta
+con material, así que poner algo en V2 hacía desaparecer V1 por completo.
+`Ctrl+Shift+P` deja armado un cuadro dentro de cuadro de un clic.
+
+Las pistas de abajo se dejan de mirar en cuanto una de arriba las tapa del
+todo. Sin esa cuenta, tener dos pistas costaría el doble de decodificación
+aunque la de abajo quedara invisible.
+
+## Animación de texto
+
+Diez animaciones de entrada y nueve de salida: aparecer, subir,
+escribiéndose, acercarse, alejarse, y deslizar desde los cuatro lados. Se
+escogen de una lista y se les pone cuánto duran; no hay keyframes que poner.
+
+Es lo que hace rápido a CapCut, y en After Effects el mismo efecto son
+cuatro keyframes por propiedad más una expresión para la máquina de
+escribir.
+
+La salida no ofrece la máquina de escribir a propósito: des-escribirse se ve
+como un error, no como un efecto.
+
+En el proyecto se guarda el nombre de la animación y su duración, no los
+keyframes que genera. Así, afinar una curva mejora los proyectos que ya
+existen en vez de romperlos.
+
 ## Sonido
 
 Se oye mientras editas, con volumen y silencio en la barra de transporte. El
 playhead se guía por lo que ya salió por la tarjeta, no por el reloj de la
 interfaz: el audio no se puede acelerar ni saltar sin que se note, así que
 manda él y la imagen lo sigue.
+
+**Las pistas se mezclan de verdad.** Los clips se reparten en carriles sin
+traslape, cada carril se renderiza aparte y los carriles se suman con `amix`.
+Antes el renderizador iba hacia adelante y nunca regresaba, así que dos
+clips encimados no se podían oír juntos: el segundo se perdía sin ningún
+aviso. Los carriles no son las pistas del timeline a propósito, así también
+se resuelve el caso de dos clips encimados dentro de la misma pista.
+
+La suma puede pasarse y recortar, igual que en Premiere. Se deja recortar en
+vez de meter un limitador porque un limitador necesita mirar hacia adelante,
+y ese adelanto desfasaría el sonido de la imagen. Para eso está el volumen
+por clip.
 
 ## Exportar
 
@@ -217,11 +307,16 @@ editor. Hay una prueba que lo vigila.
 - Cortar, mover, recortar, duplicar y borrar en el timeline, con imantado
 - Deshacer y rehacer
 - Texto y subtítulos, con contorno y caja
+- Animaciones de texto listas, de entrada y de salida
 - Imágenes sobre el video
 - Corrección de color con looks de un clic
+- Curva de color de cinco puntos, con su gráfica, y viñeta
+- Máscaras de rectángulo, círculo y corte recto, con borde suave
+- Trece modos de fusión, y pistas de video apiladas
+- Cuadro dentro de cuadro de un clic
 - Animación por keyframes de posición, tamaño, giro y opacidad
 - Fundidos, fundido cruzado, velocidad y congelar cuadro
-- Sonido al editar, con onda en las pistas de audio
+- Sonido al editar, con mezcla de pistas y onda en las pistas de audio
 - Marcadores
 - Formatos vertical, cuadrado y cine
 - Exportar a MP4 con audio, y el cuadro actual a PNG
@@ -236,13 +331,14 @@ una advertencia literal.
 
 ## Pendiente
 
-- La mezcla no suma pistas: toma los clips de audio en orden y rellena los
-  huecos con silencio. Dos clips encimados no se mezclan entre sí.
-- El sonido solo acompaña a velocidad normal. A 2× saldría con el tono
-  cambiado, que es peor que no oírlo.
 - La decodificación de imagen corre en el hilo de la interfaz: con 4K se va
   a arrastrar. Pide un rediseño con hilo de decodificación y buffer de
   cuadros, y es lo más grande que falta.
+- El sonido solo acompaña a velocidad normal. A 2× saldría con el tono
+  cambiado, que es peor que no oírlo.
+- La mezcla de audio recorta si la suma se pasa de 1.0, y no hay medidores
+  para verlo venir.
 - La única transición es el fundido cruzado; no hay cortinillas ni efectos.
-- No hay máscaras ni modos de fusión.
-- No hay curvas de color ni viñeta.
+- La viñeta es el ajuste más caro que hay: unos 12 ms por cuadro en 1080p.
+- La máscara es de una sola forma por capa, y sin animar.
+- No hay máscaras animadas ni seguimiento de movimiento.

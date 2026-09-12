@@ -15,7 +15,8 @@ from __future__ import annotations
 from PySide6.QtCore import QObject, QTimer, Signal
 from PySide6.QtMultimedia import QAudioFormat, QAudioSink, QMediaDevices
 
-from vortex_studio.media.audio import LAYOUT, RATE, AudioRenderer
+from vortex_studio.media.audio import LAYOUT, RATE
+from vortex_studio.media.mixer import AudioMixer
 
 CHUNK_MS = 120          # cuánto audio se adelanta en cada empujón
 BYTES_PER_FRAME = 4     # estéreo, 16 bits
@@ -63,8 +64,11 @@ class AudioPlayer(QObject):
             return False
 
         try:
-            renderer = AudioRenderer(clips, rate=RATE, layout=LAYOUT, fmt="s16")
-            self._frames = renderer.stream(desde, hasta)
+            # Mezclador y no un solo `AudioRenderer`: si la voz y la música
+            # están encimadas, al editar se tiene que oír lo mismo que va a
+            # salir en el archivo final.
+            mezcla = AudioMixer(clips, rate=RATE, layout=LAYOUT, fmt="s16")
+            self._frames = mezcla.stream(desde, hasta)
             self._sink = QAudioSink(QMediaDevices.defaultAudioOutput(), self._format)
             self._sink.setVolume(self._volume)
             self._io = self._sink.start()

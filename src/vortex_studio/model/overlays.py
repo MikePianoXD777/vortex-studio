@@ -11,8 +11,12 @@ mismo lugar si la secuencia cambia a 4K.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+
+from vortex_studio.model.animation import DEFAULT_TIME
+from vortex_studio.model.blend import NORMAL
+from vortex_studio.model.mask import Mask
 
 ALIGNMENTS = ("izquierda", "centro", "derecha")
 
@@ -42,6 +46,13 @@ class TimedItem:
     duration: float
     fade_in: float = 0.0     # segundos de entrada en fundido
     fade_out: float = 0.0    # segundos de salida
+
+    # Animación de entrada y de salida, por nombre. Ver `model/animation.py`:
+    # se guarda el nombre y no los keyframes que genera, para que cambiar una
+    # curva no rompa los proyectos ya guardados.
+    anim_in: str = "Ninguna"
+    anim_out: str = "Ninguna"
+    anim_time: float = DEFAULT_TIME
 
     @property
     def end(self) -> float:
@@ -105,6 +116,8 @@ class ImageOverlay(TimedItem):
     y: float = 0.50
     scale: float = 0.35       # ancho como fracción del cuadro
     opacity: float = 1.0
+    blend: str = NORMAL       # cómo se combina con lo de abajo
+    mask: Mask = field(default_factory=Mask)
 
     def __post_init__(self) -> None:
         self.source = Path(self.source)

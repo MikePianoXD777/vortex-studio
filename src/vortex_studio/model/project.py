@@ -10,7 +10,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from vortex_studio.model.blend import NORMAL, is_normal
 from vortex_studio.model.color import ColorAdjust
+from vortex_studio.model.mask import Mask
 from vortex_studio.model.overlays import ImageOverlay, Title
 from vortex_studio.model.transform import Transform
 
@@ -39,6 +41,8 @@ class Clip:
     gain: float = 1.0        # volumen del clip, solo aplica en pistas de audio
     dissolve: float = 0.0    # transición cruzada con el clip de la izquierda
     transform: Transform = field(default_factory=Transform)
+    blend: str = NORMAL     # cómo se combina con la pista de abajo
+    mask: Mask = field(default_factory=Mask)
 
     def __post_init__(self) -> None:
         self.source = Path(self.source)
@@ -207,27 +211,88 @@ class Sequence:
                 return clip
         return None
 
-    def dissolve_at(self, t: float):
-        """Si `t` cae dentro de una transición, devuelve (saliente, entrante, avance).
+    def track_dissolve_at(self, track: Track, t: float):
+        """La transición viva en esa pista, o None.
 
         La transición se reparte mitad antes y mitad después del corte, que
         es como la coloca Premiere: el corte queda al centro del cruce, no
         al principio.
         """
-        for track in self.video_tracks():
-            for clip in track.clips:
-                d = getattr(clip, "dissolve", 0.0)
-                if d <= 0:
-                    continue
+        for clip in track.clips:
+            d = getattr(clip, "dissolve", 0.0)
+            if d <= 0:
+                continue
 
-                saliente = track.before(clip)
-                if saliente is None:
-                    continue
+            saliente = track.before(clip)
+            if saliente is None:
+                continue
 
-                desde, hasta = clip.start - d / 2, clip.start + d / 2
-                if desde <= t < hasta:
-                    return saliente, clip, (t - desde) / d
+            desde, hasta = clip.start - d / 2, clip.start + d / 2
+            if desde <= t < hasta:
+                return saliente, clip, (t - desde) / d
         return None
+
+    def dissolve_at(self, t: float):
+        """La primera transición viva, mirando de la pista más alta abajo."""
+        for track in self.video_tracks():
+            cruce = self.track_dissolve_at(track, t)
+            if cruce is not None:
+                return cruce
+        return None
+
+    def video_stack_at(self, t: float) -> list[tuple]:
+        """Lo que hay que pintar en ese instante, de la pista más baja arriba.
+
+        Cada entrada es `(clip, peso)`. Normalmente el peso es 1; durante
+        una transición cruzada la pista aporta dos entradas cuyos pesos
+        suman 1.
+
+        Antes solo se pintaba la pista más alta con material, así que poner
+        algo en V2 hacía desaparecer V1 por completo — no había manera de
+        hacer un cuadro dentro del cuadro, y un modo de fusión no tenía con
+        qué fusionarse.
+
+        Las pistas de abajo se dejan de mirar en cuanto una de arriba las
+        tapa del todo. Sin ese corte, tener dos pistas costaría el doble de
+        decodificación aunque la de abajo quedara invisible.
+        """
+        capas: list[tuple] = []
+        for track in self.video_tracks():        # de la más alta a la más baja
+            cruce = self.track_dissolve_at(track, t)
+            if cruce is not None:
+                saliente, entrante, avance = cruce
+                capas.append((entrante, avance))
+                capas.append((saliente, 1.0 - avance))
+                continue
+
+            clip = track.video_at(t)
+            if clip is None:
+                continue
+            capas.append((clip, 1.0))
+            if self.covers(clip, t):
+                break
+
+        capas.reverse()
+        return capas
+
+    def covers(self, clip, t: float) -> bool:
+        """¿Este clip tapa por completo lo que tenga debajo?
+
+        Tapa si está entero: opaco, sin máscara, sin modo de fusión, sin
+        fundido a medias, y sin haberse encogido ni movido del cuadro.
+        """
+        if not is_normal(getattr(clip, "blend", NORMAL)):
+            return False
+        mask = getattr(clip, "mask", None)
+        if mask is not None and not mask.is_off:
+            return False
+        if clip.fade_at(t) < 0.999:
+            return False
+
+        v = clip.transform.values_at(clip.local(t))
+        return (v["opacity"] >= 0.999 and v["scale"] >= 1.0
+                and abs(v["x"]) < 1e-9 and abs(v["y"]) < 1e-9
+                and abs(v["rotation"]) < 1e-9)
 
     def overlays_at(self, t: float) -> list[ImageOverlay]:
         """Imágenes activas, de la pista más baja a la más alta.

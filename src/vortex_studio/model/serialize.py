@@ -14,11 +14,16 @@ from pathlib import Path
 from typing import Any
 
 from vortex_studio.model.color import ColorAdjust
+from vortex_studio.model.curves import Curves
+from vortex_studio.model.mask import Mask
 from vortex_studio.model.overlays import ImageOverlay, Title
 from vortex_studio.model.project import Clip, Marker, Project, Sequence, Track
 from vortex_studio.model.transform import Transform
 
-FORMAT_VERSION = 1
+# 2: máscaras, modos de fusión, curva de color, viñeta y animación de texto.
+# Se sube el número para que una versión vieja diga "esto es más nuevo que
+# yo" en vez de abrir el proyecto a medias y perder esos ajustes al guardar.
+FORMAT_VERSION = 2
 EXTENSION = ".vortex"
 
 
@@ -61,26 +66,55 @@ def item_to_dict(item: Any, base: Path | None = None) -> dict:
     return data
 
 
+def _color(raw: dict | None) -> ColorAdjust | None:
+    """Reconstruye el color, con su curva adentro.
+
+    `asdict` aplana los dataclasses anidados a diccionarios, así que al
+    volver hay que armarlos de nuevo uno por uno. Sin esto, `clip.color`
+    quedaba siendo un `dict` y todo lo que le pedía un atributo tronaba —
+    pero hasta varios pasos después, que es lo que lo vuelve difícil de
+    encontrar.
+    """
+    if not raw:
+        return None
+    raw = dict(raw)
+    curva = raw.pop("curves", None)
+    adjust = ColorAdjust(**raw)
+    if curva:
+        adjust.curves = Curves(**curva)
+    return adjust
+
+
 def item_from_dict(data: dict, base: Path | None = None) -> Any:
     data = dict(data)
     kind = data.pop("tipo")
 
+    # `transform` y `mask` se sacan para todos porque solo los tienen los
+    # que los tienen. `color` NO: en un `Title` ese campo es el color de la
+    # letra, una cadena como "#ffcc00", y sacarlo de ahí borraba el color
+    # del texto al abrir el proyecto.
+    transform = data.pop("transform", None)
+    mask = data.pop("mask", None)
+
     if kind == "clip":
-        color = data.pop("color", None)
-        transform = data.pop("transform", None)
+        color = _color(data.pop("color", None))
         data["source"] = _read_path(data["source"], base)
-        clip = Clip(**data)
+        item = Clip(**data)
         if color:
-            clip.color = ColorAdjust(**color)
-        if transform:
-            clip.transform = Transform(**transform)
-        return clip
-    if kind == "imagen":
+            item.color = color
+    elif kind == "imagen":
         data["source"] = _read_path(data["source"], base)
-        return ImageOverlay(**data)
-    if kind == "texto":
-        return Title(**data)
-    raise ValueError(f"Tipo desconocido en el proyecto: {kind}")
+        item = ImageOverlay(**data)
+    elif kind == "texto":
+        item = Title(**data)
+    else:
+        raise ValueError(f"Tipo desconocido en el proyecto: {kind}")
+
+    if transform and hasattr(item, "transform"):
+        item.transform = Transform(**transform)
+    if mask and hasattr(item, "mask"):
+        item.mask = Mask(**mask)
+    return item
 
 
 def sequence_to_dict(sequence: Sequence, base: Path | None = None) -> dict:

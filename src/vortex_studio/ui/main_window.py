@@ -30,11 +30,14 @@ from PySide6.QtWidgets import (
 
 from vortex_studio.media import HAS_PYAV, probe
 from vortex_studio.media.pool import SourcePool
-from vortex_studio.media.audio import AudioRenderer, has_audio
+from vortex_studio.media.audio import has_audio
+from vortex_studio.media.mixer import AudioMixer
 from vortex_studio.media.encoder import QUALITY, Cancelled, export_video
 from vortex_studio.model import (
     ANCHORS,
+    BLENDS,
     PROPS,
+    SHAPES,
     Clip,
     ImageOverlay,
     Project,
@@ -45,7 +48,7 @@ from vortex_studio.model import (
 from vortex_studio.model.history import History
 from vortex_studio.model.serialize import EXTENSION, load_project, save_project
 from vortex_studio.ui.audio_player import AudioPlayer
-from vortex_studio.ui.compositor import compose
+from vortex_studio.ui.compositor import Layer, clear_mask_cache, compose
 from vortex_studio.ui.panels import PropertiesPanel
 from vortex_studio.ui.preview import PreviewWidget
 from vortex_studio.ui.timeline import TOOL_RAZOR, TOOL_SELECT, TimelineWidget
@@ -127,6 +130,7 @@ class MainWindow(QMainWindow):
         self.image_panel = self.panel.image
         self.clip_panel = self.panel.clip
         self.transform_panel = self.panel.transform
+        self.mask_panel = self.panel.mask
 
         self._build_layout()
         self._build_menu()
@@ -242,6 +246,23 @@ class MainWindow(QMainWindow):
                      self.key_all_transform)
         self._action(clip_menu, "Quitar a&nimación", None, self.clear_transform_keys)
 
+        capa = self.menuBar().addMenu("Ca&pa")
+        fusion = capa.addMenu("Modo de &fusión")
+        for nombre in BLENDS:
+            self._action(fusion, nombre, None,
+                         lambda _=False, n=nombre: self.set_blend(n))
+        mascara = capa.addMenu("&Máscara")
+        for nombre in SHAPES:
+            etiqueta = "Quitar máscara" if nombre == "Ninguna" else nombre
+            self._action(mascara, etiqueta, None,
+                         lambda _=False, n=nombre: self.set_mask_shape(n))
+        mascara.addSeparator()
+        self._action(mascara, "&Invertir la máscara", None, self.invert_mask)
+        capa.addSeparator()
+        self._action(capa, "&Cuadro dentro de cuadro", "Ctrl+Shift+P",
+                     self.picture_in_picture)
+        self._action(capa, "&Llenar el cuadro", None, self.fill_frame)
+
         insertar = self.menuBar().addMenu("&Insertar")
         self._action(insertar, "&Texto", "Ctrl+T", self.add_title)
         self._action(insertar, "&Subtítulo aquí", "Ctrl+Shift+T",
@@ -335,6 +356,8 @@ class MainWindow(QMainWindow):
         self.clip_panel.committed.connect(self._clip_committed)
         self.transform_panel.changed.connect(lambda: self._schedule("Transformar"))
         self.transform_panel.committed.connect(self._commit)
+        self.mask_panel.changed.connect(lambda: self._schedule("Máscara"))
+        self.mask_panel.committed.connect(self._commit)
         self.text_panel.changed.connect(self._text_changed)
         self.text_panel.add_requested.connect(self.add_title)
         self.text_panel.delete_requested.connect(self.delete_title)
@@ -651,7 +674,7 @@ class MainWindow(QMainWindow):
                 fps,
                 quality,
                 report,
-                AudioRenderer(self._audio_clips()).stream(start, end)
+                AudioMixer(self._audio_clips()).stream(start, end)
                 if with_audio and self._audio_clips() else None,
             )
         except Cancelled:
@@ -688,29 +711,27 @@ class MainWindow(QMainWindow):
                 t,
             )
 
-    def _layers_at(self, t: float) -> list:
+    def _layers_at(self, t: float) -> list[Layer]:
         """Las capas de video del instante, de abajo hacia arriba.
 
-        Casi siempre es una sola. Durante una transición cruzada son dos: la
-        que sale, con opacidad bajando, y la que entra encima subiendo.
+        Quién va en la pila lo decide la secuencia: una capa por pista de
+        video con material, más una extra por cada transición cruzada viva.
+        Aquí solo se le pone a cada una su cuadro ya corregido de color y su
+        transformación del momento.
         """
-        cruce = self.sequence.dissolve_at(t)
-        if cruce is not None:
-            saliente, entrante, avance = cruce
-            return [
-                (self._frame_of(saliente, t),
-                 (1.0 - avance) * saliente.fade_at(min(t, saliente.end - 1e-6)),
-                 saliente.transform.values_at(saliente.local(t))),
-                (self._frame_of(entrante, t),
-                 avance * entrante.fade_at(max(t, entrante.start)),
-                 entrante.transform.values_at(entrante.local(t))),
-            ]
-
-        clip = self.sequence.top_clip_at(t)
-        if clip is None:
-            return []
-        return [(self._frame_of(clip, t), clip.fade_at(t),
-                 clip.transform.values_at(clip.local(t)))]
+        capas = []
+        for clip, peso in self.sequence.video_stack_at(t):
+            # El tiempo se puede salir del clip durante una transición: se
+            # recorta a su material para que el fundido no dé un salto.
+            dentro = min(max(t, clip.start), clip.end - 1e-6)
+            capas.append(Layer(
+                self._frame_of(clip, t),
+                peso * clip.fade_at(dentro),
+                clip.transform.values_at(clip.local(t)),
+                clip.blend,
+                clip.mask,
+            ))
+        return capas
 
     def _frame_of(self, clip, t: float):
         """El cuadro de ese clip en ese instante, ya corregido de color.
@@ -902,6 +923,90 @@ class MainWindow(QMainWindow):
                 self.timeline.select(congelado)
         self._commit("Congelar cuadro")
 
+    # --- capa: fusión, máscara y cuadro dentro de cuadro --------------------
+
+    def _layer_target(self):
+        """La capa sobre la que actúan los comandos de Capa.
+
+        Lo seleccionado si se puede pintar, y si no el video que esté bajo
+        el playhead. Un clip de una pista de audio no cuenta: no hay nada
+        que tapar ni con qué fusionar.
+        """
+        item = self.timeline.selected
+        if isinstance(item, ImageOverlay):
+            return item
+        if isinstance(item, Clip):
+            pista = self._track_of(item)
+            if pista is not None and pista.kind == "audio":
+                return None
+            return item
+        return self.sequence.top_clip_at(self.timeline.playhead)
+
+    def set_blend(self, nombre: str) -> None:
+        item = self._layer_target()
+        if item is None or nombre not in BLENDS:
+            return
+        item.blend = nombre
+        self._commit(f"Fusión: {nombre.lower()}")
+        self._sync_panels(self.timeline.playhead)
+
+        if nombre != "Normal" and len(self.sequence.video_stack_at(
+                self.timeline.playhead)) < 2:
+            self.statusBar().showMessage(
+                "Un modo de fusión mezcla con la pista de abajo, y ahí no "
+                "hay nada todavía.", 6000)
+
+    def set_mask_shape(self, nombre: str) -> None:
+        item = self._layer_target()
+        if item is None or nombre not in SHAPES:
+            return
+        item.mask.shape = nombre
+        self._commit("Quitar máscara" if nombre == "Ninguna"
+                     else f"Máscara: {nombre.lower()}")
+        self._sync_panels(self.timeline.playhead)
+        self.panel.show_page(self.mask_panel)
+
+    def invert_mask(self) -> None:
+        item = self._layer_target()
+        if item is None or item.mask.is_off:
+            return
+        item.mask.invert = not item.mask.invert
+        self._commit("Invertir máscara")
+        self._sync_panels(self.timeline.playhead)
+
+    def picture_in_picture(self) -> None:
+        """Encoge la capa y la manda a la esquina de arriba a la derecha.
+
+        Con el apilado de pistas esto ya se podía armar a mano en el panel
+        Transformar, pero nadie lo iba a descubrir. Un comando que lo deja
+        hecho es lo que vuelve visible que V1 y V2 ahora se ven las dos.
+        """
+        item = self._layer_target()
+        if not isinstance(item, Clip):
+            return
+
+        item.transform.clear_keys()
+        item.transform.scale = 0.34
+        item.transform.x, item.transform.y = 0.30, -0.30
+        self._commit("Cuadro dentro de cuadro")
+        self._sync_panels(self.timeline.playhead)
+        self._render(self.timeline.playhead)
+
+        if len(self.sequence.video_stack_at(self.timeline.playhead)) < 2:
+            self.statusBar().showMessage(
+                "Listo. Pon el video de fondo en la pista de abajo para que "
+                "se vea detrás.", 6000)
+
+    def fill_frame(self) -> None:
+        """Regresa la capa a llenar el cuadro. El deshacer del anterior."""
+        item = self._layer_target()
+        if not isinstance(item, Clip):
+            return
+        item.transform.reset()
+        self._commit("Llenar el cuadro")
+        self._sync_panels(self.timeline.playhead)
+        self._render(self.timeline.playhead)
+
     def delete_selected(self) -> None:
         item = self.timeline.selected
         track = self._track_of(item) if item else None
@@ -929,26 +1034,41 @@ class MainWindow(QMainWindow):
 
     def _selected(self, item) -> None:
         """Al seleccionar en el timeline, los paneles siguen la selección."""
+        self._follow_selection(item)
+
+        # La pestaña de Máscara se apaga si lo seleccionado no se pinta. Se
+        # hace aquí y no solo al mover el playhead porque si no, seleccionar
+        # un clip de audio dejaba la pestaña encendida con el panel vacío —
+        # y una pestaña encendida que no hace nada parece un programa roto.
+        self.panel.set_enabled(self.mask_panel,
+                               self.mask_panel.target is not None)
+
+    def _follow_selection(self, item) -> None:
         if isinstance(item, Title):
             self._title = item
             self.text_panel.set_titles(self._titles_in_track(), item)
             self.panel.show_page(self.text_panel)
         elif isinstance(item, ImageOverlay):
             self.image_panel.set_target(item)
-            self.panel.show_page(self.image_panel)
+            self.mask_panel.set_target(item)
+            if not self.panel.current_is(self.mask_panel):
+                self.panel.show_page(self.image_panel)
         elif isinstance(item, Clip):
             track = self._track_of(item)
             es_audio = bool(track and track.kind == "audio")
             self.clip_panel.set_target(item, es_audio)
             self.transform_panel.set_target(item, item.local(self.timeline.playhead))
             self.color_panel.set_target(item.color, item.name)
+            self.mask_panel.set_target(None if es_audio else item)
 
             # Solo se cambia de pestaña si la de ahora no aplica al clip. Si
             # el usuario ya estaba en Color o en Transformar, se respeta:
             # arrancarle la pestaña de abajo cada vez que selecciona algo es
             # de las cosas que más estorban de un editor.
-            if not self.panel.current_is(self.transform_panel, self.color_panel,
-                                         self.clip_panel):
+            aplica = [self.transform_panel, self.color_panel, self.clip_panel]
+            if not es_audio:
+                aplica.append(self.mask_panel)
+            if not self.panel.current_is(*aplica):
                 self.panel.show_page(self.clip_panel if es_audio
                                      else self.transform_panel)
 
@@ -1030,9 +1150,16 @@ class MainWindow(QMainWindow):
         seleccion = self.timeline.selected
         objetivo = seleccion if isinstance(seleccion, Clip) else clip
         pista = self._track_of(objetivo) if objetivo else None
-        self.clip_panel.set_target(objetivo, bool(pista and pista.kind == "audio"))
+        es_audio = bool(pista and pista.kind == "audio")
+        self.clip_panel.set_target(objetivo, es_audio)
         self.transform_panel.set_target(
             objetivo, objetivo.local(t) if objetivo else 0.0)
+
+        # La máscara y la fusión aplican a lo que se pinta: un clip de video
+        # o una imagen encima. En una pista de audio no hay nada que tapar.
+        capa = seleccion if isinstance(seleccion, ImageOverlay) else (
+            None if es_audio else objetivo)
+        self.mask_panel.set_target(capa)
 
 
         titles = self.sequence.titles_at(t)
@@ -1053,6 +1180,7 @@ class MainWindow(QMainWindow):
         self.panel.set_enabled(self.clip_panel, objetivo is not None)
         self.panel.set_enabled(self.transform_panel, objetivo is not None)
         self.panel.set_enabled(self.color_panel, clip is not None)
+        self.panel.set_enabled(self.mask_panel, capa is not None)
 
     def _scrubbed(self, t: float) -> None:
         """Arrastrar el playhead reubica el origen del reloj sin cortar el play."""
@@ -1091,6 +1219,7 @@ class MainWindow(QMainWindow):
     def _close_sources(self) -> None:
         self._sources.close_all()
         self._images.clear()
+        clear_mask_cache()
 
     def _fit_zoom(self) -> None:
         """Ajusta el zoom para que quepa toda la secuencia."""
