@@ -130,16 +130,81 @@ class VideoSource:
         self.close()
 
 
+# Códecs de imagen fija. Un PNG abierto con FFmpeg también es un "stream de
+# video", así que por sí solo eso no distingue una foto de un clip.
+STILL_CODECS = {"png", "mjpeg", "webp", "bmp", "gif", "tiff", "jpeg2000"}
+
+
+def probe_media(path: str | Path):
+    """Todo lo que se puede saber del archivo sin decodificarlo.
+
+    Distingue tres clases de archivo, porque cada una va a otra pista:
+
+    - **imagen**: un solo cuadro con códec de imagen fija;
+    - **audio**: sin video, o con video que solo es la carátula del disco
+      (un MP3 con portada trae un "stream de video" de un cuadro);
+    - **video**: todo lo demás.
+    """
+    from vortex_studio.model.media import AUDIO, IMAGE, VIDEO, MediaInfo
+
+    if not HAS_PYAV:
+        raise RuntimeError("PyAV no está instalado: no se puede sondear")
+
+    with av.open(str(path)) as container:
+        video = container.streams.video[0] if container.streams.video else None
+        audio = container.streams.audio[0] if container.streams.audio else None
+
+        if video is not None and _is_cover_art(video):
+            video = None
+
+        duration = 0.0
+        if container.duration:
+            duration = float(container.duration / av.time_base)
+        elif video is not None and video.duration and video.time_base:
+            duration = float(video.duration * video.time_base)
+        elif audio is not None and audio.duration and audio.time_base:
+            duration = float(audio.duration * audio.time_base)
+
+        info = MediaInfo(path=Path(path), duration=duration)
+
+        if video is not None:
+            codec = video.codec_context.name or ""
+            info.video_codec = codec
+            info.width = video.codec_context.width
+            info.height = video.codec_context.height
+            info.fps = float(video.average_rate or 0) or 30.0
+            info.kind = IMAGE if codec in STILL_CODECS and (video.frames or 0) <= 1 else VIDEO
+        else:
+            info.kind = AUDIO
+
+        if audio is not None:
+            info.audio_codec = audio.codec_context.name or ""
+            info.channels = audio.codec_context.channels or 0
+            info.sample_rate = audio.codec_context.sample_rate or 0
+
+    return info
+
+
+def _is_cover_art(stream) -> bool:
+    try:
+        return bool(stream.disposition & av.stream.Disposition.attached_pic)
+    except Exception:           # PyAV viejo sin `Disposition`
+        return False
+
+
 def probe(path: str | Path) -> dict:
-    """Datos básicos del archivo, sin decodificar nada."""
+    """Datos básicos del archivo, sin decodificar nada.
+
+    Se queda por compatibilidad; lo nuevo usa `probe_media`, que además
+    trae códecs y canales y no truena con un archivo que solo tiene audio.
+    """
     if not HAS_PYAV:
         return {}
 
-    with av.open(str(path)) as container:
-        stream = container.streams.video[0]
-        return {
-            "width": stream.codec_context.width,
-            "height": stream.codec_context.height,
-            "fps": float(stream.average_rate or 30),
-            "duration": float(container.duration / av.time_base) if container.duration else 0.0,
-        }
+    info = probe_media(path)
+    return {
+        "width": info.width,
+        "height": info.height,
+        "fps": info.fps or 30.0,
+        "duration": info.duration,
+    }

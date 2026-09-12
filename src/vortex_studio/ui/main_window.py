@@ -28,9 +28,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from vortex_studio.media import HAS_PYAV, probe
+from vortex_studio.media import HAS_PYAV, probe_media
+from vortex_studio.model.media import AUDIO, IMAGE, lookup
 from vortex_studio.media.pool import SourcePool
-from vortex_studio.media.audio import has_audio
+
 from vortex_studio.media.mixer import AudioMixer
 from vortex_studio.media.encoder import QUALITY, Cancelled, export_video
 from vortex_studio.model import (
@@ -56,10 +57,13 @@ from vortex_studio.ui.transport import SPEEDS, TransportBar
 
 VIDEO_EXT = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v", ".mpg", ".mpeg"}
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
+AUDIO_EXT = {".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".opus"}
 
 MEDIA_FILTER = (
-    "Video e imágenes (*.mp4 *.mov *.mkv *.avi *.webm *.m4v *.png *.jpg *.jpeg *.webp *.bmp);;"
+    "Medios (*.mp4 *.mov *.mkv *.avi *.webm *.m4v *.png *.jpg *.jpeg *.webp *.bmp "
+    "*.mp3 *.wav *.flac *.m4a *.aac *.ogg *.opus);;"
     "Video (*.mp4 *.mov *.mkv *.avi *.webm *.m4v);;"
+    "Audio (*.mp3 *.wav *.flac *.m4a *.aac *.ogg *.opus);;"
     "Imágenes (*.png *.jpg *.jpeg *.webp *.bmp *.gif);;"
     "Todos los archivos (*)"
 )
@@ -538,6 +542,8 @@ class MainWindow(QMainWindow):
             self._place_image(Path(path))
         elif suffix in VIDEO_EXT:
             self._place_video(Path(path))
+        elif suffix in AUDIO_EXT:
+            self._place_audio(Path(path))
         else:
             QMessageBox.warning(self, "Formato no reconocido",
                                 f"No sé qué hacer con «{suffix}».")
@@ -561,33 +567,81 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            info = probe(path)
+            info = self._media_info(path)
         except Exception as error:  # el archivo puede estar roto o no ser video
             QMessageBox.critical(self, "No se pudo abrir", f"{path.name}\n\n{error}")
             return
 
+        # La extensión no manda: un .mp4 puede traer solo audio, y un .mkv
+        # puede ser una foto. Decide lo que dijo el sondeo.
+        if info.kind == AUDIO:
+            self._place_audio(path)
+            return
+        if info.kind == IMAGE:
+            self._place_image(path)
+            return
+
         track = self.sequence.video_tracks()[-1]   # V1, la de hasta abajo
         first = not track.clips
-        duration = info.get("duration") or 0.0
+        duration = info.duration or 0.0
         clip = track.append(path, duration)
 
         # El audio del archivo entra como su propio clip en A1, alineado con
         # el video. Van sueltos a propósito: así se puede mover o borrar el
         # sonido sin tocar la imagen.
-        if has_audio(path):
+        if info.has_audio:
             audio = self.sequence.audio_tracks()[0]
             audio.add(Clip(source=path, start=clip.start, duration=duration))
 
         if first:
-            self.sequence.fps = info.get("fps") or self.sequence.fps
-            self.sequence.width = info.get("width") or self.sequence.width
-            self.sequence.height = info.get("height") or self.sequence.height
+            self.sequence.fps = info.fps or self.sequence.fps
+            self.sequence.width = info.width or self.sequence.width
+            self.sequence.height = info.height or self.sequence.height
             self.preview.set_canvas(self.sequence.width, self.sequence.height)
 
         self._fit_zoom()
         self.timeline.select(clip)
         self._commit("Importar video")
         self._seek(clip.start)
+
+    def _media_info(self, path: Path):
+        """El sondeo del archivo, del caché del proyecto si sigue vigente."""
+        return lookup(self.project.media, path, probe_media)
+
+    def _place_audio(self, path: Path) -> None:
+        """Un archivo de solo audio entra en la primera pista de audio libre.
+
+        Libre en el tramo que va a ocupar, empezando en el playhead: así una
+        música puesta encima de la voz cae sola en A2 en vez de pisar A1.
+        Si todas están ocupadas ahí, se pega al final de A1.
+        """
+        if not HAS_PYAV:
+            return
+        try:
+            info = self._media_info(path)
+        except Exception as error:
+            QMessageBox.critical(self, "No se pudo abrir", f"{path.name}\n\n{error}")
+            return
+        if not info.has_audio:
+            self.statusBar().showMessage(f"{path.name} no trae audio.", 5000)
+            return
+
+        start = self.timeline.playhead
+        end = start + info.duration
+        pistas = self.sequence.audio_tracks()
+        destino = next(
+            (p for p in pistas
+             if all(c.end <= start + 1e-9 or c.start >= end - 1e-9 for c in p.clips)),
+            None)
+        if destino is None:
+            destino = pistas[0]
+            start = destino.duration
+
+        clip = destino.add(Clip(source=path, start=start, duration=info.duration))
+        self._fit_zoom()
+        self.timeline.select(clip)
+        self._commit("Importar audio")
+        self.statusBar().showMessage(f"{path.name} → {destino.name}", 4000)
 
     def _place_image(self, path: Path) -> None:
         """Las imágenes entran a V2, la pista de arriba: van sobre el video."""
@@ -774,11 +828,11 @@ class MainWindow(QMainWindow):
         if clip is None:
             return
         try:
-            info = probe(clip.source)
+            info = self._media_info(clip.source)
         except Exception:
             return
-        if info.get("width"):
-            self.set_format(info["width"], info["height"])
+        if info.width:
+            self.set_format(info.width, info.height)
 
     def _track_of(self, item):
         return next((t for t in self.sequence.tracks if item in t.clips), None)

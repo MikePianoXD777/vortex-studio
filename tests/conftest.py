@@ -30,7 +30,7 @@ FFMPEG = shutil.which("ffmpeg") or shutil.which("ffmpeg.exe")
 
 @pytest.fixture(scope="session")
 def media(tmp_path_factory) -> dict[str, Path]:
-    """Material de prueba: video mudo, video con audio, e imagen."""
+    """Material de prueba: video mudo, video con audio, audio suelto e imagen."""
     if FFMPEG is None:
         pytest.skip("Hace falta ffmpeg en el PATH para generar el material de prueba")
 
@@ -56,7 +56,12 @@ def media(tmp_path_factory) -> dict[str, Path]:
                   "geq=r=40:g=200:b=140:a='if(lt(hypot(X-60,Y-60),55),255,0)'",
             "-frames:v", "1", str(logo))
 
-    return {"mudo": mudo, "sonoro": sonoro, "gris": gris, "logo": logo}
+    tono = base / "tono.wav"
+    _ffmpeg("-f", "lavfi", "-i", "sine=frequency=330:duration=3,volume=12dB",
+            "-ac", "2", str(tono))
+
+    return {"mudo": mudo, "sonoro": sonoro, "gris": gris, "logo": logo,
+            "tono": tono}
 
 
 @pytest.fixture(scope="session")

@@ -16,14 +16,16 @@ from typing import Any
 from vortex_studio.model.color import ColorAdjust
 from vortex_studio.model.curves import Curves
 from vortex_studio.model.mask import Mask
+from vortex_studio.model.media import MediaInfo, library_key
 from vortex_studio.model.overlays import ImageOverlay, Title
 from vortex_studio.model.project import Clip, Marker, Project, Sequence, Track
 from vortex_studio.model.transform import Transform
 
 # 2: máscaras, modos de fusión, curva de color, viñeta y animación de texto.
+# 3: el sondeo de los medios guardado en el proyecto.
 # Se sube el número para que una versión vieja diga "esto es más nuevo que
 # yo" en vez de abrir el proyecto a medias y perder esos ajustes al guardar.
-FORMAT_VERSION = 2
+FORMAT_VERSION = 3
 EXTENSION = ".vortex"
 
 
@@ -154,25 +156,96 @@ def sequence_from_dict(data: dict, base: Path | None = None) -> Sequence:
     return sequence
 
 
-def project_to_dict(project: Project, base: Path | None = None) -> dict:
-    return {
-        "formato": FORMAT_VERSION,
-        "name": project.name,
-        "sequences": [sequence_to_dict(s, base) for s in project.sequences],
-    }
+# --- migraciones ------------------------------------------------------------
+#
+# Cada función lleva un proyecto de una versión del formato a la siguiente.
+# Se aplican en cadena: uno del formato 1 pasa por 1→2 y luego por 2→3.
+#
+# Así, cada vez que cambie el formato basta con escribir UNA función nueva, y
+# los proyectos de cualquier versión anterior siguen abriendo. Sin la cadena,
+# cada cambio obligaría a pensar en todas las combinaciones posibles.
+
+def _de_1_a_2(data: dict) -> dict:
+    """Máscaras, fusión, curva, viñeta y animación de texto.
+
+    Todos son campos nuevos con valor por omisión, así que no hay nada que
+    reescribir: el dataclass los llena solo al cargar.
+    """
+    return data
 
 
-def project_from_dict(data: dict, base: Path | None = None) -> Project:
-    version = data.get("formato", 0)
+def _de_2_a_3(data: dict) -> dict:
+    """El caché de sondeos de medios."""
+    data.setdefault("media", [])
+    return data
+
+
+MIGRATIONS = {1: _de_1_a_2, 2: _de_2_a_3}
+
+
+def migrate(data: dict) -> dict:
+    """Lleva un proyecto de cualquier formato anterior al actual.
+
+    Un proyecto sin número de formato es anterior a que existiera el número,
+    así que cuenta como el 1.
+    """
+    data = dict(data)
+    version = max(1, int(data.get("formato", 1) or 1))
+
     if version > FORMAT_VERSION:
         raise ValueError(
             f"El proyecto es de una versión más nueva (formato {version}). "
             f"Esta versión de Vortex Studio entiende hasta la {FORMAT_VERSION}."
         )
 
+    while version < FORMAT_VERSION:
+        paso = MIGRATIONS.get(version)
+        if paso is None:  # pragma: no cover - lo vigila una prueba
+            raise ValueError(f"No hay migración del formato {version} al {version + 1}")
+        data = paso(data)
+        version += 1
+
+    data["formato"] = FORMAT_VERSION
+    return data
+
+
+# --- el proyecto completo ---------------------------------------------------
+
+def media_to_list(library: dict[str, MediaInfo], base: Path | None = None) -> list:
+    salida = []
+    for info in library.values():
+        fila = asdict(info)
+        fila["path"] = _write_path(info.path, base)
+        salida.append(fila)
+    return salida
+
+
+def media_from_list(rows: list, base: Path | None = None) -> dict[str, MediaInfo]:
+    library: dict[str, MediaInfo] = {}
+    for fila in rows or []:
+        fila = dict(fila)
+        fila["path"] = _read_path(fila["path"], base)
+        info = MediaInfo(**fila)
+        library[library_key(info.path)] = info
+    return library
+
+
+def project_to_dict(project: Project, base: Path | None = None) -> dict:
+    return {
+        "formato": FORMAT_VERSION,
+        "name": project.name,
+        "sequences": [sequence_to_dict(s, base) for s in project.sequences],
+        "media": media_to_list(project.media, base),
+    }
+
+
+def project_from_dict(data: dict, base: Path | None = None) -> Project:
+    data = migrate(data)
+
     project = Project(name=data.get("name", "Sin título"))
     sequences = [sequence_from_dict(s, base) for s in data.get("sequences", [])]
     project.sequences = sequences or [Sequence.default()]
+    project.media = media_from_list(data.get("media", []), base)
     return project
 
 

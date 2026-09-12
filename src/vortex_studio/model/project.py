@@ -13,6 +13,7 @@ from pathlib import Path
 from vortex_studio.model.blend import NORMAL, is_normal
 from vortex_studio.model.color import ColorAdjust
 from vortex_studio.model.mask import Mask
+from vortex_studio.model.media import MediaInfo
 from vortex_studio.model.overlays import ImageOverlay, Title
 from vortex_studio.model.transform import Transform
 
@@ -342,6 +343,8 @@ class Sequence:
 class Project:
     name: str = "Sin título"
     sequences: list[Sequence] = field(default_factory=lambda: [Sequence.default()])
+    # Ruta absoluta -> lo que se sabe del archivo. Ver `model/media.py`.
+    media: dict[str, MediaInfo] = field(default_factory=dict)
 
     @property
     def active(self) -> Sequence:
