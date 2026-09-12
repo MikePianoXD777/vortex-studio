@@ -7,18 +7,19 @@ A non-linear video editor. Part of Vortex Suite.
 The features of DaVinci Resolve, CapCut, Premiere Pro and After Effects, but
 easy to use. The capability, yes; the complexity, no.
 
-> ### ⚠️ Pre-alpha — `0.2.0a1`
+> ### ⚠️ Pre-alpha — `0.3.0a1`
 >
-> **This is not ready for real work.** It passes 288 automated tests, but
+> **This is not ready for real work.** It passes 493 automated tests, but
 > nobody has actually used it on their own footage yet. That is not the same
 > as being tested.
 >
 > What to expect:
 >
 > - Things breaking in ways we haven't seen
-> - The `.vortex` file format moved to version 2 in this release: projects
->   from `0.1.0a1` open fine, but not the other way around
-> - 4K footage will crawl: decoding still runs on the UI thread
+> - The `.vortex` file format moved to version 3: projects from 0.1 and 0.2
+>   open fine, but not the other way around
+> - Audio of a clip with speed other than 1× drifts out of sync with the
+>   picture
 > - The only transition is still the cross dissolve
 >
 > Use it to poke around and to report what breaks. Not to edit anything you
@@ -82,7 +83,12 @@ environment if it doesn't exist.
 ## What already works
 
 - Cut, move, trim, duplicate and delete on the timeline, with snapping
-- Undo and redo
+- Split with `S` and a slip tool
+- Preview decoding on its own thread
+- Standalone audio import, with cached media probing
+- Undo and redo, with a command layer
+- Autosave and recovery
+- Configurable shortcuts, with an editor
 - Text and subtitles, with outline and caption box
 - Ready-made text animations, in and out
 - Images over the video
@@ -96,7 +102,8 @@ environment if it doesn't exist.
 - Sound while editing, with track mixing and waveforms on the audio tracks
 - Markers
 - Vertical, square and cinema formats
-- Export to MP4 with audio, and the current frame to PNG
+- Export to MP4 at sequence size, 1080p or 4K, audio only, and the current
+  frame to PNG
 - Save and open projects, portable across folders and systems
 
 ## Tests
@@ -121,6 +128,15 @@ without opening windows, so it works over SSH or on a headless machine.
 | `test_fusion.py` | Stacked video tracks and blend modes |
 | `test_curvas.py` | The five-point color curve and the vignette |
 | `test_animacion.py` | Ready-made text animations |
+| `test_hilo.py` | Decoding off the UI thread |
+| `test_medios.py` | Media probing, its cache and migrations |
+| `test_onda.py` | Min/max audio waveform and its disk cache |
+| `test_fundido_suave.py` | Per-sample gain and fades |
+| `test_atajos_config.py` | Configurable shortcuts and their editor |
+| `test_comandos.py` | Command layer, and what each half keeps on split |
+| `test_slip.py` | Slip tool and snapping to markers |
+| `test_presets.py` | Export at 1080p, 4K and audio only |
+| `test_autoguardado.py` | Autosave and recovery |
 | `test_exportar.py` | That the file comes out looking like the edit |
 | `test_clip.py` | Fades, speed, freeze frame |
 | `test_marcadores.py` | Markers and navigating them |
@@ -135,19 +151,29 @@ without opening windows, so it works over SSH or on a headless machine.
 
 ## Shortcuts
 
+**Every one can be changed** in Edit → Keyboard shortcuts (`Ctrl+/`). They're
+stored in `atajos.json`, in the system config folder
+(`~/.config/vortex-studio/` on Linux). The editor won't allow `Ctrl+Alt` —
+it's AltGr on Latin American keyboards — nor two actions on the same key.
+
+These are the defaults:
+
 | File | |
 |---|---|
 | `Ctrl+N` / `Ctrl+O` | New / open project |
 | `Ctrl+S` / `Ctrl+Shift+S` | Save / save as |
-| `Ctrl+I` | Import video or image |
-| `Ctrl+E` | Export video to MP4 |
+| `Ctrl+I` | Import video, audio or image |
+| `Ctrl+E` | Export (video or audio only) |
 | `Ctrl+Shift+E` | Export the current frame to PNG |
 
 | Edit | |
 |---|---|
 | `Ctrl+Z` / `Ctrl+Shift+Z` | Undo / redo |
-| `V` / `C` | Selection / razor tool |
-| `Ctrl+K` / `Ctrl+D` | Cut at the playhead / duplicate |
+| `V` / `C` / `Y` | Selection / razor / slip tool |
+| `S` / `Ctrl+K` | Split at the playhead |
+| `Alt+,` / `Alt+.` | Slip the content one frame back / forward |
+| `Ctrl+D` | Duplicate |
+| `Ctrl+/` | Keyboard shortcuts |
 | `Ctrl+Shift+D` | Fade the clip in and out |
 | `Ctrl+Shift+F` | Freeze the current frame |
 | `Ctrl+Shift+K` | Key every transform property |
@@ -160,6 +186,7 @@ without opening windows, so it works over SSH or on a headless machine.
 | `Space` | Play / pause |
 | `←` `→` | Frame by frame |
 | `Shift`+arrows / `Ctrl`+arrows | Jump 1 s / 10 s |
+| `Home` / `End` | Go to start / end |
 | `J` `K` `Shift+L` | Slower / normal / faster |
 | `L` | Loop |
 | `Ctrl+Shift+A` | Cross dissolve with the previous clip |
@@ -169,8 +196,9 @@ without opening windows, so it works over SSH or on a headless machine.
 | `F` | Fullscreen |
 
 On the timeline: `Ctrl`+wheel zooms, dragging a clip moves it, dragging its
-edges trims it, and everything snaps to neighbouring cuts and to the
-playhead.
+edges trims it, and everything snaps to neighbouring cuts, the playhead and
+markers. With the slip tool (`Y`), dragging inside a clip changes which part
+of the file is shown without moving it.
 
 ## Layout
 
@@ -306,11 +334,45 @@ clip rather than adding a limiter, because a limiter needs to look ahead and
 that lookahead would push the sound out of sync with the picture. Per-clip
 gain is there for that.
 
+## Smooth preview
+
+Picture decoding runs on its own thread, never on the UI thread. Before,
+every playhead jump froze the window while it decoded; measured with the
+decoder already open:
+
+| Footage | Before | Now |
+|---|---|---|
+| 1080p | 26 ms per jump | 0.45 ms |
+| 4K | 111 ms per jump | 0.57 ms |
+
+Dragging the playhead only decodes where you let go, and the previous frame
+stays on screen while the new one arrives. During playback eight frames are
+read ahead; if the thread falls behind, frames are dropped and sound keeps
+leading.
+
+## Import
+
+`Ctrl+I` takes video, audio and images, and picks the track from what the
+file actually contains, not from its extension. Standalone audio lands on
+the first audio track that's free for that span.
+
+What's known about each file — duration, resolution, codecs, channels — is
+stored in the project and isn't read again while the file doesn't change.
+The audio waveform goes to the system cache, so it shows up instantly when a
+project is reopened.
+
 ## Export
 
 `Ctrl+E` writes an MP4 (H.264) with everything burned in: cuts, text, images
 and color correction. If in and out marks are set, only that range is
 exported. It can be cancelled mid-export; the incomplete file is deleted.
+
+## Autosave
+
+Every 30 seconds, if there are unsaved changes, a copy is written to the
+system data folder (`~/.local/share/vortex-studio/` on Linux), **never on
+top of your project**. If the program closes abruptly, it offers to recover
+it the next time it opens. Saving or closing normally deletes the copy.
 
 ## Portability
 
@@ -332,10 +394,15 @@ literal warning.
 
 ## Not there yet
 
-- Picture decoding runs on the UI thread: 4K will crawl. It needs a redesign
-  with a decoding thread and a frame buffer, and it's the biggest thing left.
-- Sound only follows at normal speed. At 2× it would come out pitch-shifted,
-  which is worse than not hearing it.
+- **Audio of a clip with speed other than 1× is read at normal speed**, so it
+  drifts out of sync with the picture, in playback and export. Audio speed
+  belongs to level 2.
+- Export still decodes on the UI thread, with the progress bar on top.
+  Moving it off is the render queue, from level 2.
+- Sound only follows playback at normal speed. At 2× it would come out
+  pitch-shifted, which is worse than not hearing it.
+- With an audio clip selected, the Transform tab stays enabled with sliders
+  that do nothing.
 - The audio mix clips when the sum goes past 1.0, and there are no meters to
   see it coming.
 - The only transition is the cross dissolve; no wipes, no effects.

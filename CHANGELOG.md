@@ -12,6 +12,132 @@ puede romper compatibilidad.
 
 Nada todavía.
 
+## [0.3.0a1] — 2026-09-12
+
+**El nivel 1 del roadmap, completo.** Todo lo que un editor necesita para
+ser un editor: decodificación fuera de la interfaz, sondeo de medios, slip,
+atajos configurables, onda de audio en caché, exportar con presets y
+autoguardado. Sigue en pre-alfa: pasa 493 pruebas automáticas —205 más que
+la 0.2.0a1—, pero nadie la ha usado con material propio de verdad.
+
+**El formato del archivo subió a la versión 3.** Los proyectos de la 0.1 y
+la 0.2 abren sin problema, porque ahora cada cambio de formato tiene su
+migración. Al revés no: la 0.2.0a1 se niega a abrir un proyecto de esta.
+
+**Sigue sin ejecutables.** Los binarios llegan al terminar la pre-alfa.
+
+### Decodificación fuera del hilo de la interfaz
+
+- Antes, cada movimiento del playhead decodificaba en la ventana misma, y la
+  interfaz se quedaba trabada mientras tanto. Medido saltando a 25
+  posiciones al azar, con el decodificador ya abierto:
+
+  | Material | Antes | Ahora |
+  |---|---|---|
+  | 1080p | 26 ms por salto (peor: 41) | 0.45 ms (peor: 0.8) |
+  | 4K | 111 ms por salto (peor: 176) | 0.57 ms (peor: 1.1) |
+
+- Un servidor de cuadros decodifica en su propio hilo. Gana el pedido más
+  nuevo: arrastrar el playhead no decodifica las posiciones por las que
+  pasó, solo donde se soltó.
+- Mientras llega el cuadro nuevo se ve el anterior de ese clip, no un negro.
+  Al reproducir se adelantan 8 cuadros, y si el hilo se atrasa se sueltan
+  cuadros: el reloj manda.
+- Un cuadro que falla se recuerda, para no volverlo a pedir en cada
+  repintado.
+- La exportación todavía decodifica en orden en el hilo de la interfaz.
+  Sacarla de ahí es la cola de render, del nivel 2.
+
+### Importar y sondeo de medios
+
+- El sondeo lee duración, resolución, fps, códecs, canales y frecuencia, y
+  distingue video, audio e imagen por el contenido y no por la extensión.
+  Un MP3 con carátula se reconoce como audio.
+- Se guarda en el proyecto con el tamaño y la fecha del archivo: mientras no
+  cambien, no se vuelve a abrir el contenedor.
+- Se pueden importar MP3, WAV, FLAC, M4A, AAC, OGG y Opus. Caen en la
+  primera pista de audio libre en ese tramo.
+
+### Onda y audio con NumPy
+
+- La onda guarda mínimo y máximo por cubo, así se dibuja con su forma real.
+  Se calcula al importar y se guarda como .npy en la caché del sistema:
+  al volver a abrir el proyecto no se decodifica otra vez, y el zoom nunca
+  la recalcula.
+- Los fundidos y el volumen se aplican muestra por muestra. Antes el nivel
+  se calculaba una vez por segundo, y un fundido de tres segundos eran tres
+  escalones.
+
+### Atajos configurables
+
+- Cada acción tiene una clave y la tecla sale de un mapa, guardado en
+  atajos.json en la carpeta de configuración. Editar → Atajos de teclado
+  abre un editor con buscador.
+- Se valida al cargar: nada con Ctrl+Alt, que es AltGr en teclado
+  latinoamericano; nunca dos acciones con la misma tecla; un archivo dañado
+  no impide abrir el editor.
+- Las flechas, Inicio y Fin pasaron de estar escritas en el código a ser
+  acciones configurables. Se apagan al escribir aunque lleven Ctrl, porque
+  Ctrl+← salta una palabra dentro de un subtítulo.
+
+### Dividir, slip y capa de comandos
+
+- S divide en el playhead.
+- Herramienta slip (Y): cambia qué pedazo del archivo se ve sin mover ni
+  estirar el clip. Alt+, y Alt+. deslizan de a un cuadro.
+- Cada edición es un comando con nombre encima del historial de
+  instantáneas, que se queda como estaba. Es lo que después va a usar la
+  consola de scripts y el agente con IA.
+- El imán también pega a los marcadores.
+
+### Exportar con presets
+
+- Tamaño de la secuencia, H.264 1080p, H.264 4K y solo audio en AAC.
+  "1080p" es el lado corto: un vertical sale de 1080 × 1920.
+- Se compone directo al tamaño de salida, así el texto sale nítido.
+- "Exportado" pasó de diálogo modal a la barra de estado.
+
+### Autoguardado
+
+- Cada 30 segundos, si hay cambios, una copia en la carpeta de datos del
+  sistema, nunca encima del proyecto. Se borra al guardar o al cerrar
+  normalmente; si el programa truena, se queda y se ofrece al arrancar.
+- Una copia más vieja que su proyecto guardado no se ofrece.
+
+### Arreglado
+
+- **El último segundo de audio se perdía.** Un clip que llegaba al final de
+  su archivo perdía hasta un segundo del cierre, en el play y en la
+  exportación: el FIFO solo soltaba bloques completos.
+- **Volumen o fundido en el play sonaban a ruido.** El filtro volume
+  devolvía flotantes aunque el play pide enteros de 16 bits.
+- **Recolorear en pausa avanzaba un cuadro.** El decodificador comparaba
+  solo cuatro ajustes de color; mover la temperatura, la viñeta o la curva
+  decodificaba el cuadro siguiente.
+- **Cortar sin selección solo cortaba una pista**: el video quedaba partido
+  y su audio no.
+- **Dividir un clip** ignoraba la velocidad, rompía la animación por
+  keyframes, duplicaba los fundidos y heredaba la transición cruzada.
+- El diálogo de exportar decía que el audio no suena al editar, y hace dos
+  versiones que sí suena.
+- El .spec de PyInstaller excluía NumPy: el ejecutable habría tronado.
+
+### Por dentro
+
+- **Stack híbrido.** Del stack base del roadmap se adoptó lo que mejora de
+  verdad y funciona en la máquina: decodificación en hilo con PyAV y NumPy
+  para el audio. Se quedaron el timeline dibujado con QPainter, el
+  compositor y el audio con Qt, porque ya funcionan y reescribirlos no
+  agrega funciones. moderngl no tiene versión para Python 3.14, y
+  QOpenGLWidget no pinta sin pantalla, así que dejaría el preview sin
+  pruebas; la GPU queda para cuando haya cómo probarla.
+- **Deshacer sigue con instantáneas**, con la capa de comandos encima.
+- NumPy entra como dependencia.
+- 493 pruebas en 43 segundos. Cada pieza nueva corrió sus pruebas tres veces
+  seguidas; las del hilo, trece.
+- El banco aísla la caché, la configuración y los datos en carpetas
+  desechables, para no tocar nunca los del usuario.
+
 ## [0.2.0a1] — 2026-09-12
 
 **Sigue en pre-alfa.** Pasa 288 pruebas automáticas —121 más que la entrega

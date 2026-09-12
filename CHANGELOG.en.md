@@ -11,6 +11,131 @@ While we're on `0.x`, any minor version may break compatibility.
 
 Nothing yet.
 
+## [0.3.0a1] — 2026-09-12
+
+**Level 1 of the roadmap, complete.** Everything an editor needs to be an
+editor: decoding off the UI thread, media probing, slip, configurable
+shortcuts, cached audio waveforms, export presets and autosave. Still
+pre-alpha: it passes 493 automated tests — 205 more than 0.2.0a1 — but
+nobody has used it on their own footage yet.
+
+**The file format moved to version 3.** Projects from 0.1 and 0.2 open
+without trouble, because every format change now has its migration. Not
+the other way around: 0.2.0a1 refuses to open a project from this one.
+
+**Still no executables.** Binaries come when pre-alpha ends.
+
+### Decoding off the UI thread
+
+- Before, every playhead move decoded inside the window itself, and the UI
+  froze meanwhile. Measured jumping to 25 random positions, with the
+  decoder already open:
+
+  | Footage | Before | Now |
+  |---|---|---|
+  | 1080p | 26 ms per jump (worst: 41) | 0.45 ms (worst: 0.8) |
+  | 4K | 111 ms per jump (worst: 176) | 0.57 ms (worst: 1.1) |
+
+- A frame server decodes on its own thread. The newest request wins:
+  dragging the playhead doesn't decode every position it passed, only where
+  it was released.
+- While the new frame arrives, the previous one for that clip stays on
+  screen instead of black. During playback 8 frames are read ahead, and if
+  the thread falls behind frames are dropped: the clock leads.
+- A frame that fails is remembered, so it isn't requested again on every
+  repaint.
+- Export still decodes in order on the UI thread. Moving it off is the
+  render queue, from level 2.
+
+### Import and media probing
+
+- Probing reads duration, resolution, fps, codecs, channels and sample rate,
+  and tells video, audio and image apart by content, not by extension. An
+  MP3 with cover art is recognised as audio.
+- It's stored in the project with the file's size and date: while those
+  don't change, the container isn't opened again.
+- MP3, WAV, FLAC, M4A, AAC, OGG and Opus can be imported. They land on the
+  first audio track that's free for that span.
+
+### Waveforms and audio with NumPy
+
+- The waveform stores min and max per bucket, so it's drawn with its real
+  shape. It's computed at import and saved as .npy in the system cache:
+  reopening the project doesn't decode again, and zooming never recomputes
+  it.
+- Fades and gain are applied per sample. Before, the level was computed
+  once per second, and a three-second fade was three steps.
+
+### Configurable shortcuts
+
+- Every action has a key and its shortcut comes from a map, stored in
+  atajos.json in the config folder. Edit → Keyboard shortcuts opens an
+  editor with search.
+- It's validated on load: nothing with Ctrl+Alt, which is AltGr on Latin
+  American keyboards; never two actions on the same key; a damaged file
+  doesn't stop the editor from opening.
+- Arrows, Home and End went from being hard-coded to configurable actions.
+  They're disabled while typing even with Ctrl, because Ctrl+← jumps a word
+  inside a subtitle.
+
+### Split, slip and command layer
+
+- S splits at the playhead.
+- Slip tool (Y): changes which part of the file is shown without moving or
+  stretching the clip. Alt+, and Alt+. slip one frame.
+- Every edit is a named command on top of the snapshot history, which stays
+  as it was. It's what the scripting console and the AI agent will use
+  later.
+- Snapping also sticks to markers.
+
+### Export presets
+
+- Sequence size, H.264 1080p, H.264 4K and audio only in AAC. "1080p" is
+  the short side: a vertical video comes out at 1080 × 1920.
+- Frames are composed directly at the output size, so text stays sharp.
+- "Exported" moved from a modal dialog to the status bar.
+
+### Autosave
+
+- Every 30 seconds, if there are changes, a copy in the system data folder,
+  never on top of the project. It's deleted on save or on a normal close; if
+  the program crashes, it stays and is offered at startup.
+- A copy older than its saved project isn't offered.
+
+### Fixed
+
+- **The last second of audio was lost.** A clip that reached the end of its
+  file lost up to a second of its ending, in playback and export: the FIFO
+  only released full blocks.
+- **Gain or fades sounded like noise in playback.** The volume filter
+  returned floats even though playback asks for 16-bit integers.
+- **Recolouring while paused advanced a frame.** The decoder compared only
+  four colour settings; moving temperature, vignette or the curve decoded
+  the next frame.
+- **Cutting with nothing selected only cut one track**: the video was split
+  and its audio wasn't.
+- **Splitting a clip** ignored speed, broke keyframe animation, duplicated
+  fades and inherited the cross dissolve.
+- The export dialog said audio doesn't play while editing, and it has for
+  two versions.
+- The PyInstaller .spec excluded NumPy: the executable would have crashed.
+
+### Under the hood
+
+- **Hybrid stack.** From the roadmap's base stack, what truly improves
+  things and works on this machine was adopted: threaded decoding with PyAV
+  and NumPy for audio. The QPainter timeline, the compositor and Qt audio
+  stayed, because they already work and rewriting them adds no features.
+  moderngl has no build for Python 3.14, and QOpenGLWidget doesn't paint
+  without a display, which would leave the preview untested; the GPU waits
+  until there's a way to test it.
+- **Undo still uses snapshots**, with the command layer on top.
+- NumPy becomes a dependency.
+- 493 tests in 43 seconds. Each new piece ran its tests three times in a
+  row; the threading ones, thirteen.
+- The test bench isolates cache, config and data in throwaway folders, so it
+  never touches the user's.
+
 ## [0.2.0a1] — 2026-09-12
 
 **Still pre-alpha.** It passes 288 automated tests — 121 more than the

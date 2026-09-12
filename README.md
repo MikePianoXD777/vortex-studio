@@ -7,19 +7,18 @@ Editor de video no lineal. Parte de Vortex Suite.
 Las funciones de DaVinci Resolve, CapCut, Premiere Pro y After Effects, pero
 fáciles de usar. La capacidad sí; la complejidad no.
 
-> ### ⚠️ Pre-alfa — `0.2.0a1`
+> ### ⚠️ Pre-alfa — `0.3.0a1`
 >
-> **Esto no está listo para trabajo real.** Pasa 288 pruebas automáticas,
+> **Esto no está listo para trabajo real.** Pasa 493 pruebas automáticas,
 > pero nadie lo ha usado todavía con material propio de verdad. Eso no es lo
 > mismo que estar probado.
 >
 > Lo que puedes esperar:
 >
 > - Cosas que fallan de formas que no hemos visto
-> - El formato del archivo `.vortex` subió a la versión 2 en esta entrega:
->   los proyectos de la `0.1.0a1` abren bien, pero al revés no
-> - Material en 4K va a ir lento: la decodificación aún corre en el hilo de
->   la interfaz
+> - El formato del archivo `.vortex` subió a la versión 3: los proyectos de
+>   la 0.1 y la 0.2 abren bien, pero al revés no
+> - El audio de un clip con velocidad distinta de 1× se desfasa de la imagen
 > - La única transición sigue siendo el fundido cruzado
 >
 > Úsalo para curiosear y para reportar lo que se rompa. No para editar algo
@@ -64,7 +63,8 @@ En VS Code da igual el sistema: `Ctrl+F5` corre, `F5` corre con depurador,
 las pruebas. Las tareas traen su variante de Windows.
 
 Hace falta **ffmpeg en el PATH** solo para correr las pruebas; la aplicación
-no lo necesita porque PyAV trae su propio FFmpeg.
+no lo necesita porque PyAV trae su propio FFmpeg. NumPy se instala solo con
+las demás dependencias.
 
 ## Scripts
 
@@ -99,6 +99,15 @@ abrir ventanas, así que funciona por SSH o en una máquina sin pantalla.
 | `test_fusion.py` | Pistas de video apiladas y modos de fusión |
 | `test_curvas.py` | Curva de color de cinco puntos y viñeta |
 | `test_animacion.py` | Animaciones de texto listas |
+| `test_hilo.py` | Decodificación fuera del hilo de la interfaz |
+| `test_medios.py` | Sondeo de medios, su caché y las migraciones |
+| `test_onda.py` | Onda de audio con mínimo y máximo, y su caché en disco |
+| `test_fundido_suave.py` | Volumen y fundidos muestra por muestra |
+| `test_atajos_config.py` | Atajos configurables y su editor |
+| `test_comandos.py` | Capa de comandos y qué se lleva cada mitad al dividir |
+| `test_slip.py` | Herramienta slip e imán a marcadores |
+| `test_presets.py` | Exportar en 1080p, 4K y solo audio |
+| `test_autoguardado.py` | Autoguardado y recuperación |
 | `test_exportar.py` | Que el archivo salga como se ve al editar |
 | `test_clip.py` | Fundidos, velocidad, congelar cuadro |
 | `test_marcadores.py` | Marcadores y su navegación |
@@ -113,19 +122,29 @@ abrir ventanas, así que funciona por SSH o en una máquina sin pantalla.
 
 ## Atajos
 
+**Todos se pueden cambiar** en Editar → Atajos de teclado (`Ctrl+/`). Se
+guardan en `atajos.json`, en la carpeta de configuración del sistema
+(`~/.config/vortex-studio/` en Linux). El editor no deja poner `Ctrl+Alt`
+—en teclado latinoamericano es AltGr— ni dos acciones con la misma tecla.
+
+Estos son los de fábrica:
+
 | Archivo | |
 |---|---|
 | `Ctrl+N` / `Ctrl+O` | Nuevo / abrir proyecto |
 | `Ctrl+S` / `Ctrl+Shift+S` | Guardar / guardar como |
-| `Ctrl+I` | Importar video o imagen |
-| `Ctrl+E` | Exportar video a MP4 |
+| `Ctrl+I` | Importar video, audio o imagen |
+| `Ctrl+E` | Exportar (video o solo audio) |
 | `Ctrl+Shift+E` | Exportar el cuadro actual a PNG |
 
 | Editar | |
 |---|---|
 | `Ctrl+Z` / `Ctrl+Shift+Z` | Deshacer / rehacer |
-| `V` / `C` | Herramienta selección / navaja |
-| `Ctrl+K` / `Ctrl+D` | Cortar en el playhead / duplicar |
+| `V` / `C` / `Y` | Herramienta selección / navaja / deslizar (slip) |
+| `S` / `Ctrl+K` | Dividir en el playhead |
+| `Alt+,` / `Alt+.` | Deslizar el contenido un cuadro atrás / adelante |
+| `Ctrl+D` | Duplicar |
+| `Ctrl+/` | Atajos de teclado |
 | `Ctrl+Shift+D` | Fundir entrada y salida del clip |
 | `Ctrl+Shift+F` | Congelar el cuadro actual |
 | `Ctrl+Shift+K` | Poner keyframe de toda la transformación |
@@ -138,6 +157,7 @@ abrir ventanas, así que funciona por SSH o en una máquina sin pantalla.
 | `Espacio` | Reproducir / pausar |
 | `←` `→` | Cuadro a cuadro |
 | `Shift`+flechas / `Ctrl`+flechas | Saltar 1 s / 10 s |
+| `Inicio` / `Fin` | Ir al inicio / al final |
 | `J` `K` `Shift+L` | Más lento / normal / más rápido |
 | `L` | Repetir |
 | `Ctrl+Shift+A` | Transición cruzada con el clip anterior |
@@ -147,7 +167,9 @@ abrir ventanas, así que funciona por SSH o en una máquina sin pantalla.
 | `F` | Pantalla completa |
 
 En el timeline: `Ctrl`+rueda hace zoom, arrastrar un clip lo mueve, arrastrar
-sus bordes lo recorta, y todo se imanta a los cortes vecinos y al playhead.
+sus bordes lo recorta, y todo se imanta a los cortes vecinos, al playhead y
+a los marcadores. Con la herramienta slip (`Y`), arrastrar dentro de un clip
+cambia qué pedazo del archivo se ve sin moverlo.
 
 ## Estructura
 
@@ -285,11 +307,45 @@ vez de meter un limitador porque un limitador necesita mirar hacia adelante,
 y ese adelanto desfasaría el sonido de la imagen. Para eso está el volumen
 por clip.
 
+## Preview fluido
+
+La imagen se decodifica en un hilo aparte, nunca en el de la interfaz.
+Antes, cada salto del playhead trababa la ventana mientras decodificaba;
+medido con el decodificador ya abierto:
+
+| Material | Antes | Ahora |
+|---|---|---|
+| 1080p | 26 ms por salto | 0.45 ms |
+| 4K | 111 ms por salto | 0.57 ms |
+
+Al arrastrar el playhead solo se decodifica donde lo sueltas, y mientras
+llega el cuadro nuevo se ve el anterior. Al reproducir se adelantan ocho
+cuadros; si el hilo se atrasa se sueltan cuadros y el sonido sigue mandando.
+
+## Importar
+
+`Ctrl+I` acepta video, audio e imagen, y decide a qué pista va por lo que
+trae el archivo, no por su extensión. El audio suelto cae en la primera
+pista de audio libre en ese tramo.
+
+Lo que se sabe de cada archivo —duración, resolución, códecs, canales— se
+guarda en el proyecto, y no se vuelve a abrir mientras el archivo no cambie.
+La onda de audio se guarda en la caché del sistema, así que al reabrir un
+proyecto aparece al instante.
+
 ## Exportar
 
 `Ctrl+E` escribe un MP4 (H.264) con todo quemado: cortes, textos, imágenes y
 corrección de color. Si hay marcas de entrada y salida, exporta solo ese tramo.
 Se puede cancelar a media exportación; el archivo incompleto se borra.
+
+## Autoguardado
+
+Cada 30 segundos, si hay cambios sin guardar, se escribe una copia en la
+carpeta de datos del sistema (`~/.local/share/vortex-studio/` en Linux),
+**nunca encima de tu proyecto**. Si el programa se cierra de golpe, al
+volver a abrirlo te ofrece recuperarla. Al guardar o al cerrar normalmente,
+la copia se borra.
 
 ## Portabilidad
 
@@ -305,7 +361,12 @@ editor. Hay una prueba que lo vigila.
 ## Qué ya funciona
 
 - Cortar, mover, recortar, duplicar y borrar en el timeline, con imantado
-- Deshacer y rehacer
+- Dividir con `S` y herramienta slip
+- Preview que decodifica en un hilo aparte
+- Importar audio suelto, con sondeo de medios en caché
+- Deshacer y rehacer, con capa de comandos
+- Autoguardado y recuperación
+- Atajos configurables, con editor
 - Texto y subtítulos, con contorno y caja
 - Animaciones de texto listas, de entrada y de salida
 - Imágenes sobre el video
@@ -319,7 +380,8 @@ editor. Hay una prueba que lo vigila.
 - Sonido al editar, con mezcla de pistas y onda en las pistas de audio
 - Marcadores
 - Formatos vertical, cuadrado y cine
-- Exportar a MP4 con audio, y el cuadro actual a PNG
+- Exportar a MP4 en el tamaño de la secuencia, 1080p o 4K, solo audio, y el
+  cuadro actual a PNG
 - Guardar y abrir proyectos, portables entre carpetas y sistemas
 
 ## Licencia
@@ -331,11 +393,15 @@ una advertencia literal.
 
 ## Pendiente
 
-- La decodificación de imagen corre en el hilo de la interfaz: con 4K se va
-  a arrastrar. Pide un rediseño con hilo de decodificación y buffer de
-  cuadros, y es lo más grande que falta.
-- El sonido solo acompaña a velocidad normal. A 2× saldría con el tono
-  cambiado, que es peor que no oírlo.
+- **El audio de un clip con velocidad distinta de 1× se lee a velocidad
+  normal**, así que se desfasa de la imagen, al reproducir y al exportar.
+  La velocidad del audio es del nivel 2.
+- La exportación todavía decodifica en el hilo de la interfaz, con la barra
+  de progreso encima. Sacarla de ahí es la cola de render, del nivel 2.
+- El sonido solo acompaña al reproducir a velocidad normal. A 2× saldría con
+  el tono cambiado, que es peor que no oírlo.
+- Con un clip de audio seleccionado, la pestaña Transformar queda activa con
+  deslizadores que no hacen nada.
 - La mezcla de audio recorta si la suma se pasa de 1.0, y no hay medidores
   para verlo venir.
 - La única transición es el fundido cruzado; no hay cortinillas ni efectos.
