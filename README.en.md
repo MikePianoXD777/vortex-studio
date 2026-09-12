@@ -9,7 +9,7 @@ easy to use. The capability, yes; the complexity, no.
 
 > ### ⚠️ Pre-alpha — `0.2.0a1`
 >
-> **This is not ready for real work.** It passes 286 automated tests, but
+> **This is not ready for real work.** It passes 288 automated tests, but
 > nobody has actually used it on their own footage yet. That is not the same
 > as being tested.
 >

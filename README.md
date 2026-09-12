@@ -9,7 +9,7 @@ fáciles de usar. La capacidad sí; la complejidad no.
 
 > ### ⚠️ Pre-alfa — `0.2.0a1`
 >
-> **Esto no está listo para trabajo real.** Pasa 286 pruebas automáticas,
+> **Esto no está listo para trabajo real.** Pasa 288 pruebas automáticas,
 > pero nadie lo ha usado todavía con material propio de verdad. Eso no es lo
 > mismo que estar probado.
 >

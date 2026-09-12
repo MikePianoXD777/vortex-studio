@@ -13,7 +13,7 @@ Nothing yet.
 
 ## [0.2.0a1] — 2026-09-12
 
-**Still pre-alpha.** It passes 286 automated tests — 119 more than the
+**Still pre-alpha.** It passes 288 automated tests — 121 more than the
 previous release — but nobody has used it on their own footage yet.
 
 **The file format moved to version 2.** Projects from `0.1.0a1` open without
@@ -156,7 +156,7 @@ message instead of opening it halfway and losing the settings on save.
 
 ### Under the hood
 
-- 286 automated tests that run in 27 seconds without opening windows.
+- 288 automated tests that run in 27 seconds without opening windows.
 - The model is still plain Python: text animations, the curve and the mask
   are tested without Qt. The translation to Qt — composition modes and alpha
   maps — lives entirely in the compositor.

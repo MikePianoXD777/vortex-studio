@@ -14,7 +14,7 @@ Nada todavía.
 
 ## [0.2.0a1] — 2026-09-12
 
-**Sigue en pre-alfa.** Pasa 286 pruebas automáticas —119 más que la entrega
+**Sigue en pre-alfa.** Pasa 288 pruebas automáticas —121 más que la entrega
 anterior— pero nadie la ha usado con material propio de verdad.
 
 **El formato del archivo subió a la versión 2.** Los proyectos de la
@@ -157,7 +157,7 @@ un aviso claro en vez de abrirlo a medias y perder los ajustes al guardar.
 
 ### Por dentro
 
-- 286 pruebas automáticas que corren en 27 segundos sin abrir ventanas.
+- 288 pruebas automáticas que corren en 27 segundos sin abrir ventanas.
 - El modelo sigue siendo Python puro: las animaciones de texto, la curva y
   la máscara se prueban sin Qt. La traducción a Qt —modos de composición y
   mapas de opacidad— vive toda en el compositor.
