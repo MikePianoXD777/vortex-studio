@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import copy
 import time
 import uuid
 from pathlib import Path
@@ -19,7 +18,6 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFileDialog,
     QFormLayout,
-    QInputDialog,
     QKeySequenceEdit,
     QLabel,
     QLineEdit,
@@ -44,16 +42,29 @@ from vortex_studio.media.presets import DEFAULT as DEFAULT_PRESET
 from vortex_studio.media.presets import PRESETS, by_name, output_size
 from vortex_studio.model import (
     ANCHORS,
+    AUDIO_MODES,
     BLENDS,
+    FIT_MODES,
     PROPS,
     SHAPES,
     Clip,
+    Delete,
+    Fill,
     ImageOverlay,
+    Link,
+    Paste,
+    PasteAttributes,
     Project,
     Sequence,
+    SetSpeed,
+    Split,
     Title,
+    Unlink,
     timecode,
 )
+from vortex_studio.model.commands import copy_items, new_link, overwrite
+from vortex_studio.model.project import DIP_BLACK, DIP_WHITE, CROSS, Marker
+from vortex_studio.model.transform import FILL
 from vortex_studio.model.autosave import (
     AUTOSAVE_SECONDS,
     discard,
@@ -65,10 +76,26 @@ from vortex_studio.model.history import History
 from vortex_studio.model.serialize import EXTENSION, load_project, save_project
 from vortex_studio.ui.audio_player import AudioPlayer
 from vortex_studio.ui.compositor import Layer, clear_mask_cache, compose
+from vortex_studio.ui.dialogs import MarkerDialog, PasteAttributesDialog
 from vortex_studio.ui.panels import PropertiesPanel
+from vortex_studio.ui.renderer import SequenceRenderer, fill_layer, inside, layer_for
 from vortex_studio.ui.preview import PreviewWidget
 from vortex_studio.ui.shortcuts import DEFAULTS, ShortcutsDialog, load_shortcuts
 from vortex_studio.model.commands import RippleDelete, Slip, split_item
+from vortex_studio.model.serialize import item_from_dict, sequence_to_dict
+from vortex_studio.media.proxy import existing_proxy, needs_proxy
+from vortex_studio.model.media import VIDEO
+from vortex_studio.ui.media_bin import MediaBin
+from vortex_studio.ui.proxies import ProxyManager
+from vortex_studio.ui.render_queue import (
+    CANCELLED,
+    DONE,
+    FAILED,
+    RenderJob,
+    RenderQueue,
+    RenderQueuePanel,
+)
+from vortex_studio.ui.settings import load_settings, save_settings
 from vortex_studio.ui.timeline import TOOL_RAZOR, TOOL_SELECT, TOOL_SLIP, TimelineWidget
 from vortex_studio.ui.transport import SPEEDS, TransportBar
 
@@ -96,6 +123,17 @@ NAV_KEYS = {Qt.Key_Left, Qt.Key_Right, Qt.Key_Up, Qt.Key_Down,
 
 # Widgets donde el usuario escribe: ahí los atajos de tecla suelta se apagan.
 TYPING_WIDGETS = (QPlainTextEdit, QLineEdit, QAbstractSpinBox, QComboBox, QKeySequenceEdit)
+
+# Atajos que un cuadro de texto necesita para sí: copiar y pegar el texto de
+# un subtítulo no puede pegar un clip en el timeline.
+TEXT_KEYS = {"editar.copiar", "editar.cortar_copia", "editar.pegar", "editar.pegar_atributos"}
+
+TRACK_FLAG_LABELS = {
+    ("enabled", True): "Mostrar {}", ("enabled", False): "Ocultar {}",
+    ("locked", True): "Bloquear {}", ("locked", False): "Desbloquear {}",
+    ("muted", True): "Silenciar {}", ("muted", False): "Quitar silencio a {}",
+    ("solo", True): "Solo en {}", ("solo", False): "Quitar solo a {}",
+}
 
 
 def _is_nav_key(sequence: QKeySequence) -> bool:
@@ -153,6 +191,7 @@ class MainWindow(QMainWindow):
         self.frames = FrameServer(on_ready=self._frame_signal.ready.emit)
         self._ready_scheduled = False
         self._images: dict[Path, QImage] = {}
+        self._clipboard: list[dict] = []
         self._title: Title | None = None
         self._path: Path | None = None
         self._dirty = False
@@ -193,6 +232,17 @@ class MainWindow(QMainWindow):
         self.clip_panel = self.panel.clip
         self.transform_panel = self.panel.transform
         self.mask_panel = self.panel.mask
+
+        # Lo importado, a la izquierda como en Premiere; la cola de render
+        # se asoma sola cuando hay algo exportándose.
+        self.media_bin = MediaBin()
+        self.render_queue = RenderQueue(self)
+        self.queue_panel = RenderQueuePanel(self.render_queue)
+
+        # Proxies: interruptor global, recordado entre sesiones.
+        self.proxies = ProxyManager(self)
+        self._proxy_paths: dict[Path, Path] = {}
+        self.use_proxies = bool(load_settings().get("proxies", False))
 
         self._build_layout()
         self._build_menu()
@@ -256,7 +306,10 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(splitter)
 
         self.addDockWidget(Qt.RightDockWidgetArea, self.panel)
-        self.resizeDocks([self.panel], [330], Qt.Horizontal)
+        self.addDockWidget(Qt.LeftDockWidgetArea, self.media_bin)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.queue_panel)
+        self.queue_panel.hide()
+        self.resizeDocks([self.panel, self.media_bin], [330, 250], Qt.Horizontal)
 
     def _build_menu(self) -> None:
         # Cada atajo se pide por su clave, no por su tecla: la tecla sale del
@@ -269,6 +322,8 @@ class MainWindow(QMainWindow):
         self._action(archivo, "Guardar &como…", "archivo.guardar_como", self.save_as)
         archivo.addSeparator()
         self._action(archivo, "&Importar…", "archivo.importar", self.import_media)
+        self._action(archivo, "Importar al &panel de medios…", None,
+                     lambda: self.import_to_bin())
         self._action(archivo, "Exportar &video…", "archivo.exportar_video", self.export_video)
         self._action(archivo, "Exportar &cuadro…", "archivo.exportar_cuadro", self.export_frame)
         archivo.addSeparator()
@@ -284,6 +339,15 @@ class MainWindow(QMainWindow):
         self._action(editar, "&Eliminar", "editar.eliminar", self.delete_selected)
         self._action(editar, "Eliminar y &cerrar hueco", "editar.eliminar_hueco",
                      self.ripple_delete)
+        editar.addSeparator()
+        self._action(editar, "C&opiar", "editar.copiar", self.copy_selected)
+        self._action(editar, "Cortar al &portapapeles", "editar.cortar_copia",
+                     self.cut_to_clipboard)
+        self._action(editar, "&Pegar", "editar.pegar", self.paste)
+        self._action(editar, "Pegar a&tributos…", "editar.pegar_atributos",
+                     self.paste_attributes)
+        editar.addSeparator()
+        self._action(editar, "En&lazar o desenlazar", "editar.enlazar", self.toggle_link)
         editar.addSeparator()
 
         herramientas = QActionGroup(self)
@@ -318,13 +382,21 @@ class MainWindow(QMainWindow):
         self._action(clip_menu, "&Quitar fundidos", None,
                      lambda: self.set_fade(entrada=0.0, salida=0.0))
         clip_menu.addSeparator()
-        for etiqueta, valor in (("Cámara lenta 0.5×", 0.5), ("Velocidad normal", 1.0),
+        for etiqueta, valor in (("Cámara lenta 0.25×", 0.25), ("Cámara lenta 0.5×", 0.5),
+                                ("Velocidad normal", 1.0),
                                 ("Cámara rápida 2×", 2.0), ("Cámara rápida 4×", 4.0)):
             self._action(clip_menu, etiqueta, None,
                          lambda _=False, v=valor: self.set_clip_speed(v))
+        sonido = clip_menu.addMenu("&Audio a otra velocidad")
+        for modo in AUDIO_MODES:
+            self._action(sonido, modo, None, lambda _=False, m=modo: self.set_audio_mode(m))
         clip_menu.addSeparator()
         self._action(clip_menu, "&Transición cruzada (1 s)", "clip.transicion",
-                     lambda: self.set_dissolve(1.0))
+                     lambda: self.set_dissolve(1.0, CROSS))
+        self._action(clip_menu, "Fundido a &negro (1 s)", "clip.fundido_negro",
+                     lambda: self.set_dissolve(1.0, DIP_BLACK))
+        self._action(clip_menu, "Fundido a &blanco (1 s)", None,
+                     lambda: self.set_dissolve(1.0, DIP_WHITE))
         self._action(clip_menu, "Quitar &transición", None, lambda: self.set_dissolve(0.0))
         clip_menu.addSeparator()
         self._action(clip_menu, "&Congelar cuadro", "clip.congelar", self.freeze_frame)
@@ -345,6 +417,9 @@ class MainWindow(QMainWindow):
                          lambda _=False, n=nombre: self.set_mask_shape(n))
         mascara.addSeparator()
         self._action(mascara, "&Invertir la máscara", None, self.invert_mask)
+        encuadre = capa.addMenu("&Encuadre")
+        for modo in FIT_MODES:
+            self._action(encuadre, modo, None, lambda _=False, m=modo: self.set_fit(m))
         capa.addSeparator()
         self._action(capa, "&Cuadro dentro de cuadro", "capa.pip", self.picture_in_picture)
         self._action(capa, "&Llenar el cuadro", None, self.fill_frame)
@@ -390,8 +465,10 @@ class MainWindow(QMainWindow):
         self._action(marcar, "&Quitar marcas", "marcar.quitar", self.clear_marks)
         marcar.addSeparator()
         self._action(marcar, "Poner &marcador", "marcar.marcador", self.add_marker)
-        self._action(marcar, "Marcador con &nombre…", "marcar.marcador_nombre",
+        self._action(marcar, "&Editar marcador…", "marcar.marcador_nombre",
                      self.add_named_marker)
+        self._action(marcar, "Marcador en el &clip", "marcar.marcador_clip",
+                     self.add_marker_to_clip)
         self._action(marcar, "Marcador &siguiente", "marcar.siguiente", self.next_marker)
         self._action(marcar, "Marcador &anterior", "marcar.anterior", self.previous_marker)
         self._action(marcar, "&Borrar marcadores", "marcar.borrar", self.clear_markers)
@@ -413,12 +490,22 @@ class MainWindow(QMainWindow):
                          lambda _=False, a=ancho, b=alto: self.set_format(a, b))
         formato.addSeparator()
         self._action(formato, "Ajustar al primer clip", None, self.format_from_clip)
+        self._action(formato, "Rellenar el cuadro con todos los clips", None,
+                     lambda: self.reframe_all(FILL))
 
         ver = self.menuBar().addMenu("&Ver")
         self._action(ver, "Pantalla &completa", "ver.pantalla_completa", self.toggle_fullscreen)
         self._action(ver, "&Ajustar timeline", "ver.ajustar", self._fit_zoom)
         ver.addSeparator()
+        self._proxy_action = self._action(ver, "Usar &proxies (540p)", None,
+                                          lambda on: self.set_use_proxies(on))
+        self._proxy_action.setCheckable(True)
+        self._proxy_action.setChecked(self.use_proxies)
+        self._action(ver, "&Crear proxies de los videos", None, lambda: self.create_proxies())
+        ver.addSeparator()
         ver.addAction(self.panel.toggleViewAction())
+        ver.addAction(self.media_bin.toggleViewAction())
+        ver.addAction(self.queue_panel.toggleViewAction())
 
         self._classify_actions()
         self._update_history_actions()
@@ -461,6 +548,9 @@ class MainWindow(QMainWindow):
         slider = isinstance(new, QAbstractSlider)
         for action in self._plain_actions:
             action.setEnabled(not typing and not (slider and action in self._nav_actions))
+        for clave in TEXT_KEYS:
+            if clave in self._actions:
+                self._actions[clave].setEnabled(not typing)
 
     def apply_shortcuts(self, mapping: dict[str, str]) -> None:
         """Cambia las teclas en vivo, sin reiniciar la ventana."""
@@ -489,6 +579,9 @@ class MainWindow(QMainWindow):
         self.timeline.edit_finished.connect(self._commit)
         self.timeline.cut_requested.connect(self._cut)
         self.timeline.live_edit.connect(self._refresh)
+        self.timeline.track_toggled.connect(self._track_toggled)
+        self.timeline.marker_activated.connect(self.edit_marker)
+        self.timeline.media_dropped.connect(self.place_media)
         self.timeline.source_duration = self._source_duration
 
         self.transport.play_pause.connect(self.toggle_play)
@@ -501,6 +594,15 @@ class MainWindow(QMainWindow):
         self.transport.volume_changed.connect(self.audio.set_volume)
 
         self.preview.fullscreen_toggled.connect(self.toggle_fullscreen)
+        self.media_bin.import_requested.connect(lambda: self.import_to_bin())
+        self.media_bin.insert_requested.connect(
+            lambda path: self.place_media(path, at=self.timeline.playhead))
+        self.render_queue.finished.connect(self._render_finished)
+        self.proxies.ready.connect(self._proxy_ready)
+        self.proxies.progress.connect(self._proxy_progress)
+        self.proxies.failed.connect(
+            lambda path, error: self.statusBar().showMessage(
+                f"No se pudo crear el proxy de {Path(path).name}: {error}", 8000))
         self.color_panel.changed.connect(self._color_changed)
         self.image_panel.changed.connect(self._image_changed)
         self.clip_panel.changed.connect(lambda: self._schedule("Ajustar clip"))
@@ -676,11 +778,12 @@ class MainWindow(QMainWindow):
             inicio, fin = self._range()
             marcas = f"   ·   Marcas {timecode(inicio, seq.fps)} → {timecode(fin, seq.fps)}"
 
+        proxies = "   ·   Proxies" if getattr(self, "use_proxies", False) else ""
         self.statusBar().showMessage(
             f"{seq.width}×{seq.height}   ·   {seq.fps:g} fps   ·   "
             f"{timecode(seq.duration, seq.fps)}   ·   "
             f"{piezas} elemento{'s' if piezas != 1 else ''}   ·   "
-            f"{herramienta}{marcadores}{marcas}"
+            f"{herramienta}{marcadores}{marcas}{proxies}"
         )
 
     # --- historial --------------------------------------------------------
@@ -736,6 +839,10 @@ class MainWindow(QMainWindow):
         self.timeline.refresh()
         self._title = None
         self.preview.set_canvas(sequence.width, sequence.height)
+        if reset_history:
+            self._refresh_bin()
+            if self.use_proxies:
+                self._scan_proxies()
 
         if reset_history:
             self.history.reset(sequence)
@@ -784,7 +891,34 @@ class MainWindow(QMainWindow):
         if path:
             self._place_image(Path(path))
 
-    def _place_video(self, path: Path) -> None:
+    def place_media(self, path: Path, at: float | None = None, track_index: int = -1) -> None:
+        """Pone un archivo en el timeline según lo que dijo el sondeo.
+
+        `at` y `track_index` vienen de soltarlo con el mouse; sin ellos, cada
+        clase de archivo va a su lugar de siempre.
+        """
+        path = Path(path)
+        try:
+            info = self._media_info(path)
+        except Exception as error:
+            self.statusBar().showMessage(f"No se pudo abrir {path.name}: {error}", 6000)
+            return
+        if info.kind == AUDIO:
+            self._place_audio(path, at, track_index)
+        elif info.kind == IMAGE:
+            self._place_image(path, at, track_index)
+        else:
+            self._place_video(path, at, track_index)
+
+    def _target_track(self, index: int, kind: str):
+        """La pista donde se soltó, si es de la clase correcta y no está bloqueada."""
+        if 0 <= index < len(self.sequence.tracks):
+            pista = self.sequence.tracks[index]
+            if pista.kind == kind and not pista.locked:
+                return pista
+        return None
+
+    def _place_video(self, path: Path, at: float | None = None, track_index: int = -1) -> None:
         if not HAS_PYAV:
             QMessageBox.warning(
                 self, "Falta PyAV",
@@ -807,17 +941,28 @@ class MainWindow(QMainWindow):
             self._place_image(path)
             return
 
-        track = self.sequence.video_tracks()[-1]   # V1, la de hasta abajo
-        first = not track.clips
+        track = (self._target_track(track_index, "video")
+                 or self.sequence.video_tracks()[-1])   # V1, la de hasta abajo
+        first = not self.sequence.video_tracks()[-1].clips
         duration = info.duration or 0.0
-        clip = track.append(path, duration)
+        if at is None:
+            clip = track.append(path, duration)
+        else:
+            clip = Clip(path, max(0.0, at), duration)
+            overwrite(track, clip)
+            track.add(clip)
 
-        # El audio del archivo entra como su propio clip en A1, alineado con
-        # el video. Van sueltos a propósito: así se puede mover o borrar el
-        # sonido sin tocar la imagen.
+        # El audio del archivo entra como su propio clip en una pista de
+        # audio, alineado y **enlazado** con el video: se mueven, recortan,
+        # cortan y borran juntos. Alt+clic agarra un solo lado, y Ctrl+L los
+        # desenlaza.
         if info.has_audio:
-            audio = self.sequence.audio_tracks()[0]
-            audio.add(Clip(source=path, start=clip.start, duration=duration))
+            clip.link = new_link()
+            audio = self._free_audio_track(clip.start, clip.end) if at is not None \
+                else self.sequence.audio_tracks()[0]
+            sonido = Clip(source=path, start=clip.start, duration=duration, link=clip.link)
+            overwrite(audio, sonido)
+            audio.add(sonido)
             self.timeline.waves.get(path)   # la onda empieza a calcularse ya
 
         if first:
@@ -833,9 +978,113 @@ class MainWindow(QMainWindow):
 
     def _media_info(self, path: Path):
         """El sondeo del archivo, del caché del proyecto si sigue vigente."""
-        return lookup(self.project.media, path, probe_media)
+        antes = len(self.project.media)
+        info = lookup(self.project.media, path, probe_media)
+        if len(self.project.media) != antes:
+            self._refresh_bin()
+        return info
 
-    def _place_audio(self, path: Path) -> None:
+    # --- panel de medios --------------------------------------------------
+
+    def _refresh_bin(self) -> None:
+        self.media_bin.set_proxies(self._proxy_paths)
+        self.media_bin.set_library(self.project.media)
+
+    def import_to_bin(self, paths=None) -> int:
+        """Trae archivos al panel de medios sin ponerlos en el timeline."""
+        if paths is None:
+            paths, _ = QFileDialog.getOpenFileNames(self, "Importar al panel", "",
+                                                    MEDIA_FILTER)
+        agregados, fallas = 0, []
+        for path in paths or []:
+            try:
+                self._media_info(Path(path))
+                agregados += 1
+            except Exception:
+                fallas.append(Path(path).name)
+        if agregados or fallas:
+            self._dirty = self._dirty or bool(agregados)
+            self._update_title()
+            self._refresh_bin()
+            self.media_bin.show()
+            aviso = f"{agregados} archivo{'s' if agregados != 1 else ''} en el panel de medios"
+            if fallas:
+                aviso += f"  ·  no se pudo leer: {', '.join(fallas)}"
+            self.statusBar().showMessage(aviso, 6000)
+        return agregados
+
+    # --- proxies ----------------------------------------------------------
+
+    def set_use_proxies(self, on: bool) -> None:
+        """El interruptor global: el preview lee de los proxies que existan.
+
+        Exportar sigue leyendo siempre de los originales. Al prenderlo se
+        encargan los proxies que falten de los videos pesados.
+        """
+        self.use_proxies = bool(on)
+        save_settings({"proxies": self.use_proxies})
+        if self._proxy_action.isChecked() != self.use_proxies:
+            self._proxy_action.setChecked(self.use_proxies)
+        if self.use_proxies:
+            self._scan_proxies()
+            self.create_proxies()
+        self._refresh()
+        self._update_status()
+
+    def _video_sources(self) -> list[Path]:
+        vistos: list[Path] = []
+        for track in self.sequence.video_tracks():
+            for clip in track.clips:
+                if isinstance(clip, Clip) and Path(clip.source) not in vistos:
+                    vistos.append(Path(clip.source))
+        return vistos
+
+    def _scan_proxies(self) -> None:
+        for fuente in self._video_sources():
+            proxy = existing_proxy(fuente)
+            if proxy is not None:
+                self._proxy_paths[fuente] = proxy
+
+    def create_proxies(self, only_heavy: bool = True) -> int:
+        """Encarga los proxies que falten. Un video de 540p o menos no lo necesita."""
+        fuentes = []
+        for fuente in self._video_sources():
+            try:
+                info = self._media_info(fuente)
+            except Exception:
+                continue
+            if info.kind == VIDEO and (not only_heavy or needs_proxy(info.width, info.height)):
+                fuentes.append(fuente)
+        nuevos = self.proxies.request(fuentes)
+        if nuevos:
+            self.statusBar().showMessage(
+                f"Creando {nuevos} prox{'ies' if nuevos != 1 else 'y'} en segundo plano…", 5000)
+        elif fuentes or only_heavy:
+            self._scan_proxies()
+        return nuevos
+
+    def _proxy_ready(self, original, proxy) -> None:
+        self._proxy_paths[Path(original)] = Path(proxy)
+        self._refresh_bin()
+        if self.use_proxies:
+            self._refresh()
+        if not self.proxies.busy:
+            self.statusBar().showMessage("Proxies listos.", 4000)
+
+    def _proxy_progress(self, original, avance: float) -> None:
+        self.statusBar().showMessage(
+            f"Proxy de {Path(original).name}: {avance * 100:.0f} %", 2000)
+
+    def _free_audio_track(self, start: float, end: float):
+        """La primera pista de audio libre en ese tramo, o A1 si no hay."""
+        pistas = [p for p in self.sequence.audio_tracks() if not p.locked] \
+            or self.sequence.audio_tracks()
+        return next(
+            (p for p in pistas
+             if all(c.end <= start + 1e-9 or c.start >= end - 1e-9 for c in p.clips)),
+            pistas[0])
+
+    def _place_audio(self, path: Path, at: float | None = None, track_index: int = -1) -> None:
         """Un archivo de solo audio entra en la primera pista de audio libre.
 
         Libre en el tramo que va a ocupar, empezando en el playhead: así una
@@ -853,25 +1102,30 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"{path.name} no trae audio.", 5000)
             return
 
-        start = self.timeline.playhead
+        start = self.timeline.playhead if at is None else max(0.0, at)
         end = start + info.duration
-        pistas = self.sequence.audio_tracks()
-        destino = next(
-            (p for p in pistas
-             if all(c.end <= start + 1e-9 or c.start >= end - 1e-9 for c in p.clips)),
-            None)
+        destino = self._target_track(track_index, "audio")
         if destino is None:
-            destino = pistas[0]
-            start = destino.duration
+            pistas = [p for p in self.sequence.audio_tracks() if not p.locked]
+            destino = next(
+                (p for p in pistas
+                 if all(c.end <= start + 1e-9 or c.start >= end - 1e-9 for c in p.clips)),
+                None)
+            if destino is None:
+                destino = pistas[0] if pistas else self.sequence.audio_tracks()[0]
+                if at is None:
+                    start = destino.duration
 
-        clip = destino.add(Clip(source=path, start=start, duration=info.duration))
+        clip = Clip(source=path, start=start, duration=info.duration)
+        overwrite(destino, clip)
+        destino.add(clip)
         self.timeline.waves.get(path)       # la onda empieza a calcularse ya
         self._fit_zoom()
         self.timeline.select(clip)
         self._commit("Importar audio")
         self.statusBar().showMessage(f"{path.name} → {destino.name}", 4000)
 
-    def _place_image(self, path: Path) -> None:
+    def _place_image(self, path: Path, at: float | None = None, track_index: int = -1) -> None:
         """Las imágenes entran a V2, la pista de arriba: van sobre el video."""
         image = QImage(str(path))
         if image.isNull():
@@ -879,9 +1133,11 @@ class MainWindow(QMainWindow):
             return
 
         self._images[path] = image
-        overlay = ImageOverlay(start=self.timeline.playhead,
+        overlay = ImageOverlay(start=self.timeline.playhead if at is None else max(0.0, at),
                                duration=DEFAULT_IMAGE_SECONDS, source=path)
-        self.sequence.video_tracks()[0].add(overlay)
+        pista = self._target_track(track_index, "video") or self.sequence.video_tracks()[0]
+        overwrite(pista, overlay)
+        pista.add(overlay)
         self.timeline.select(overlay)
         self.image_panel.set_target(overlay)
         self._commit("Insertar imagen")
@@ -889,10 +1145,12 @@ class MainWindow(QMainWindow):
         self.panel.show_page(self.image_panel)
 
     def export_frame(self) -> None:
-        image = self.preview.current_image()
-        if image is None:
+        if self.preview.is_empty and self.sequence.duration <= 0:
             self.statusBar().showMessage("No hay ningún cuadro en pantalla.", 4000)
             return
+        # Del original y a tamaño completo, aunque el preview use proxies.
+        image = self._renderer().compose(self.timeline.playhead,
+                                         self.sequence.width, self.sequence.height)
 
         stamp = timecode(self.timeline.playhead, self.sequence.fps).replace(":", "-")
         path, _ = QFileDialog.getSaveFileName(
@@ -930,12 +1188,48 @@ class MainWindow(QMainWindow):
         if not path:
             return
 
-        self._pause()
-        self._run_export(Path(path).with_suffix(preset.extension), start, end,
-                         options.quality(), options.with_audio(), preset)
+        self.queue_export(Path(path).with_suffix(preset.extension), start, end,
+                          options.quality(), options.with_audio(), preset)
+
+    def queue_export(self, path: Path, start: float, end: float, quality: str = "Normal",
+                     with_audio: bool = True, preset=DEFAULT_PRESET) -> RenderJob:
+        """Manda la exportación a la cola y deja seguir editando.
+
+        Se lleva una copia congelada de la secuencia: lo que se edite después
+        de darle Exportar ya no cambia el archivo.
+        """
+        self._flush()
+        job = RenderJob(path=Path(path), sequence=sequence_to_dict(self.sequence),
+                        media=dict(self.project.media), start=start, end=end,
+                        preset=preset, quality=quality, with_audio=with_audio)
+        self.render_queue.add(job)
+        self.queue_panel.show()
+        self.statusBar().showMessage(
+            f"Exportando {job.name} en segundo plano. Puedes seguir editando.", 6000)
+        return job
+
+    def _render_finished(self, job) -> None:
+        if job.status == DONE:
+            self.statusBar().showMessage(
+                f"Exportado: {job.name}  ·  {job.end - job.start:.1f} s  ·  "
+                f"{job.elapsed:.1f} s de render", 10000)
+        elif job.status == FAILED:
+            self.statusBar().showMessage(f"Falló la exportación de {job.name}: {job.error}",
+                                         15000)
+        elif job.status == CANCELLED:
+            self.statusBar().showMessage(f"Exportación cancelada: {job.name}", 5000)
 
     def _audio_clips(self) -> list:
-        return [c for track in self.sequence.audio_tracks() for c in track.clips]
+        """Lo que suena: respeta silencio y solo por pista, y el modo Silenciar."""
+        return self.sequence.audio_clips()
+
+    def _renderer(self) -> SequenceRenderer:
+        """El armador de cuadros de la secuencia actual, con los
+        decodificadores e imágenes de la ventana."""
+        return SequenceRenderer(self.sequence, self.project.media, self._sources, self._images)
+
+    def _aspect_of(self, clip) -> float | None:
+        return self._renderer().aspect_of(clip)
 
     def _run_export(self, path: Path, start: float, end: float,
                     quality: str, with_audio: bool, preset=DEFAULT_PRESET) -> bool:
@@ -1025,32 +1319,29 @@ class MainWindow(QMainWindow):
         return True
 
     def _frames(self, start: float, end: float, fps: float, size=None):
-        """Va entregando el cuadro compuesto de cada instante.
+        """Va entregando el cuadro compuesto de cada instante. Ver `ui/renderer.py`."""
+        yield from self._renderer().frames(start, end, fps, size)
 
-        Es un generador para que la codificación avance mientras se dibuja,
-        en vez de armar todos los cuadros en memoria primero — una secuencia
-        de un minuto en 1080p serían varios gigabytes.
-        """
-        ancho, alto = size or (self.sequence.width, self.sequence.height)
-        count = max(1, int(round((end - start) * fps)))
-        for index in range(count):
-            t = start + index / fps
-            yield compose(
-                ancho, alto,
-                self._layers_at(t, sync=True),
-                [(o, self._image_for(o.source)) for o in self.sequence.overlays_at(t)],
-                self.sequence.titles_at(t),
-                t,
-            )
+    def _preview_path(self, clip) -> Path:
+        """De qué archivo lee el preview: el proxy si está prendido y existe."""
+        if self.use_proxies:
+            proxy = self._proxy_paths.get(Path(clip.source))
+            if proxy is not None:
+                return proxy
+        return clip.source
 
     def _jobs_at(self, t: float) -> list[tuple]:
-        """(clip, trabajo de decodificación, peso) de cada capa en ese instante."""
+        """(clip, trabajo de decodificación, peso) de cada capa en ese instante.
+
+        Una capa de color liso no tiene trabajo: va con `None`.
+        """
         plan = []
-        for clip, peso in self.sequence.video_stack_at(t):
-            # El tiempo se puede salir del clip durante una transición: se
-            # recorta a su material para no pedirle al archivo lo que no tiene.
-            dentro = min(max(t, clip.start), clip.end - 1e-6)
-            trabajo = FrameJob.make(id(clip), clip.source, clip.source_time(dentro), clip.color)
+        for clip, peso in self.sequence.video_stack_at(t, self._aspect_of):
+            if isinstance(clip, Fill):
+                plan.append((clip, None, peso))
+                continue
+            trabajo = FrameJob.make(id(clip), self._preview_path(clip),
+                                    clip.source_time(inside(clip, t)), clip.color)
             plan.append((clip, trabajo, peso))
         return plan
 
@@ -1058,7 +1349,7 @@ class MainWindow(QMainWindow):
         """Las capas de video del instante, de abajo hacia arriba.
 
         Quién va en la pila lo decide la secuencia: una capa por pista de
-        video con material, más una extra por cada transición cruzada viva.
+        video con material, más una extra por cada transición viva.
 
         Para el preview (`sync=False`) **nunca se decodifica aquí**: se toma
         el cuadro del servidor si ya está, o el último que hubo de ese clip
@@ -1066,25 +1357,20 @@ class MainWindow(QMainWindow):
         (`sync=True`) sí se decodifica en orden, porque el archivo final no
         puede llevar cuadros atrasados.
         """
+        if sync:
+            return self._renderer().layers(t)
+
         capas = []
         trabajos = []
         for clip, trabajo, peso in self._jobs_at(t):
-            if sync:
-                frame = self._frame_of(clip, t)
-            else:
-                frame = self.frames.get(trabajo) or self.frames.latest(trabajo.key)
-                trabajos.append(trabajo)
+            if trabajo is None:
+                capas.append(fill_layer(clip, peso))
+                continue
+            frame = self.frames.get(trabajo) or self.frames.latest(trabajo.key)
+            trabajos.append(trabajo)
+            capas.append(layer_for(clip, frame, t, peso))
 
-            dentro = min(max(t, clip.start), clip.end - 1e-6)
-            capas.append(Layer(
-                frame,
-                peso * clip.fade_at(dentro),
-                clip.transform.values_at(clip.local(t)),
-                clip.blend,
-                clip.mask,
-            ))
-
-        if not sync and trabajos and HAS_PYAV:
+        if trabajos and HAS_PYAV:
             self.frames.request(trabajos, self._ahead(t))
         return capas
 
@@ -1095,7 +1381,8 @@ class MainWindow(QMainWindow):
         paso = self.sequence.frame_duration * max(self._speed, 0.25)
         adelante = []
         for i in range(1, READ_AHEAD + 1):
-            adelante += [trabajo for _, trabajo, _ in self._jobs_at(t + i * paso)]
+            adelante += [trabajo for _, trabajo, _ in self._jobs_at(t + i * paso)
+                         if trabajo is not None]
         return adelante
 
     def _frames_ready(self) -> None:
@@ -1123,7 +1410,7 @@ class MainWindow(QMainWindow):
         if not HAS_PYAV:
             return
         t = self.timeline.playhead
-        trabajos = [trabajo for _, trabajo, _ in self._jobs_at(t)]
+        trabajos = [trabajo for _, trabajo, _ in self._jobs_at(t) if trabajo is not None]
         if trabajos:
             self.frames.wait_for(trabajos, timeout=10.0)
         self._render(t)
@@ -1134,14 +1421,7 @@ class MainWindow(QMainWindow):
         El tiempo se puede salir del clip durante una transición: se recorta
         a su material para no pedirle al archivo algo que no tiene.
         """
-        if clip is None or not HAS_PYAV:
-            return None
-        try:
-            dentro = min(max(t, clip.start), clip.end - 1e-6)
-            source = self._sources.get(id(clip), clip.source)
-            return source.frame_at(clip.source_time(dentro), clip.color)
-        except Exception:
-            return None
+        return self._renderer().frame_of(clip, t)
 
     def _frame_at(self, t: float):
         """El cuadro de fondo suelto, sin transición. Lo usa la exportación."""
@@ -1161,7 +1441,8 @@ class MainWindow(QMainWindow):
         self.preview.set_canvas(ancho, alto)
         self._commit(f"Formato {ancho}×{alto}")
         self.statusBar().showMessage(
-            f"Formato {ancho}×{alto}. Usa Transformar para encuadrar.", 5000)
+            f"Formato {ancho}×{alto}. Para llenarlo sin franjas: Secuencia › "
+            f"Rellenar el cuadro con todos los clips.", 6000)
 
     def format_from_clip(self) -> None:
         clip = next((c for track in self.sequence.video_tracks()
@@ -1176,7 +1457,7 @@ class MainWindow(QMainWindow):
             self.set_format(info.width, info.height)
 
     def _track_of(self, item):
-        return next((t for t in self.sequence.tracks if item in t.clips), None)
+        return self.sequence.track_of(item)
 
     def set_tool(self, tool: str) -> None:
         self.timeline.set_tool(tool)
@@ -1188,42 +1469,42 @@ class MainWindow(QMainWindow):
     def cut_at_playhead(self) -> None:
         """Corta lo que esté seleccionado, o todo lo que cruce el playhead."""
         t = self.timeline.playhead
-        targets = ([self.timeline.selected] if self.timeline.selected
-                   else [c for track in self.sequence.tracks for c in track.items_at(t)])
-        # Lista y no `any(...)` directo: `any` se detiene en el primer corte
-        # que sale bien, y sin nada seleccionado solo se cortaba la pista de
-        # hasta arriba — el video quedaba partido y su audio no.
-        cortes = [self._cut(item, t, commit=False) for item in targets if item]
-        if any(cortes):
-            self._commit("Cortar")
+        seleccion = self.timeline.selected_items(with_links=False)
+        # Sin selección se corta todo lo que cruce el playhead, en todas las
+        # pistas: antes solo se cortaba la de hasta arriba y el video quedaba
+        # partido y su audio no.
+        targets = seleccion or [c for track in self.sequence.tracks
+                                for c in track.items_at(t)]
+        self._run(Split(items=targets, time=t, name="Cortar",
+                        with_links=not self.timeline.ignore_link))
 
     def _cut(self, item, t: float, commit: bool = True) -> bool:
-        """Parte un elemento en dos por el tiempo `t`.
+        """Parte un elemento —y su enlazado— en dos por el tiempo `t`.
 
         La lógica vive en `model/commands.py`, donde se prueba sin ventana;
         ahí está por qué cada mitad se lleva solo lo que le toca.
         """
-        second = split_item(self.sequence, item, t)
-        if second is None:
+        comando = Split(items=[item], time=t, name="Cortar")
+        if not comando.apply(self.sequence):
             return False
 
         if commit:
-            self.timeline.select(second)
+            segunda = next((c for c in comando.created
+                            if self._track_of(c) is self._track_of(item)), comando.created[0])
+            self.timeline.select(segunda)
             self._commit("Cortar")
         return True
 
     def duplicate_selected(self) -> None:
         """Pega una copia justo después de lo seleccionado, sin dejar hueco."""
-        item = self.timeline.selected
-        track = self._track_of(item) if item else None
-        if track is None:
+        items = self.timeline.selected_items(with_links=False)
+        if not items:
             return
-
-        copia = copy.deepcopy(item)
-        copia.start = item.end
-        track.add(copia)
-        self.timeline.select(copia)
-        self._commit("Duplicar")
+        entradas = copy_items(self.sequence, items, with_links=not self.timeline.ignore_link)
+        fin = max(i.end for i in self.sequence.with_linked(items))
+        comando = Paste(entries=entradas, time=fin, name="Duplicar")
+        if self._run(comando):
+            self._select_many(comando.created)
 
     def set_fade(self, entrada: float | None = None, salida: float | None = None) -> None:
         """Fundidos del elemento seleccionado, o del que esté bajo el playhead."""
@@ -1240,15 +1521,30 @@ class MainWindow(QMainWindow):
     def set_clip_speed(self, speed: float) -> None:
         """Cámara lenta o rápida. Solo aplica a clips de archivo."""
         item = self.timeline.selected or self.sequence.top_clip_at(self.timeline.playhead)
+        self._apply_speed(item, speed)
+
+    def _apply_speed(self, item, speed: float) -> None:
+        """La velocidad cambia junto en el video y en su audio enlazado."""
         if not isinstance(item, Clip):
             return
+        if self._run(SetSpeed(clip=item, speed=speed, name=f"Velocidad {speed:g}×")):
+            self._fit_zoom()
+            self._sync_panels(self.timeline.playhead)
 
-        item.retime(speed)
-        self._fit_zoom()
-        self._commit(f"Velocidad {speed:g}×")
+    def set_audio_mode(self, modo: str) -> None:
+        """Qué hace el sonido a otra velocidad, en el clip y su enlazado."""
+        item = self.timeline.selected or self.sequence.top_clip_at(self.timeline.playhead)
+        if not isinstance(item, Clip) or modo not in AUDIO_MODES:
+            return
+        for clip in self.sequence.with_linked([item]):
+            if isinstance(clip, Clip):
+                clip.audio_mode = modo
+        self._commit(f"Audio: {modo.lower()}")
+        self._sync_panels(self.timeline.playhead)
 
-    def set_dissolve(self, seconds: float) -> None:
-        """Pone una transición cruzada con el clip de la izquierda."""
+    def set_dissolve(self, seconds: float, kind: str | None = None) -> None:
+        """Pone una transición con el clip de la izquierda: cruzada, o
+        pasando por negro o por blanco."""
         item = self.timeline.selected or self.sequence.top_clip_at(self.timeline.playhead)
         if not isinstance(item, Clip):
             return
@@ -1268,7 +1564,12 @@ class MainWindow(QMainWindow):
         # se saldría del material disponible.
         tope = min(item.duration, anterior.duration)
         item.dissolve = min(seconds, tope)
-        self._commit("Transición")
+        if kind is not None:
+            item.transition = kind
+        nombres = {CROSS: "Transición", DIP_BLACK: "Fundido a negro",
+                   DIP_WHITE: "Fundido a blanco"}
+        self._commit("Quitar transición" if seconds <= 0
+                     else nombres.get(item.transition, "Transición"))
 
     def key_all_transform(self) -> None:
         """Clava un keyframe de las cinco propiedades donde está el playhead.
@@ -1307,13 +1608,14 @@ class MainWindow(QMainWindow):
         if clip is None:
             return
 
-        if self._cut(clip, t, commit=False):
-            track = self._track_of(clip)
-            congelado = next((c for c in track.clips if abs(c.start - t) < 1e-6), None)
-            if congelado is not None:
-                congelado.speed = 0.0       # el tiempo del archivo deja de avanzar
-                congelado.duration = 2.0
-                self.timeline.select(congelado)
+        # Sin enlace a propósito: el cuadro congelado es solo imagen, y el
+        # audio sigue su curso en su pista.
+        congelado = split_item(self.sequence, clip, t)
+        if congelado is not None:
+            congelado.speed = 0.0       # el tiempo del archivo deja de avanzar
+            congelado.duration = 2.0
+            congelado.link = ""
+            self.timeline.select(congelado)
         self._commit("Congelar cuadro")
 
     # --- capa: fusión, máscara y cuadro dentro de cuadro --------------------
@@ -1390,6 +1692,30 @@ class MainWindow(QMainWindow):
                 "Listo. Pon el video de fondo en la pista de abajo para que "
                 "se vea detrás.", 6000)
 
+    def set_fit(self, modo: str) -> None:
+        """Cómo cae el material en el cuadro: ajustar, rellenar o estirar."""
+        item = self._layer_target()
+        if not isinstance(item, Clip) or modo not in FIT_MODES:
+            return
+        item.transform.fit = modo
+        self._commit(f"Encuadre: {modo.lower()}")
+        self._sync_panels(self.timeline.playhead)
+
+    def reframe_all(self, modo: str = FILL) -> None:
+        """Todos los clips de video con el mismo encuadre.
+
+        Es el gesto de pasar un horizontal a vertical: se cambia el formato
+        de la secuencia y se rellena el cuadro con todo, sin clip por clip.
+        """
+        clips = [c for t in self.sequence.video_tracks() if not t.locked
+                 for c in t.clips if isinstance(c, Clip)]
+        cambiados = [c for c in clips if c.transform.fit != modo]
+        for clip in cambiados:
+            clip.transform.fit = modo
+        if cambiados:
+            self._commit(f"Encuadre de todo: {modo.lower()}")
+            self._sync_panels(self.timeline.playhead)
+
     def fill_frame(self) -> None:
         """Regresa la capa a llenar el cuadro. El deshacer del anterior."""
         item = self._layer_target()
@@ -1401,21 +1727,131 @@ class MainWindow(QMainWindow):
         self._render(self.timeline.playhead)
 
     def delete_selected(self) -> None:
-        item = self.timeline.selected
-        track = self._track_of(item) if item else None
-        if track is None:
+        items = self.timeline.selected_items(with_links=False)
+        if not items:
             return
-        track.clips.remove(item)
-        self.timeline.select(None)
-        self._commit("Eliminar")
+        if self._run(Delete(items=items, with_links=not self.timeline.ignore_link)):
+            self.timeline.select(None)
+        else:
+            self.statusBar().showMessage("Está en una pista bloqueada.", 4000)
 
     def ripple_delete(self) -> None:
         """Borra y recorre lo que sigue en esa pista, para no dejar hueco."""
         item = self.timeline.selected
         if item is None:
             return
-        if self._run(RippleDelete(item=item)):
+        if self._run(RippleDelete(item=item, with_links=not self.timeline.ignore_link)):
             self.timeline.select(None)
+
+    # --- portapapeles y enlace --------------------------------------------
+
+    def _select_many(self, items: list) -> None:
+        if not items:
+            return
+        self.timeline.select(items[0])
+        self.timeline.extra = list(items[1:])
+        self.timeline.update()
+
+    def copy_selected(self) -> int:
+        """Copia lo seleccionado —con su enlazado— para pegarlo después."""
+        items = self.timeline.selected_items(with_links=False)
+        if not items:
+            self.statusBar().showMessage("Selecciona algo para copiar.", 3000)
+            return 0
+        self._clipboard = copy_items(self.sequence, items,
+                                     with_links=not self.timeline.ignore_link)
+        n = len(self._clipboard)
+        self.statusBar().showMessage(f"Copiado: {n} elemento{'s' if n != 1 else ''}.", 3000)
+        return n
+
+    def cut_to_clipboard(self) -> None:
+        if not self.copy_selected():
+            return
+        items = self.timeline.selected_items(with_links=False)
+        if self._run(Delete(items=items, with_links=not self.timeline.ignore_link,
+                            name="Cortar")):
+            self.timeline.select(None)
+
+    def paste(self) -> None:
+        """Pega en el playhead, cada cosa en su pista, y deja el playhead al final.
+
+        Así, pegar varias veces seguidas pone las copias una detrás de otra,
+        que es lo que hace Premiere.
+        """
+        if not self._clipboard:
+            self.statusBar().showMessage("No hay nada copiado.", 3000)
+            return
+        comando = Paste(entries=self._clipboard, time=self.timeline.playhead)
+        if not self._run(comando):
+            self.statusBar().showMessage("No hay una pista libre donde pegarlo.", 4000)
+            return
+        self._select_many(comando.created)
+        self._fit_zoom()
+        self._scrubbed(max(c.end for c in comando.created))
+
+    def clipboard_source(self):
+        """El elemento principal de lo copiado, reconstruido."""
+        if not self._clipboard:
+            return None
+        return item_from_dict(self._clipboard[0]["data"])
+
+    def paste_attributes(self) -> None:
+        source = self.clipboard_source()
+        if source is None:
+            self.statusBar().showMessage("Primero copia el clip del que quieres los ajustes.",
+                                         4000)
+            return
+        dialogo = PasteAttributesDialog(self, source)
+        if dialogo.exec() == QDialog.Accepted:
+            self.paste_attributes_with(dialogo.groups())
+
+    def paste_attributes_with(self, groups) -> bool:
+        source = self.clipboard_source()
+        targets = self.timeline.selected_items(with_links=False)
+        if not targets:
+            debajo = self.sequence.top_clip_at(self.timeline.playhead)
+            targets = [debajo] if debajo else []
+        if source is None or not targets or not groups:
+            return False
+        hecho = self._run(PasteAttributes(source=source, targets=targets, groups=tuple(groups)))
+        if hecho:
+            self._fit_zoom()
+            self._sync_panels(self.timeline.playhead)
+        return hecho
+
+    def toggle_link(self) -> None:
+        """Ctrl+L: desenlaza si algo está enlazado; si no, enlaza lo seleccionado."""
+        items = self.timeline.selected_items(with_links=False)
+        if not items:
+            return
+        if any(getattr(i, "link", "") for i in items):
+            self._run(Unlink(items=items))
+        elif not self._run(Link(items=items)):
+            self.statusBar().showMessage(
+                "Para enlazar, selecciona con Ctrl+clic un video y un audio.", 5000)
+
+    # --- pistas -----------------------------------------------------------
+
+    def set_track_flag(self, track, nombre: str, valor: bool) -> None:
+        if getattr(track, nombre) == valor:
+            return
+        setattr(track, nombre, valor)
+        self._track_toggled(track, nombre)
+
+    def _track_toggled(self, track, nombre: str) -> None:
+        """Un interruptor de pista cambió. Entra al historial y se oye al momento."""
+        etiqueta = TRACK_FLAG_LABELS.get((nombre, getattr(track, nombre)), "Pista {}")
+        if track.locked and self.timeline.selected is not None and \
+                self._track_of(self.timeline.selected) is track:
+            self.timeline.select(None)
+        self._commit(etiqueta.format(track.name))
+        if self._playing and track.kind == "audio":
+            # La mezcla se arma al dar play: hay que rearmarla para que el
+            # silencio o el solo se oigan sin detener la reproducción.
+            origen = self.timeline.playhead
+            self._pause()
+            self._seek(origen)
+            self._play()
 
     def _run(self, command) -> bool:
         """Aplica un comando de `model/commands.py` y lo registra con su nombre."""
@@ -1451,6 +1887,55 @@ class MainWindow(QMainWindow):
             lado = "antes" if frames < 0 else "después"
             self.statusBar().showMessage(f"No hay más material {lado}.", 4000)
 
+    # --- marcadores de clip ------------------------------------------------
+
+    def add_marker_to_clip(self, name: str = "") -> Marker | None:
+        """Marcador dentro del clip seleccionado, donde está el playhead.
+
+        Viaja con el clip: si lo mueves, el marcador va con él.
+        """
+        t = self.timeline.playhead
+        item = self.timeline.selected or self.sequence.top_clip_at(t)
+        if item is None or not hasattr(item, "markers") or not item.contains(t):
+            self.statusBar().showMessage(
+                "El playhead tiene que estar sobre el clip seleccionado.", 4000)
+            return None
+        local = round(t - item.start, 6)
+        medio = self.sequence.frame_duration / 2
+        item.markers = [m for m in item.markers if abs(m.time - local) > medio]
+        marcador = Marker(time=local, name=name)
+        item.markers.append(marcador)
+        item.markers.sort(key=lambda m: m.time)
+        self._commit("Marcador en el clip")
+        return marcador
+
+    def edit_marker(self, marker, owner=None) -> None:
+        """Abre el marcador para ponerle nombre, nota y color."""
+        dialogo = MarkerDialog(self, marker, owner.name if owner is not None else "")
+        resultado = dialogo.exec()
+        if resultado == MarkerDialog.DELETE:
+            self.delete_marker(marker, owner)
+        elif resultado == QDialog.Accepted:
+            self.update_marker(marker, owner, **dialogo.values())
+
+    def update_marker(self, marker, owner=None, name: str = "", note: str = "",
+                      color: str | None = None) -> None:
+        marker.name, marker.note = name, note
+        if color:
+            marker.color = color
+        self._commit("Editar marcador")
+
+    def delete_marker(self, marker, owner=None) -> None:
+        lista = owner.markers if owner is not None else self.sequence.markers
+        quedan = [m for m in lista if m is not marker]
+        if len(quedan) == len(lista):
+            return
+        if owner is not None:
+            owner.markers = quedan
+        else:
+            self.sequence.markers = quedan
+        self._commit("Borrar marcador")
+
     def _selected(self, item) -> None:
         """Al seleccionar en el timeline, los paneles siguen la selección."""
         self._follow_selection(item)
@@ -1476,17 +1961,19 @@ class MainWindow(QMainWindow):
             track = self._track_of(item)
             es_audio = bool(track and track.kind == "audio")
             self.clip_panel.set_target(item, es_audio)
-            self.transform_panel.set_target(item, item.local(self.timeline.playhead))
+            self.transform_panel.set_target(None if es_audio else item,
+                                            item.local(self.timeline.playhead))
             self.color_panel.set_target(item.color, item.name)
             self.mask_panel.set_target(None if es_audio else item)
+            self.panel.set_enabled(self.transform_panel, not es_audio)
 
             # Solo se cambia de pestaña si la de ahora no aplica al clip. Si
             # el usuario ya estaba en Color o en Transformar, se respeta:
             # arrancarle la pestaña de abajo cada vez que selecciona algo es
             # de las cosas que más estorban de un editor.
-            aplica = [self.transform_panel, self.color_panel, self.clip_panel]
+            aplica = [self.clip_panel]
             if not es_audio:
-                aplica.append(self.mask_panel)
+                aplica += [self.transform_panel, self.color_panel, self.mask_panel]
             if not self.panel.current_is(*aplica):
                 self.panel.show_page(self.clip_panel if es_audio
                                      else self.transform_panel)
@@ -1535,6 +2022,10 @@ class MainWindow(QMainWindow):
         if etiqueta.startswith("__dissolve__"):
             self.set_dissolve(float(etiqueta.removeprefix("__dissolve__")))
             return
+        if etiqueta.startswith("__speed__"):
+            self._apply_speed(self.clip_panel._item,
+                              float(etiqueta.removeprefix("__speed__")))
+            return
         self._fit_zoom()
         self._commit(etiqueta)
 
@@ -1571,8 +2062,10 @@ class MainWindow(QMainWindow):
         pista = self._track_of(objetivo) if objetivo else None
         es_audio = bool(pista and pista.kind == "audio")
         self.clip_panel.set_target(objetivo, es_audio)
+        # Un clip de una pista de audio no tiene imagen que transformar: la
+        # pestaña se apaga en vez de quedar prendida sin hacer nada.
         self.transform_panel.set_target(
-            objetivo, objetivo.local(t) if objetivo else 0.0)
+            None if es_audio else objetivo, objetivo.local(t) if objetivo else 0.0)
 
         # La máscara y la fusión aplican a lo que se pinta: un clip de video
         # o una imagen encima. En una pista de audio no hay nada que tapar.
@@ -1597,7 +2090,7 @@ class MainWindow(QMainWindow):
         self.panel.set_enabled(self.text_panel, bool(titles))
         self.panel.set_enabled(self.image_panel, bool(overlays))
         self.panel.set_enabled(self.clip_panel, objetivo is not None)
-        self.panel.set_enabled(self.transform_panel, objetivo is not None)
+        self.panel.set_enabled(self.transform_panel, objetivo is not None and not es_audio)
         self.panel.set_enabled(self.color_panel, clip is not None)
         self.panel.set_enabled(self.mask_panel, capa is not None)
 
@@ -1679,11 +2172,13 @@ class MainWindow(QMainWindow):
         self._commit("Poner marcador")
 
     def add_named_marker(self) -> None:
-        actual = self.sequence.marker_near(self.timeline.playhead)
-        nombre, listo = QInputDialog.getText(
-            self, "Marcador", "Nombre:", text=actual.name if actual else "")
-        if listo:
-            self.add_marker(nombre.strip())
+        """Shift+M: abre el marcador del playhead, poniéndolo si no hay."""
+        t = self.timeline.playhead
+        marcador = self.sequence.marker_near(t)
+        if marcador is None:
+            self.add_marker()
+            marcador = self.sequence.marker_near(t)
+        self.edit_marker(marcador)
 
     def next_marker(self) -> None:
         marcador = self.sequence.next_marker(self.timeline.playhead)
@@ -1834,6 +2329,17 @@ class MainWindow(QMainWindow):
         if not self._confirm_discard():
             event.ignore()
             return
+        if self.render_queue.busy:
+            respuesta = QMessageBox.question(
+                self, "Hay exportaciones en curso",
+                "Si sales ahora se cancelan y los archivos a medias se borran.\n\n"
+                "¿Salir de todos modos?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if respuesta != QMessageBox.Yes:
+                event.ignore()
+                return
+        self.render_queue.shutdown()
+        self.proxies.shutdown()
 
         self._clock.stop()
         self._autosave_timer.stop()

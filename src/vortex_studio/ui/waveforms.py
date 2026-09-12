@@ -40,7 +40,12 @@ class _Tarea(QRunnable):
             datos = load_or_compute(self.source, self.per_second)
         except Exception:
             datos = empty()     # un archivo ilegible simplemente no tiene onda
-        self.aviso.listo.emit(self.source, datos)
+        try:
+            self.aviso.listo.emit(self.source, datos)
+        except RuntimeError:
+            # La ventana se cerró mientras se calculaba: ya no hay a quién
+            # avisar, y la onda quedó guardada en disco para la próxima.
+            pass
 
 
 class WaveformCache(QObject):

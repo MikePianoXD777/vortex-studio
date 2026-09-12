@@ -10,9 +10,20 @@ from vortex_studio.model import Clip, ImageOverlay, Title
 
 
 def video_y_audio(ventana, media):
+    """Video y audio del mismo archivo, **desenlazados**.
+
+    Desde la 0.4 entran enlazados y borrar uno se lleva al otro a propósito
+    (eso lo prueba `test_enlace.py`). Aquí se sueltan para que estas pruebas
+    sigan cuidando lo suyo: que dos clips con los mismos datos no se
+    confundan entre sí.
+    """
     ventana._place_video(media["sonoro"])
-    return (ventana.sequence.video_tracks()[-1].clips[0],
-            ventana.sequence.audio_tracks()[0].clips[0])
+    video = ventana.sequence.video_tracks()[-1].clips[0]
+    audio = ventana.sequence.audio_tracks()[0].clips[0]
+    ventana.timeline.select(video)
+    ventana.toggle_link()
+    assert not video.link and not audio.link
+    return video, audio
 
 
 def test_dos_clips_con_los_mismos_datos_no_son_iguales():

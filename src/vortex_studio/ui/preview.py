@@ -48,7 +48,9 @@ class PreviewWidget(QWidget):
 
         Cada capa es (cuadro, opacidad) y opcionalmente su transformación.
         """
-        self._layers = [capa for capa in layers if capa[0] is not None]
+        # Una capa de color liso (fundido a negro) no trae cuadro y sí cuenta.
+        self._layers = [capa for capa in layers
+                        if capa[0] is not None or (len(capa) > 5 and capa[5] is not None)]
         self.update()
 
     def set_frame(self, frame: Frame | None, alpha: float = 1.0) -> None:

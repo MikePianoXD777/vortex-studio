@@ -23,9 +23,12 @@ from vortex_studio.model.transform import Transform
 
 # 2: máscaras, modos de fusión, curva de color, viñeta y animación de texto.
 # 3: el sondeo de los medios guardado en el proyecto.
+# 4: encuadre y anclaje, transiciones a color, modo de audio por velocidad,
+#    enlaces, marcadores con nota en clips, tipografía de títulos y los
+#    interruptores de pista.
 # Se sube el número para que una versión vieja diga "esto es más nuevo que
 # yo" en vez de abrir el proyecto a medias y perder esos ajustes al guardar.
-FORMAT_VERSION = 3
+FORMAT_VERSION = 4
 EXTENSION = ".vortex"
 
 
@@ -97,6 +100,7 @@ def item_from_dict(data: dict, base: Path | None = None) -> Any:
     # del texto al abrir el proyecto.
     transform = data.pop("transform", None)
     mask = data.pop("mask", None)
+    markers = data.pop("markers", None)
 
     if kind == "clip":
         color = _color(data.pop("color", None))
@@ -116,6 +120,8 @@ def item_from_dict(data: dict, base: Path | None = None) -> Any:
         item.transform = Transform(**transform)
     if mask and hasattr(item, "mask"):
         item.mask = Mask(**mask)
+    if markers and hasattr(item, "markers"):
+        item.markers = [Marker(**m) for m in markers]
     return item
 
 
@@ -129,6 +135,10 @@ def sequence_to_dict(sequence: Sequence, base: Path | None = None) -> dict:
             {
                 "name": track.name,
                 "kind": track.kind,
+                "enabled": track.enabled,
+                "locked": track.locked,
+                "muted": track.muted,
+                "solo": track.solo,
                 "clips": [item_to_dict(c, base) for c in track.clips],
             }
             for track in sequence.tracks
@@ -149,6 +159,10 @@ def sequence_from_dict(data: dict, base: Path | None = None) -> Sequence:
             name=track["name"],
             kind=track.get("kind", "video"),
             clips=[item_from_dict(c, base) for c in track.get("clips", [])],
+            enabled=track.get("enabled", True),
+            locked=track.get("locked", False),
+            muted=track.get("muted", False),
+            solo=track.get("solo", False),
         )
         for track in data.get("tracks", [])
     ]
@@ -180,7 +194,19 @@ def _de_2_a_3(data: dict) -> dict:
     return data
 
 
-MIGRATIONS = {1: _de_1_a_2, 2: _de_2_a_3}
+def _de_3_a_4(data: dict) -> dict:
+    """Lo del nivel 2 del roadmap. Todo son campos nuevos con valor por
+    omisión, así que tampoco hay nada que reescribir.
+
+    Hay un cambio de aspecto que sí se nota: antes el material de otra
+    proporción se **estiraba** para llenar el cuadro, que era un error. Los
+    clips ahora entran en modo Ajustar. No se migra a Estirar a propósito:
+    conservar la deformación sería conservar el error.
+    """
+    return data
+
+
+MIGRATIONS = {1: _de_1_a_2, 2: _de_2_a_3, 3: _de_3_a_4}
 
 
 def migrate(data: dict) -> dict:

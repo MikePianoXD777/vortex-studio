@@ -14,6 +14,7 @@ from typing import Iterator
 import numpy as np
 
 from vortex_studio.media.waveform import compute as compute_waveform
+from vortex_studio.model.project import KEEP_PITCH, MUTE_AUDIO, SHIFT_PITCH
 
 try:
     import av
@@ -127,7 +128,10 @@ class AudioRenderer:
                 yield from self._silence(clip.start - cursor)
                 cursor = clip.start
 
-            desde = clip.in_point + (cursor - clip.start)
+            # `source_time` y no `in_point + (cursor - start)`: la cuenta vieja
+            # ignoraba la velocidad, y el audio de un clip a 2× que empezaba
+            # a oírse a la mitad salía de otro punto del archivo.
+            desde = clip.source_time(cursor)
             hasta = min(clip.end, end)
             for frame in self._from_clip(clip, desde, hasta - cursor):
                 yield self._apply_level(frame, clip, cursor)
@@ -180,21 +184,141 @@ class AudioRenderer:
         yield from silence(seconds, self.rate, self.layout, self.format)
 
     def _from_clip(self, clip, source_start: float, seconds: float) -> Iterator:
-        """Saca `seconds` de audio del archivo, desde `source_start`."""
+        """Saca `seconds` de audio de línea de tiempo, desde `source_start`.
+
+        A velocidad normal es leer y ya. A otra velocidad se leen
+        `seconds × velocidad` segundos de archivo y se pasan por un filtro
+        que los estira o los encoge a `seconds`:
+
+        - **Mantener tono**: `atempo`, que cambia la duración sin cambiar el
+          tono. Es lo que hace Premiere por omisión y lo que uno quiere con
+          una voz;
+        - **Cambiar tono**: `asetrate` + `aresample`, que es tocar la cinta
+          más rápido: más agudo al acelerar, más grave al frenar;
+        - **Silenciar**, o un cuadro congelado: silencio del mismo largo.
+
+        Antes el archivo se leía siempre a velocidad normal: un clip a 2×
+        sonaba al doble de largo que su imagen y el resto de la pista se
+        desfasaba.
+        """
         faltan = int(round(seconds * self.rate))
         if faltan <= 0:
             return
 
+        velocidad = float(getattr(clip, "speed", 1.0))
+        modo = getattr(clip, "audio_mode", KEEP_PITCH)
+        if velocidad <= 0 or modo == MUTE_AUDIO:
+            yield from self._silence(seconds)
+            return
+
+        if abs(velocidad - 1.0) < 1e-6:
+            for frame in self._decoded(clip, source_start, faltan):
+                faltan -= frame.samples
+                yield frame
+        else:
+            necesarias = int(round(seconds * velocidad * self.rate))
+            for frame in self._retimed(clip, source_start, necesarias, faltan,
+                                       velocidad, modo):
+                faltan -= frame.samples
+                yield frame
+
+        if faltan > 0:   # el archivo se acabó antes de tiempo
+            yield from self._silence(faltan / self.rate)
+
+    def _retimed(self, clip, source_start: float, necesarias: int, faltan: int,
+                 velocidad: float, modo: str) -> Iterator:
+        """El audio del archivo pasado por el filtro de velocidad.
+
+        Lo que sale del filtro va a un FIFO para entregar la cantidad exacta
+        de muestras: `atempo` trabaja por ventanas y no suelta bloques del
+        tamaño que uno le mete. Sin la cuenta exacta, cada clip acelerado
+        correría la pista unos milisegundos.
+        """
+        graph, entrada = self._speed_graph(velocidad, modo)
+        salida = AudioFifo()
+
+        def jalar():
+            while True:
+                try:
+                    bloque = graph.pull()
+                except (av.error.BlockingIOError, av.error.EOFError, EOFError):
+                    return
+                bloque.pts = None
+                salida.write(bloque)
+
+        for frame in self._decoded(clip, source_start, necesarias):
+            frame.pts = None
+            entrada.push(frame)
+            jalar()
+            while salida.samples >= self.rate and faltan > 0:
+                trozo = salida.read(min(self.rate, faltan))
+                faltan -= trozo.samples
+                yield trozo
+            if faltan <= 0:
+                return
+
+        try:
+            entrada.push(None)          # que suelte lo que retiene la ventana
+        except Exception:
+            pass
+        jalar()
+        while faltan > 0 and salida.samples > 0:
+            trozo = salida.read(min(self.rate, faltan, salida.samples))
+            if trozo is None:
+                break
+            faltan -= trozo.samples
+            yield trozo
+
+    def _speed_graph(self, velocidad: float, modo: str):
+        """abuffer → (atempo… | asetrate, aresample) → aformat → sink.
+
+        `atempo` solo acepta de 0.5 a 100 por instancia, así que 0.25× son
+        dos `atempo=0.5` seguidos. Encadenarlos es lo que recomienda la
+        documentación de FFmpeg, y la calidad es la misma que uno solo.
+        """
+        graph = av.filter.Graph()
+        entrada = graph.add(
+            "abuffer",
+            f"sample_rate={self.rate}:sample_fmt={self.format}"
+            f":channel_layout={self.layout}:time_base=1/{self.rate}")
+
+        cadena = []
+        if modo == SHIFT_PITCH:
+            cadena.append(graph.add("asetrate", f"r={int(round(self.rate * velocidad))}"))
+            cadena.append(graph.add("aresample", f"{self.rate}"))
+        else:
+            resto = velocidad
+            while resto < 0.5 - 1e-9:
+                cadena.append(graph.add("atempo", "0.5"))
+                resto /= 0.5
+            cadena.append(graph.add("atempo", f"{resto:.6f}"))
+
+        cadena.append(graph.add(
+            "aformat", f"sample_fmts={self.format}:channel_layouts={self.layout}"
+                       f":sample_rates={self.rate}"))
+        cadena.append(graph.add("abuffersink"))
+
+        anterior = entrada
+        for nodo in cadena:
+            anterior.link_to(nodo)
+            anterior = nodo
+        graph.configure()
+        return graph, entrada
+
+    def _decoded(self, clip, source_start: float, limite: int) -> Iterator:
+        """Hasta `limite` muestras del archivo desde `source_start`, ya
+        convertidas al formato de salida. Menos si el archivo se acaba."""
         try:
             container = av.open(str(clip.source))
             stream = container.streams.audio[0]
         except Exception:
-            # Un clip sin audio no es un error: aporta silencio y ya.
-            yield from self._silence(seconds)
+            # Un clip sin audio no es un error: aporta lo que haya, o sea nada,
+            # y quien llama rellena con silencio.
             return
 
         resampler = AudioResampler(format=self.format, layout=self.layout, rate=self.rate)
         fifo = AudioFifo()
+        faltan = limite
 
         try:
             if source_start > 0:
@@ -245,9 +369,6 @@ class AudioRenderer:
                 yield salida
         finally:
             container.close()
-
-        if faltan > 0:   # el archivo se acabó antes de tiempo
-            yield from self._silence(faltan / self.rate)
 
 
 def frame_seconds(frame) -> float:

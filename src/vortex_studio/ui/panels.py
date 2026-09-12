@@ -14,12 +14,14 @@ misma idea aplicada adentro de cada página.
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QDockWidget,
     QColorDialog,
     QComboBox,
+    QFontComboBox,
     QScrollArea,
     QTabWidget,
     QVBoxLayout,
@@ -35,8 +37,13 @@ from PySide6.QtWidgets import (
 
 from vortex_studio.model import (
     ANCHORS,
+    AUDIO_MODES,
     BLENDS,
     CURVE_LOOKS,
+    FIT_MODES,
+    SPEED_MAX,
+    SPEED_MIN,
+    TRANSITIONS,
     IN_ANIMS,
     OUT_ANIMS,
     PROPS,
@@ -315,6 +322,26 @@ class TextPanel(Page):
         self._color_button = QPushButton("Color del texto")
         self._color_button.clicked.connect(self._pick_color)
 
+        self._font = QFontComboBox()
+        self._font.setToolTip("Tipografía del texto")
+        self._font.currentFontChanged.connect(self._font_changed)
+
+        # Contorno y sombra: lo que hace legible un subtítulo sobre cualquier
+        # fondo. Van en un grupo cerrado; lo de todos los días es el texto.
+        self._outline_color = QPushButton("Color del contorno")
+        self._outline_color.clicked.connect(lambda: self._pick("outline_color", "Color del contorno"))
+        self._outline_width = SliderRow("Grosor", 1, 20, 6)      # % del alto de la letra
+        self._shadow = QCheckBox("Sombra")
+        self._shadow_color = QPushButton("Color de la sombra")
+        self._shadow_color.clicked.connect(lambda: self._pick("shadow_color", "Color de la sombra"))
+        self._shadow_distance = SliderRow("Distancia", 0, 30, 6)
+        self._shadow_blur = SliderRow("Desenfoque", 0, 30, 0)
+        self._shadow_opacity = SliderRow("Opacidad", 0, 100, 75)
+        for row in (self._outline_width, self._shadow_distance, self._shadow_blur,
+                    self._shadow_opacity):
+            row.changed.connect(self._push)
+        self._shadow.toggled.connect(self._push)
+
         self._duration = QDoubleSpinBox()
         self._duration.setRange(0.2, 600.0)
         self._duration.setSingleStep(0.5)
@@ -335,6 +362,11 @@ class TextPanel(Page):
         self._outline = QCheckBox("Contorno")
         self._outline.setChecked(True)
         self._background = QCheckBox("Caja de subtítulo")
+        self._style_group = Collapsible(
+            "Contorno y sombra",
+            self._outline_color, self._outline_width,
+            self._shadow, self._shadow_color, self._shadow_distance,
+            self._shadow_blur, self._shadow_opacity)
         for box in (self._bold, self._italic, self._outline, self._background):
             box.toggled.connect(self._push)
 
@@ -377,7 +409,8 @@ class TextPanel(Page):
             section("Posición"),
             self._anchor, self._align, self._size,
             section("Estilo"),
-            self._color_button, styles, self._outline, self._background,
+            self._font, self._color_button, styles, self._outline, self._background,
+            self._style_group,
             section("Tiempo"),
             duration_row,
             None,
@@ -433,7 +466,9 @@ class TextPanel(Page):
                        self._color_button, self._duration, self._bold,
                        self._italic, self._outline, self._background,
                        self._anim_in, self._anim_out, self._anim_time,
-                       self._delete):
+                       self._delete, self._font, self._outline_color,
+                       self._outline_width, self._shadow, self._shadow_color,
+                       self._shadow_distance, self._shadow_blur, self._shadow_opacity):
             widget.setEnabled(enabled)
 
         if title is not None:
@@ -452,6 +487,17 @@ class TextPanel(Page):
             self._background.setChecked(title.background)
             self._anchor.setCurrentText(self._anchor_name(title))
             self._paint_color_button(title.color)
+            self._font.setCurrentFont(QFont(title.font) if title.font
+                                      else QApplication.font())
+            self._outline_width.set_value(max(1, round(title.outline_width * 100)))
+            self._shadow.setChecked(title.shadow)
+            self._shadow_distance.set_value(round(title.shadow_distance * 100))
+            self._shadow_blur.set_value(round(title.shadow_blur * 100))
+            self._shadow_opacity.set_value(round(title.shadow_opacity * 100))
+            self._paint(self._outline_color, title.outline_color)
+            self._paint(self._shadow_color, title.shadow_color)
+            if title.shadow:
+                self._style_group.abrir()
 
         self._loading = False
 
@@ -464,11 +510,38 @@ class TextPanel(Page):
         return "Centro"
 
     def _paint_color_button(self, color: str) -> None:
+        self._paint(self._color_button, color)
+
+    @staticmethod
+    def _paint(button: QPushButton, color: str) -> None:
         contrast = "#101113" if QColor(color).lightness() > 140 else "#f0f3f6"
-        self._color_button.setStyleSheet(
+        button.setStyleSheet(
             f"QPushButton {{ background:{color}; color:{contrast};"
             f" border:1px solid #3a3f46; border-radius:4px; padding:5px 10px; }}"
         )
+
+    def _font_changed(self, font: QFont) -> None:
+        if self._title is None or self._loading:
+            return
+        self._title.font = font.family()
+        self.changed.emit()
+
+    def _pick(self, campo: str, titulo: str) -> None:
+        if self._title is None:
+            return
+        color = QColorDialog.getColor(QColor(getattr(self._title, campo)), self, titulo)
+        if color.isValid():
+            self.set_style_color(campo, color.name())
+
+    def set_style_color(self, campo: str, color: str) -> None:
+        """Pone un color de contorno o de sombra. Separado del diálogo para
+        poder probarlo sin abrir una ventana modal."""
+        if self._title is None:
+            return
+        setattr(self._title, campo, color)
+        self._paint(self._outline_color if campo == "outline_color" else self._shadow_color,
+                    color)
+        self.changed.emit()
 
     def _pick_color(self) -> None:
         if self._title is None:
@@ -495,6 +568,11 @@ class TextPanel(Page):
         self._title.anim_in = self._anim_in.currentText()
         self._title.anim_out = self._anim_out.currentText()
         self._title.anim_time = self._anim_time.value()
+        self._title.outline_width = self._outline_width.value() / 100.0
+        self._title.shadow = self._shadow.isChecked()
+        self._title.shadow_distance = self._shadow_distance.value() / 100.0
+        self._title.shadow_blur = self._shadow_blur.value() / 100.0
+        self._title.shadow_opacity = self._shadow_opacity.value() / 100.0
 
         self.changed.emit()
 
@@ -625,7 +703,8 @@ class ClipPanel(Page):
         self._fade_in = SliderRow("Entrada", 0, 300, 0)      # décimas de segundo
         self._fade_out = SliderRow("Salida", 0, 300, 0)
         self._dissolve = SliderRow("Transición", 0, 300, 0)
-        self._speed = SliderRow("Velocidad", 10, 400, 100)   # porcentaje
+        self._speed = SliderRow("Velocidad", int(SPEED_MIN * 100), int(SPEED_MAX * 100),
+                                100)   # porcentaje
         self._gain = SliderRow("Volumen", 0, 200, 100)
 
         for row in (self._fade_in, self._fade_out, self._dissolve,
@@ -636,6 +715,17 @@ class ClipPanel(Page):
             # de nuevo: se aplican al soltar, no en cada pixel del arrastre.
             row._slider.sliderReleased.connect(self._commit_heavy)
 
+        self._transition = QComboBox()
+        self._transition.addItems(TRANSITIONS)
+        self._transition.setToolTip("Cruzada mezcla los dos clips; a negro o a blanco "
+                                    "pasan por ese color")
+        self._transition.currentTextChanged.connect(self._transition_changed)
+
+        self._audio_mode = QComboBox()
+        self._audio_mode.addItems(AUDIO_MODES)
+        self._audio_mode.setToolTip("Qué pasa con el sonido cuando el clip no va a 100 %")
+        self._audio_mode.currentTextChanged.connect(self._audio_mode_changed)
+
         self._info = QLabel("")
         self._info.setWordWrap(True)
         self._info.setStyleSheet("color:#6f757e; font-size:10px;")
@@ -643,8 +733,8 @@ class ClipPanel(Page):
         self._set_content(column(
             self._name,
             section("Fundidos (segundos)"), self._fade_in, self._fade_out,
-            section("Transición con el anterior"), self._dissolve,
-            section("Tiempo"), self._speed,
+            section("Transición con el anterior"), self._transition, self._dissolve,
+            section("Tiempo"), self._speed, self._audio_mode,
             section("Audio"), self._gain,
             self._info,
             None,
@@ -664,7 +754,9 @@ class ClipPanel(Page):
         self._fade_in.setEnabled(tiene)
         self._fade_out.setEnabled(tiene)
         self._dissolve.setEnabled(es_clip and not es_audio)
+        self._transition.setEnabled(es_clip and not es_audio)
         self._speed.setEnabled(es_clip)
+        self._audio_mode.setEnabled(es_clip)
         self._gain.setEnabled(es_clip and es_audio)
 
         if tiene:
@@ -674,6 +766,10 @@ class ClipPanel(Page):
                 self._dissolve.set_value(int(round(item.dissolve * 10)))
                 self._speed.set_value(int(round(item.speed * 100)))
                 self._gain.set_value(int(round(item.gain * 100)))
+                self._transition.setCurrentText(item.transition if item.transition
+                                                in TRANSITIONS else TRANSITIONS[0])
+                self._audio_mode.setCurrentText(item.audio_mode if item.audio_mode
+                                                in AUDIO_MODES else AUDIO_MODES[0])
             self._describe()
         else:
             self._info.setText("")
@@ -702,6 +798,18 @@ class ClipPanel(Page):
         self._describe()
         self.changed.emit()
 
+    def _transition_changed(self, nombre: str) -> None:
+        if self._loading or self._item is None or not hasattr(self._item, "transition"):
+            return
+        self._item.transition = nombre
+        self.committed.emit(f"Transición {nombre.lower()}")
+
+    def _audio_mode_changed(self, nombre: str) -> None:
+        if self._loading or self._item is None or not hasattr(self._item, "audio_mode"):
+            return
+        self._item.audio_mode = nombre
+        self.committed.emit(f"Audio: {nombre.lower()}")
+
     def _commit_heavy(self) -> None:
         """Velocidad y transición, al soltar el deslizador."""
         if self._item is None or not hasattr(self._item, "speed"):
@@ -709,14 +817,28 @@ class ClipPanel(Page):
 
         velocidad = self._speed.value() / 100.0
         if abs(velocidad - self._item.speed) > 1e-6:
-            self._item.retime(velocidad)
-            self.committed.emit("Velocidad")
+            # La velocidad pasa por la ventana y no se aplica aquí: el audio
+            # enlazado tiene que cambiar junto con el video.
+            self.committed.emit(f"__speed__{velocidad}")
 
         cruce = self._dissolve.value() / 10.0
         if abs(cruce - self._item.dissolve) > 1e-6:
             self.committed.emit(f"__dissolve__{cruce}")
 
         self._describe()
+
+
+ANCHOR_PRESETS = {
+    "Centro": (0.0, 0.0),
+    "Arriba izquierda": (-0.5, -0.5),
+    "Arriba": (0.0, -0.5),
+    "Arriba derecha": (0.5, -0.5),
+    "Izquierda": (-0.5, 0.0),
+    "Derecha": (0.5, 0.0),
+    "Abajo izquierda": (-0.5, 0.5),
+    "Abajo": (0.0, 0.5),
+    "Abajo derecha": (0.5, 0.5),
+}
 
 
 class TransformPanel(Page):
@@ -783,6 +905,41 @@ class TransformPanel(Page):
         self._info.setWordWrap(True)
         self._info.setStyleSheet("color:#6f757e; font-size:10px;")
 
+        # Encuadre: cómo cae el material en el cuadro, cuánto se recorta y
+        # desde dónde crece y gira. Cerrado por omisión: casi siempre el
+        # material ya tiene la proporción de la secuencia.
+        self._fit = QComboBox()
+        self._fit.addItems(FIT_MODES)
+        self._fit.setToolTip("Ajustar: entero con franjas · Rellenar: llena y recorta "
+                             "lo que sobra (para pasar de horizontal a vertical) · "
+                             "Estirar: llena deformando")
+        self._fit.currentTextChanged.connect(self._fit_changed)
+
+        self._crop = {
+            "crop_left": SliderRow("Izquierda", 0, 49, 0),
+            "crop_right": SliderRow("Derecha", 0, 49, 0),
+            "crop_top": SliderRow("Arriba", 0, 49, 0),
+            "crop_bottom": SliderRow("Abajo", 0, 49, 0),
+        }
+        self._anchor = {
+            "anchor_x": SliderRow("Ancla X", -50, 50, 0),
+            "anchor_y": SliderRow("Ancla Y", -50, 50, 0),
+        }
+        for campo, fila in (*self._crop.items(), *self._anchor.items()):
+            fila.changed.connect(lambda _=0, c=campo: self._push_framing(c))
+
+        self._anchor_preset = QComboBox()
+        self._anchor_preset.addItems(list(ANCHOR_PRESETS))
+        self._anchor_preset.setToolTip("Desde dónde crece y gira la imagen")
+        self._anchor_preset.activated.connect(self._apply_anchor_preset)
+
+        self._framing_group = Collapsible(
+            "Encuadre y recorte",
+            self._labelled("Encuadre", self._fit),
+            *self._crop.values(),
+            self._labelled("Ancla", self._anchor_preset),
+            *self._anchor.values())
+
         centrar = QPushButton("Restablecer")
         centrar.clicked.connect(self._reset)
         limpiar = QPushButton("Quitar animación")
@@ -796,6 +953,7 @@ class TransformPanel(Page):
         self._set_content(column(
             self._name,
             section("Transformación"), *filas,
+            self._framing_group,
             self._info, botones,
             None,
         ))
@@ -810,6 +968,19 @@ class TransformPanel(Page):
 
         tiene = clip is not None and hasattr(clip, "transform")
         self._name.setText(f"Clip: {clip.name}" if tiene else "Nada seleccionado")
+
+        for widget in (self._fit, self._anchor_preset, *self._crop.values(),
+                       *self._anchor.values()):
+            widget.setEnabled(tiene)
+        if tiene:
+            tr = clip.transform
+            self._fit.setCurrentText(tr.fit if tr.fit in FIT_MODES else FIT_MODES[0])
+            for campo, fila in self._crop.items():
+                fila.set_value(round(getattr(tr, campo) * 100))
+            for campo, fila in self._anchor.items():
+                fila.set_value(round(getattr(tr, campo) * 100))
+            if tr.has_crop or tr.fit != FIT_MODES[0] or tr.anchor_x or tr.anchor_y:
+                self._framing_group.abrir()
 
         for prop in PROPS:
             self._rows[prop].setEnabled(tiene)
@@ -858,6 +1029,31 @@ class TransformPanel(Page):
             setattr(transform, prop, valor)
 
         self.changed.emit()
+
+    @staticmethod
+    def _labelled(texto: str, widget: QWidget) -> QHBoxLayout:
+        return TextPanel._labelled(texto, widget)
+
+    def _fit_changed(self, nombre: str) -> None:
+        if self._loading or self._clip is None or not hasattr(self._clip, "transform"):
+            return
+        self._clip.transform.fit = nombre
+        self.committed.emit(f"Encuadre: {nombre.lower()}")
+
+    def _push_framing(self, campo: str) -> None:
+        if self._loading or self._clip is None or not hasattr(self._clip, "transform"):
+            return
+        filas = {**self._crop, **self._anchor}
+        setattr(self._clip.transform, campo, filas[campo].value() / 100.0)
+        self.changed.emit()
+
+    def _apply_anchor_preset(self, indice: int) -> None:
+        if self._clip is None or not hasattr(self._clip, "transform"):
+            return
+        ax, ay = ANCHOR_PRESETS[self._anchor_preset.itemText(indice)]
+        self._clip.transform.anchor_x, self._clip.transform.anchor_y = ax, ay
+        self.set_target(self._clip, self._local)
+        self.committed.emit("Punto de anclaje")
 
     def _toggle_key(self, prop: str) -> None:
         if self._clip is None:

@@ -54,6 +54,9 @@ class TimedItem:
     anim_out: str = "Ninguna"
     anim_time: float = DEFAULT_TIME
 
+    # Marcadores del elemento, en tiempo relativo a su inicio.
+    markers: list = field(default_factory=list)
+
     @property
     def end(self) -> float:
         return self.start + self.duration
@@ -98,8 +101,21 @@ class Title(TimedItem):
     align: str = "centro"
     bold: bool = True
     italic: bool = False
-    outline: bool = True      # contorno oscuro, para que se lea sobre cualquier fondo
+    outline: bool = True      # contorno, para que se lea sobre cualquier fondo
     background: bool = False  # caja detrás del texto, estilo subtítulo duro
+
+    # Tipografía. Vacío = la fuente de la interfaz, que siempre existe. Se
+    # guarda el nombre de la familia y no un archivo: si el proyecto se abre
+    # en otra máquina sin esa fuente, Qt pone la más parecida en vez de
+    # tronar.
+    font: str = ""
+    outline_color: str = "#000000"
+    outline_width: float = 0.055  # grosor, como fracción del alto de la letra
+    shadow: bool = False
+    shadow_color: str = "#000000"
+    shadow_distance: float = 0.06  # como fracción del alto de la letra
+    shadow_blur: float = 0.0       # ídem; 0 = sombra dura
+    shadow_opacity: float = 0.75
 
     @property
     def name(self) -> str:

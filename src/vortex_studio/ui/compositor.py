@@ -24,6 +24,7 @@ from vortex_studio.media import Frame
 from vortex_studio.model import ImageOverlay, Mask, Title
 from vortex_studio.model.animation import AnimState, anim_state, visible_text
 from vortex_studio.model.blend import NORMAL, is_normal
+from vortex_studio.model.transform import FILL, FIT, STRETCH
 
 OUTLINE = QColor(0, 0, 0, 235)
 CAPTION_BOX = QColor(0, 0, 0, 150)
@@ -69,6 +70,21 @@ class Layer(NamedTuple):
     values: dict | None = None
     blend: str = NORMAL
     mask: Mask | None = None
+    fill: str | None = None       # color liso en vez de cuadro (fundido a color)
+    framing: dict | None = None   # encuadre, recorte y ancla; ver `framing_of`
+
+
+def framing_of(transform) -> dict:
+    """Lo que dice dónde cae la imagen, sacado del `Transform` del clip.
+
+    Se copia a un diccionario y no se pasa el objeto: la exportación en
+    segundo plano pinta mientras el usuario sigue editando el original.
+    """
+    return {
+        "fit": transform.fit,
+        "crop": transform.crop,
+        "anchor": (transform.anchor_x, transform.anchor_y),
+    }
 
 
 def frame_to_image(frame: Frame) -> QImage:
@@ -178,21 +194,79 @@ def _apply_mask(painter: QPainter, width: int, height: int, mask: Mask) -> None:
 
 # --- capas de video -------------------------------------------------------
 
-def _place(painter: QPainter, target: QRectF, valores: dict | None) -> None:
-    """Aplica desplazamiento, tamaño y giro alrededor del centro del cuadro.
+def _place(painter: QPainter, target: QRectF, valores: dict | None,
+           anchor: tuple[float, float] = (0.0, 0.0)) -> None:
+    """Aplica desplazamiento, tamaño y giro alrededor del punto de anclaje.
 
-    Alrededor del centro y no de la esquina: es lo que uno espera al rotar
-    algo.
+    El ancla va por omisión en el centro del cuadro, que es lo que uno
+    espera al rotar algo. Movida a una esquina, la imagen crece y gira
+    desde esa esquina, y el desplazamiento sigue siendo el mismo: el ancla
+    no mueve la imagen por sí sola.
     """
     if not valores:
         return
-    centro = target.center()
-    painter.translate(centro.x() + target.width() * valores.get("x", 0.0),
-                      centro.y() + target.height() * valores.get("y", 0.0))
+    pivote_x = target.center().x() + target.width() * anchor[0]
+    pivote_y = target.center().y() + target.height() * anchor[1]
+    painter.translate(pivote_x + target.width() * valores.get("x", 0.0),
+                      pivote_y + target.height() * valores.get("y", 0.0))
     painter.rotate(valores.get("rotation", 0.0))
     escala = max(0.01, valores.get("scale", 1.0))
     painter.scale(escala, escala)
-    painter.translate(-centro.x(), -centro.y())
+    painter.translate(-pivote_x, -pivote_y)
+
+
+def fit_rect(target: QRectF, width: int, height: int, mode: str = FIT) -> QRectF:
+    """Dónde cae un material de `width` × `height` dentro del cuadro.
+
+    - **Ajustar**: entero y centrado; si la proporción no coincide queda
+      negro a los lados o arriba y abajo;
+    - **Rellenar**: centrado y cubriendo todo; lo que sobra se sale del
+      cuadro, que es como se hace un vertical a partir de un horizontal;
+    - **Estirar**: llena deformando.
+
+    Antes todo se estiraba, y un video horizontal en una secuencia vertical
+    salía con la gente flaca y alargada.
+    """
+    if mode == STRETCH or width <= 0 or height <= 0 or target.height() <= 0:
+        return QRectF(target)
+
+    material = width / height
+    cuadro = target.width() / target.height()
+    if abs(material - cuadro) < 1e-6:
+        return QRectF(target)
+
+    cubre = mode == FILL
+    if (material > cuadro) != cubre:
+        ancho, alto = target.width(), target.width() / material
+    else:
+        ancho, alto = target.height() * material, target.height()
+    return QRectF(target.center().x() - ancho / 2, target.center().y() - alto / 2,
+                  ancho, alto)
+
+
+def _draw_frame(painter: QPainter, target: QRectF, frame: Frame,
+                valores: dict | None, framing: dict | None) -> None:
+    """Pinta un cuadro con su encuadre, su recorte y su transformación.
+
+    El recorte se hace pintando solo un pedazo de la imagen en el pedazo
+    correspondiente del destino: nada se copia ni se escala dos veces.
+    """
+    framing = framing or {}
+    destino = fit_rect(target, frame.width, frame.height, framing.get("fit", FIT))
+    izquierda, arriba, derecha, abajo = framing.get("crop", (0.0, 0.0, 0.0, 0.0))
+
+    fuente = QRectF(frame.width * izquierda, frame.height * arriba,
+                    frame.width * (1.0 - izquierda - derecha),
+                    frame.height * (1.0 - arriba - abajo))
+    pedazo = QRectF(destino.left() + destino.width() * izquierda,
+                    destino.top() + destino.height() * arriba,
+                    destino.width() * (1.0 - izquierda - derecha),
+                    destino.height() * (1.0 - arriba - abajo))
+    if fuente.width() <= 0 or fuente.height() <= 0:
+        return
+
+    _place(painter, target, valores, framing.get("anchor", (0.0, 0.0)))
+    painter.drawImage(pedazo, frame_to_image(frame), fuente)
 
 
 def draw_layers(painter: QPainter, target: QRectF, layers: list) -> None:
@@ -210,6 +284,17 @@ def draw_layers(painter: QPainter, target: QRectF, layers: list) -> None:
         valores = capa[2] if len(capa) > 2 else None
         blend = capa[3] if len(capa) > 3 else NORMAL
         mask = capa[4] if len(capa) > 4 else None
+        fill = capa[5] if len(capa) > 5 else None
+        framing = capa[6] if len(capa) > 6 else None
+
+        if fill is not None:
+            if alpha > 0:
+                painter.save()
+                painter.setOpacity(max(0.0, min(1.0, alpha)))
+                painter.fillRect(target, QColor(fill))
+                painter.restore()
+            continue
+
         if frame is None or alpha <= 0:
             continue
 
@@ -218,15 +303,18 @@ def draw_layers(painter: QPainter, target: QRectF, layers: list) -> None:
             continue
 
         painter.save()
+        # Nada se pinta fuera del cuadro. En el preview el cuadro es un
+        # pedazo del widget, y un clip en Rellenar o crecido se saldría
+        # sobre las franjas negras de alrededor.
+        painter.setClipRect(target, Qt.IntersectClip)
         painter.setOpacity(max(0.0, min(1.0, opacidad)))
         if not is_normal(blend):
             painter.setCompositionMode(BLEND_MODES[blend])
 
         if mask is not None and not mask.is_off:
-            painter.drawImage(target, _masked_layer(target, frame, valores, mask))
+            painter.drawImage(target, _masked_layer(target, frame, valores, mask, framing))
         else:
-            _place(painter, target, valores)
-            painter.drawImage(target, frame_to_image(frame))
+            _draw_frame(painter, target, frame, valores, framing)
 
         painter.restore()
 
@@ -235,7 +323,8 @@ def draw_layers(painter: QPainter, target: QRectF, layers: list) -> None:
 
 
 def _masked_layer(target: QRectF, frame: Frame,
-                  valores: dict | None, mask: Mask) -> QImage:
+                  valores: dict | None, mask: Mask,
+                  framing: dict | None = None) -> QImage:
     """La capa ya transformada y recortada, en una imagen aparte.
 
     Hay que pasar por una imagen intermedia porque la máscara se mide sobre
@@ -254,8 +343,7 @@ def _masked_layer(target: QRectF, frame: Frame,
     painter = QPainter(capa)
     painter.setRenderHint(QPainter.SmoothPixmapTransform)
     painter.save()
-    _place(painter, dentro, valores)
-    painter.drawImage(dentro, frame_to_image(frame))
+    _draw_frame(painter, dentro, frame, valores, framing)
     painter.restore()
     _apply_mask(painter, ancho, alto, mask)
     painter.end()
@@ -336,7 +424,7 @@ def draw_title(painter: QPainter, target: QRectF, title: Title,
 def _draw_title_body(painter: QPainter, target: QRectF, title: Title,
                      estado: AnimState) -> None:
 
-    font = QFont()
+    font = QFont(title.font) if title.font else QFont()
     font.setPixelSize(max(8, int(target.height() * title.size * estado.scale)))
     font.setBold(title.bold)
     font.setItalic(title.italic)
@@ -364,15 +452,67 @@ def _draw_title_body(painter: QPainter, target: QRectF, title: Title,
         painter.setBrush(CAPTION_BOX)
         painter.drawRoundedRect(block.adjusted(-pad, -pad / 2, pad, pad / 2), 4, 4)
 
+    if title.shadow:
+        _draw_shadow(painter, block, lines, font, metrics, title)
+
     painter.setFont(font)
+    _draw_lines(painter, block, lines, font, metrics, title,
+                QColor(title.color), QColor(title.outline_color))
+
+
+def _draw_lines(painter: QPainter, block: QRectF, lines: list[str], font: QFont,
+                metrics: QFontMetricsF, title: Title,
+                relleno: QColor, contorno: QColor) -> None:
+    line_height = metrics.height()
     for index, line in enumerate(lines):
         row = QRectF(block.left(), block.top() + index * line_height,
                      block.width(), line_height)
-        _draw_line(painter, row, line, font, metrics, title)
+        _draw_line(painter, row, line, font, metrics, title, relleno, contorno)
+
+
+def _draw_shadow(painter: QPainter, block: QRectF, lines: list[str], font: QFont,
+                 metrics: QFontMetricsF, title: Title) -> None:
+    """La sombra es el mismo texto, del color de la sombra, desplazado.
+
+    Con desenfoque se pinta en una imagen aparte y se suaviza con el mismo
+    truco de las máscaras —encoger y volver a estirar—; sin él se pinta
+    directo, que es gratis.
+    """
+    px = font.pixelSize()
+    distancia = title.shadow_distance * px
+    color = QColor(title.shadow_color)
+
+    painter.save()
+    painter.setOpacity(painter.opacity() * max(0.0, min(1.0, title.shadow_opacity)))
+    radio = max(0.0, title.shadow_blur) * px
+    if radio < 1.0:
+        painter.translate(distancia, distancia)
+        painter.setFont(font)
+        _draw_lines(painter, block, lines, font, metrics, title, color, color)
+        painter.restore()
+        return
+
+    margen = int(radio * 2 + px * title.outline_width * 2) + 2
+    imagen = QImage(int(block.width()) + margen * 2, int(block.height()) + margen * 2,
+                    QImage.Format_ARGB32_Premultiplied)
+    imagen.fill(Qt.transparent)
+    interno = QPainter(imagen)
+    interno.setRenderHint(QPainter.Antialiasing)
+    interno.setRenderHint(QPainter.TextAntialiasing)
+    interno.translate(margen - block.left(), margen - block.top())
+    interno.setFont(font)
+    _draw_lines(interno, block, lines, font, metrics, title, color, color)
+    interno.end()
+
+    imagen = _soften(imagen, radio)
+    painter.drawImage(QPointF(block.left() - margen + distancia,
+                              block.top() - margen + distancia), imagen)
+    painter.restore()
 
 
 def _draw_line(painter: QPainter, row: QRectF, line: str, font: QFont,
-               metrics: QFontMetricsF, title: Title) -> None:
+               metrics: QFontMetricsF, title: Title,
+               relleno: QColor | None = None, contorno: QColor | None = None) -> None:
     """El contorno se traza sobre el contorno real de la letra.
 
     Repetir el texto desplazado en ocho direcciones deja bordes sucios en
@@ -382,15 +522,16 @@ def _draw_line(painter: QPainter, row: QRectF, line: str, font: QFont,
         ALIGN_OFFSET.get(title.align, 0.5)
     baseline = row.top() + metrics.ascent()
 
-    if title.outline:
+    if title.outline and title.outline_width > 0:
         path = QPainterPath()
         path.addText(QPointF(x, baseline), font, line)
-        width = max(1.5, font.pixelSize() * 0.055)
-        painter.setPen(QPen(OUTLINE, width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        width = max(1.0, font.pixelSize() * title.outline_width)
+        painter.setPen(QPen(contorno if contorno is not None else OUTLINE,
+                            width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
         painter.setBrush(Qt.NoBrush)
         painter.drawPath(path)
 
-    painter.setPen(QColor(title.color))
+    painter.setPen(relleno if relleno is not None else QColor(title.color))
     painter.drawText(QPointF(x, baseline), line)
 
 

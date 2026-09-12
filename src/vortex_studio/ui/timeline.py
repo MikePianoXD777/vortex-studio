@@ -12,7 +12,7 @@ Reparto de la superficie, igual que en cualquier editor:
 
 from __future__ import annotations
 
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import (
     QColor,
     QFont,
@@ -22,15 +22,20 @@ from PySide6.QtGui import (
     QPen,
     QWheelEvent,
 )
-from PySide6.QtWidgets import QSizePolicy, QWidget
+from PySide6.QtWidgets import QSizePolicy, QToolTip, QWidget
 
 from pathlib import Path
 
-from vortex_studio.model import Clip, ImageOverlay, Sequence, Title, timecode
+from vortex_studio.model import Clip, ImageOverlay, Sequence, Title, accepts, timecode
+from vortex_studio.model.commands import link_offset, overwrite
 from vortex_studio.model.commands import slip as slip_clip
+from vortex_studio.model.project import DIP_BLACK, DIP_WHITE
 from vortex_studio.ui.waveforms import WaveformCache
 
-HEADER_WIDTH = 72
+MEDIA_MIME = "application/x-vortex-media"
+
+HEADER_WIDTH = 116
+BUTTON = 17            # lado de los botones de la cabecera de pista
 RULER_HEIGHT = 26
 TRACK_HEIGHT = 40
 TRACK_GAP = 2
@@ -65,15 +70,36 @@ SPEED_TAG = QColor("#f0d68a")
 MARKER = QColor("#e8c15a")
 DISSOLVE = QColor(120, 170, 230, 120)
 DISSOLVE_EDGE = QColor("#8fb6e0")
+DIP_FILLS = {DIP_BLACK: QColor(10, 10, 12, 190), DIP_WHITE: QColor(240, 242, 245, 170)}
 MARKER_TEXT = QColor("#1b1d21")
+LINKED_SELECTED = QColor("#b9c6d6")
+OFFSET_TAG = QColor("#ff6b5e")
+LOCKED_HATCH = QColor(0, 0, 0, 90)
+BUTTON_BG = QColor("#2b2f34")
+BUTTON_ON = {"enabled": QColor("#5f9bd8"), "muted": QColor("#e8904a"),
+             "solo": QColor("#e8c15a"), "locked": QColor("#e0574a")}
 
 PEAKS_PER_SECOND = 60
 
-# Qué tipo de cosa acepta cada clase de pista.
+# Qué tipo de cosa acepta cada clase de pista. Vive en el modelo
+# (`accepts`); esto queda para quien ya lo usaba.
 ACCEPTS = {
     "video": (Clip, ImageOverlay),
     "texto": (Title,),
     "audio": (Clip,),
+}
+
+# Los botones de cada clase de pista, de izquierda a derecha.
+TRACK_BUTTONS = {
+    "video": ("enabled", "locked"),
+    "texto": ("enabled", "locked"),
+    "audio": ("muted", "solo", "locked"),
+}
+BUTTON_TIPS = {
+    "enabled": "Mostrar u ocultar la pista",
+    "locked": "Bloquear la pista: nada se mueve ni se borra",
+    "muted": "Silenciar la pista",
+    "solo": "Solo: oír nada más esta pista (y las otras en solo)",
 }
 
 
@@ -94,6 +120,9 @@ class TimelineWidget(QWidget):
     edit_finished = Signal(str)          # etiqueta para el historial
     cut_requested = Signal(object, float)
     live_edit = Signal()                 # algo cambió a medio arrastre
+    track_toggled = Signal(object, str)  # pista, interruptor
+    marker_activated = Signal(object, object)   # marcador, dueño (None = secuencia)
+    media_dropped = Signal(object, float, int)  # ruta, tiempo, pista
 
     def __init__(self, sequence: Sequence, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -105,6 +134,12 @@ class TimelineWidget(QWidget):
 
         self.tool = TOOL_SELECT
         self.selected = None
+        # Lo que se sumó a la selección con Ctrl+clic. `selected` sigue
+        # siendo el principal: el que siguen los paneles.
+        self.extra: list = []
+        # Alt+clic selecciona un lado del enlace sin el otro, como en
+        # Premiere: para mover el audio suelto sin desenlazar.
+        self.ignore_link = False
 
         self._scrubbing = False
         self._drag: dict | None = None
@@ -124,6 +159,7 @@ class TimelineWidget(QWidget):
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.StrongFocus)
+        self.setAcceptDrops(True)
 
     # --- conversión tiempo <-> pixel -------------------------------------
 
@@ -144,11 +180,43 @@ class TimelineWidget(QWidget):
         cursores = {TOOL_RAZOR: Qt.CrossCursor, TOOL_SLIP: Qt.SplitHCursor}
         self.setCursor(cursores.get(tool, Qt.ArrowCursor))
 
-    def select(self, item) -> None:
+    def select(self, item, keep_extra: bool = False) -> None:
+        if not keep_extra:
+            self.extra = []
+            self.ignore_link = False
         if item is not self.selected:
             self.selected = item
             self.selection_changed.emit(item)
-            self.update()
+        self.update()
+
+    def toggle_extra(self, item) -> None:
+        """Ctrl+clic: suma o quita un elemento de la selección."""
+        if item is self.selected:
+            siguiente = self.extra.pop(0) if self.extra else None
+            self.selected = siguiente
+            self.selection_changed.emit(siguiente)
+        elif any(item is x for x in self.extra):
+            self.extra = [x for x in self.extra if x is not item]
+        elif self.selected is None:
+            self.selected = item
+            self.selection_changed.emit(item)
+        else:
+            self.extra.append(item)
+        self.update()
+
+    def selected_items(self, with_links: bool = True) -> list:
+        """Todo lo seleccionado; con sus enlazados salvo que fue Alt+clic."""
+        base = [x for x in [self.selected, *self.extra] if x is not None]
+        if with_links and not self.ignore_link:
+            return self.sequence.with_linked(base)
+        return base
+
+    def _is_selected(self, item) -> tuple[bool, bool]:
+        """(seleccionado directo, seleccionado por enlace)."""
+        directo = item is self.selected or any(item is x for x in self.extra)
+        if directo or self.ignore_link:
+            return directo, False
+        return False, any(item is x for x in self.selected_items())
 
     def refresh(self) -> None:
         """Tras cambiar la secuencia por fuera (deshacer, importar…)."""
@@ -173,7 +241,7 @@ class TimelineWidget(QWidget):
         if index is None:
             return None, None, ""
 
-        for item in self.sequence.tracks[index].clips:
+        for item in reversed(self.sequence.tracks[index].clips):
             left, right = self.x_for(item.start), self.x_for(item.end)
             if left <= x <= right:
                 if x - left <= EDGE_GRAB:
@@ -193,6 +261,7 @@ class TimelineWidget(QWidget):
         self._draw_ruler(painter)
         self._draw_markers(painter)
         self._draw_tracks(painter)
+        self._draw_marker_labels(painter)
         self._draw_range(painter)
         self._draw_snap(painter)
         self._draw_playhead(painter)
@@ -231,10 +300,26 @@ class TimelineWidget(QWidget):
             painter.setBrush(QColor(marker.color))
             painter.drawPath(banderita)
 
-            if marker.name:
-                painter.setPen(QColor(marker.color))
-                painter.setFont(QFont("", 7))
-                painter.drawText(QPointF(x + 8, RULER_HEIGHT + 11), marker.name[:22])
+    def _draw_marker_labels(self, painter: QPainter) -> None:
+        """El nombre de cada marcador, en una etiqueta encima de las pistas.
+
+        Va después de pintar las pistas y no junto con la banderita: antes se
+        dibujaba primero y el fondo de la primera pista lo tapaba, así que el
+        nombre nunca se veía.
+        """
+        painter.setFont(QFont("", 7))
+        metricas = painter.fontMetrics()
+        for marker in self.sequence.markers:
+            x = self.x_for(marker.time)
+            if not marker.name or x < HEADER_WIDTH or x > self.width():
+                continue
+            etiqueta = marker.name[:22] + (" ✎" if marker.note else "")
+            caja = QRectF(x + 3, RULER_HEIGHT + 1, metricas.horizontalAdvance(etiqueta) + 8, 13)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(marker.color))
+            painter.drawRoundedRect(caja, 3, 3)
+            painter.setPen(MARKER_TEXT)
+            painter.drawText(caja, Qt.AlignCenter, etiqueta)
 
     def _ruler_step(self) -> float:
         """Separación entre marcas, para que no se encimen al alejar el zoom."""
@@ -254,15 +339,86 @@ class TimelineWidget(QWidget):
             painter.fillRect(QRectF(0, y, self.width(), TRACK_HEIGHT),
                              TRACK_BG_TARGET if highlight else TRACK_BG)
 
-            painter.setPen(DIM_TEXT)
-            painter.setFont(QFont("", 8, QFont.Bold))
-            painter.drawText(QRectF(0, y, HEADER_WIDTH - 10, TRACK_HEIGHT),
-                             Qt.AlignRight | Qt.AlignVCenter, track.name)
+            self._draw_header(painter, index, track, y)
 
+            painter.save()
+            painter.setClipRect(QRectF(HEADER_WIDTH, y, self.width() - HEADER_WIDTH,
+                                       TRACK_HEIGHT))
+            apagada = not track.enabled or (track.kind == "audio" and (
+                track.muted or (any(t.solo for t in self.sequence.audio_tracks())
+                                and not track.solo)))
+            if apagada:
+                painter.setOpacity(0.45)
             for clip in track.clips:
                 self._draw_clip(painter, clip, y, _color_for(track, clip), track.kind)
             if track.kind == "video":
                 self._draw_dissolves(painter, track, y)
+            painter.setOpacity(1.0)
+            if track.locked:
+                painter.setPen(QPen(LOCKED_HATCH, 1))
+                x = HEADER_WIDTH - (y % 12)
+                while x < self.width():
+                    painter.drawLine(QPointF(x, y + TRACK_HEIGHT), QPointF(x + TRACK_HEIGHT, y))
+                    x += 12
+            painter.restore()
+
+    # --- cabecera de pista --------------------------------------------------
+
+    def header_buttons(self, index: int) -> list[tuple[str, QRectF]]:
+        """(interruptor, rectángulo) de cada botón de la cabecera de la pista."""
+        track = self.sequence.tracks[index]
+        y = self._track_top(index) + (TRACK_HEIGHT - BUTTON) / 2
+        nombres = TRACK_BUTTONS.get(track.kind, ())
+        x = HEADER_WIDTH - 6 - len(nombres) * (BUTTON + 3)
+        salida = []
+        for nombre in nombres:
+            salida.append((nombre, QRectF(x, y, BUTTON, BUTTON)))
+            x += BUTTON + 3
+        return salida
+
+    def _draw_header(self, painter: QPainter, index: int, track, y: float) -> None:
+        painter.setPen(DIM_TEXT if track.enabled else QColor("#4d535b"))
+        painter.setFont(QFont("", 8, QFont.Bold))
+        painter.drawText(QRectF(6, y, 34, TRACK_HEIGHT),
+                         Qt.AlignLeft | Qt.AlignVCenter, track.name)
+
+        for nombre, rect in self.header_buttons(index):
+            valor = getattr(track, nombre)
+            # "enabled" se prende al revés que los demás: encendido es lo normal.
+            resaltado = (not valor) if nombre == "enabled" else valor
+            painter.setPen(QPen(QColor("#3a3f46"), 1))
+            painter.setBrush(BUTTON_ON[nombre].darker(160) if resaltado else BUTTON_BG)
+            painter.drawRoundedRect(rect, 3, 3)
+            color = BUTTON_ON[nombre] if resaltado else QColor("#8a9099")
+            self._draw_button_icon(painter, nombre, rect, color, valor)
+
+    @staticmethod
+    def _draw_button_icon(painter: QPainter, nombre: str, rect: QRectF,
+                          color: QColor, valor: bool) -> None:
+        c = rect.center()
+        painter.setPen(QPen(color, 1.3))
+        painter.setBrush(Qt.NoBrush)
+        if nombre == "enabled":
+            ojo = QPainterPath()
+            ojo.moveTo(c.x() - 6, c.y())
+            ojo.quadTo(c.x(), c.y() - 6, c.x() + 6, c.y())
+            ojo.quadTo(c.x(), c.y() + 6, c.x() - 6, c.y())
+            painter.drawPath(ojo)
+            painter.setBrush(color)
+            painter.drawEllipse(c, 1.8, 1.8)
+            if not valor:
+                painter.drawLine(QPointF(c.x() - 6, c.y() + 5), QPointF(c.x() + 6, c.y() - 5))
+        elif nombre == "locked":
+            painter.drawRect(QRectF(c.x() - 4, c.y() - 1, 8, 6))
+            arco = QPainterPath()
+            arco.moveTo(c.x() - 2.5, c.y() - 1)
+            arco.lineTo(c.x() - 2.5, c.y() - 3.5)
+            arco.arcTo(QRectF(c.x() - 2.5, c.y() - 6, 5, 5), 180, -180)
+            arco.lineTo(c.x() + 2.5, c.y() - (1 if valor else 3))
+            painter.drawPath(arco)
+        else:
+            painter.setFont(QFont("", 7, QFont.Bold))
+            painter.drawText(rect, Qt.AlignCenter, "M" if nombre == "muted" else "S")
 
     def _draw_clip(self, painter: QPainter, clip, y: float, color: QColor,
                    track_kind: str = "video") -> None:
@@ -271,9 +427,10 @@ class TimelineWidget(QWidget):
         if rect.right() < HEADER_WIDTH or rect.left() > self.width():
             return
 
-        chosen = clip is self.selected
-        painter.setPen(QPen(SELECTED if chosen else CLIP_BORDER, 2 if chosen else 1))
-        painter.setBrush(color.lighter(115) if chosen else color)
+        chosen, por_enlace = self._is_selected(clip)
+        borde = SELECTED if chosen else (LINKED_SELECTED if por_enlace else CLIP_BORDER)
+        painter.setPen(QPen(borde, 2 if chosen or por_enlace else 1))
+        painter.setBrush(color.lighter(115) if chosen or por_enlace else color)
         painter.drawRoundedRect(rect, 3, 3)
 
         if track_kind == "audio" and rect.width() > 8:
@@ -282,11 +439,25 @@ class TimelineWidget(QWidget):
         self._draw_fades(painter, clip, rect)
         self._draw_keyframes(painter, clip, rect)
 
+        self._draw_clip_markers(painter, clip, rect)
+
         if rect.width() > 34:
             painter.setPen(QColor("#eef1f4"))
-            painter.setFont(QFont("", 8))
+            fuente = QFont("", 8)
+            # Enlazado se ve subrayado, como en Premiere: se nota sin ocupar
+            # lugar y sin un ícono más.
+            fuente.setUnderline(bool(getattr(clip, "link", "")))
+            painter.setFont(fuente)
             painter.drawText(rect.adjusted(6, 0, -6, 0),
                              Qt.AlignLeft | Qt.AlignVCenter, clip.name)
+
+        desfase = link_offset(self.sequence, clip)
+        if abs(desfase) > 1e-6 and rect.width() > 40:
+            cuadros = round(desfase * self.sequence.fps)
+            painter.setPen(OFFSET_TAG)
+            painter.setFont(QFont("", 7, QFont.Bold))
+            painter.drawText(rect.adjusted(6, 1, -6, 0), Qt.AlignLeft | Qt.AlignTop,
+                             f"{cuadros:+d}")
 
         velocidad = getattr(clip, "speed", 1.0)
         if velocidad != 1.0 and rect.width() > 60:
@@ -314,13 +485,67 @@ class TimelineWidget(QWidget):
                 continue
 
             painter.setPen(QPen(DISSOLVE_EDGE, 1))
-            painter.setBrush(DISSOLVE)
+            painter.setBrush(DIP_FILLS.get(getattr(clip, "transition", ""), DISSOLVE))
             painter.drawRect(rect)
 
             # El moño: dos diagonales cruzadas, como en cualquier editor.
             painter.setPen(QPen(DISSOLVE_EDGE, 1))
             painter.drawLine(rect.topLeft(), rect.bottomRight())
             painter.drawLine(rect.bottomLeft(), rect.topRight())
+
+    def _draw_clip_markers(self, painter: QPainter, clip, rect: QRectF) -> None:
+        """Los marcadores del clip: una muesca de color en la orilla de arriba."""
+        for marker in getattr(clip, "markers", ()) or ():
+            x = self.x_for(clip.start + marker.time)
+            if x < max(HEADER_WIDTH, rect.left()) or x > min(self.width(), rect.right()):
+                continue
+            muesca = QPainterPath()
+            muesca.moveTo(x - 4, rect.top())
+            muesca.lineTo(x + 4, rect.top())
+            muesca.lineTo(x, rect.top() + 6)
+            muesca.closeSubpath()
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(marker.color))
+            painter.drawPath(muesca)
+
+    def markers_near(self, x: float, y: float):
+        """(marcador, dueño) bajo el cursor: en la regla o dentro de un clip."""
+        tolerancia = 5 / self.pixels_per_second
+        t = self.time_for(x)
+        if y < RULER_HEIGHT + 12:
+            marcador = next((m for m in self.sequence.markers
+                             if abs(m.time - t) <= tolerancia), None)
+            if marcador is not None:
+                return marcador, None
+        _, item, _ = self._item_at(x, y)
+        if item is not None:
+            marcador = next((m for m in getattr(item, "markers", ()) or ()
+                             if abs(item.start + m.time - t) <= tolerancia), None)
+            if marcador is not None:
+                return marcador, item
+        return None, None
+
+    def event(self, event) -> bool:
+        """El nombre y la nota del marcador, al pasar el cursor encima."""
+        if event.type() == QEvent.ToolTip:
+            pos = event.position() if hasattr(event, "position") else event.pos()
+            if pos.x() < HEADER_WIDTH:
+                indice = self._track_index_at(pos.y())
+                for nombre, rect in (self.header_buttons(indice) if indice is not None else ()):
+                    if rect.contains(pos):
+                        QToolTip.showText(event.globalPos(), BUTTON_TIPS[nombre], self)
+                        return True
+            marcador, _ = self.markers_near(pos.x(), pos.y())
+            if marcador is not None and (marcador.name or marcador.note):
+                texto = marcador.name or "Marcador"
+                if marcador.note:
+                    texto += "\n" + marcador.note
+                QToolTip.showText(event.globalPos(), texto, self)
+            else:
+                QToolTip.hideText()
+                event.ignore()
+            return True
+        return super().event(event)
 
     def _draw_keyframes(self, painter: QPainter, clip, rect: QRectF) -> None:
         """Rombos en la orilla de abajo, uno por instante animado.
@@ -476,6 +701,10 @@ class TimelineWidget(QWidget):
     # --- imantado ---------------------------------------------------------
 
     def _snap(self, t: float, ignore=None) -> float:
+        ignorados = ignore if isinstance(ignore, list) else [ignore]
+        return self._snap_many(t, ignorados)
+
+    def _snap_many(self, t: float, ignorados: list) -> float:
         """Jala el tiempo hacia los puntos de interés que estén muy cerca.
 
         Sin esto es imposible pegar dos clips sin dejar un hueco de un par
@@ -483,13 +712,16 @@ class TimelineWidget(QWidget):
         """
         candidates = [0.0, self.playhead]
         candidates += [m.time for m in self.sequence.markers]
+        for track in self.sequence.tracks:
+            for item in track.clips:
+                candidates += [item.start + m.time for m in getattr(item, "markers", ()) or ()]
         if self.mark_in is not None:
             candidates.append(self.mark_in)
         if self.mark_out is not None:
             candidates.append(self.mark_out)
         for track in self.sequence.tracks:
             for item in track.clips:
-                if item is not ignore:
+                if not any(item is x for x in ignorados):
                     candidates += [item.start, item.end]
 
         tolerance = SNAP_PIXELS / self.pixels_per_second
@@ -509,6 +741,7 @@ class TimelineWidget(QWidget):
 
         pos = event.position()
         if pos.x() < HEADER_WIDTH:
+            self._press_header(pos)
             return
 
         if pos.y() < RULER_HEIGHT:
@@ -518,8 +751,11 @@ class TimelineWidget(QWidget):
 
         index, item, zone = self._item_at(pos.x(), pos.y())
 
-        if item is None:
-            self.select(None)
+        # Lo de una pista bloqueada ni se selecciona: el clic mueve el
+        # playhead, igual que en un hueco.
+        if item is None or self.sequence.tracks[index].locked:
+            if not (event.modifiers() & Qt.ControlModifier):
+                self.select(None)
             self._scrubbing = True
             self._scrub(pos.x())
             return
@@ -528,8 +764,23 @@ class TimelineWidget(QWidget):
             self.cut_requested.emit(item, self.time_for(pos.x()))
             return
 
-        if self.tool == TOOL_SLIP:
+        if event.modifiers() & Qt.ControlModifier:
+            self.toggle_extra(item)
+            return
+
+        ya_estaba = item is self.selected or any(item is x for x in self.extra)
+        if not ya_estaba:
             self.select(item)
+        elif item is not self.selected:
+            # Clic sobre uno de los que ya estaban: pasa a ser el principal
+            # sin perder la selección múltiple, para poder arrastrar todos.
+            resto = [x for x in [self.selected, *self.extra] if x is not item]
+            self.selected, self.extra = item, resto
+            self.selection_changed.emit(item)
+        self.ignore_link = bool(event.modifiers() & Qt.AltModifier)
+        self.update()
+
+        if self.tool == TOOL_SLIP:
             if isinstance(item, Clip):
                 self._drag = {
                     "item": item,
@@ -537,11 +788,12 @@ class TimelineWidget(QWidget):
                     "zone": "slip",
                     "grab": self.time_for(pos.x()),
                     "in_point": item.in_point,
+                    "partners": [(p, p.in_point) for p in self._partners(item)
+                                 if isinstance(p, Clip)],
                     "moved": False,
                 }
             return
 
-        self.select(item)
         self._drag = {
             "item": item,
             "track": index,
@@ -550,8 +802,37 @@ class TimelineWidget(QWidget):
             "start": item.start,
             "duration": item.duration,
             "in_point": getattr(item, "in_point", None),
+            "partners": [(p, p.start, p.duration, getattr(p, "in_point", None))
+                         for p in self._partners(item)],
             "moved": False,
         }
+
+    def _partners(self, item) -> list:
+        """Lo que se arrastra junto con `item`: el resto de la selección y
+        sus enlazados, menos lo que esté en pistas bloqueadas."""
+        grupo = self.selected_items()
+        if not any(item is x for x in grupo):
+            grupo = [item]
+        salida = []
+        for otro in grupo:
+            if otro is item:
+                continue
+            pista = self.sequence.track_of(otro)
+            if pista is not None and not pista.locked:
+                salida.append(otro)
+        return salida
+
+    def _press_header(self, pos) -> None:
+        index = self._track_index_at(pos.y())
+        if index is None:
+            return
+        for nombre, rect in self.header_buttons(index):
+            if rect.adjusted(-2, -2, 2, 2).contains(pos):
+                track = self.sequence.tracks[index]
+                setattr(track, nombre, not getattr(track, nombre))
+                self.update()
+                self.track_toggled.emit(track, nombre)
+                return
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         pos = event.position()
@@ -587,20 +868,34 @@ class TimelineWidget(QWidget):
         corrido = self.time_for(pos.x()) - drag["grab"]
         clip.in_point = drag["in_point"]
         duracion = self.source_duration(clip) if self.source_duration else None
-        slip_clip(clip, -corrido * max(clip.speed, 0.0), duracion)
+        aplicado = slip_clip(clip, -corrido * max(clip.speed, 0.0), duracion)
+        for otro, entrada in drag.get("partners", ()):
+            otro.in_point = entrada
+            slip_clip(otro, aplicado, duracion)
 
     def _move_drag(self, pos) -> None:
         drag = self._drag
         item = drag["item"]
 
         delta = self.time_for(pos.x()) - drag["grab"]
-        item.start = max(0.0, self._snap(drag["start"] + delta, ignore=item))
+        socios = drag.get("partners", ())
+        ignorados = [item, *(p[0] for p in socios)]
+        item.start = max(0.0, self._snap_many(drag["start"] + delta, ignorados))
+
+        # Los compañeros se mueven lo mismo que el principal, y nadie pasa
+        # de cero: si uno toparía, se frena el grupo entero.
+        corrido = item.start - drag["start"]
+        if socios:
+            corrido = max(corrido, -min(inicio for _, inicio, _, _ in socios))
+            item.start = drag["start"] + corrido
+            for otro, inicio, _, _ in socios:
+                otro.start = inicio + corrido
 
         # Cambio de pista: solo a una que acepte este tipo de elemento.
         index = self._track_index_at(pos.y())
         if index is not None and index != drag["track"]:
             target = self.sequence.tracks[index]
-            if isinstance(item, ACCEPTS.get(target.kind, ())):
+            if accepts(target, item) and not target.locked:
                 self.sequence.tracks[drag["track"]].clips.remove(item)
                 target.add(item)
                 drag["track"] = index
@@ -617,11 +912,29 @@ class TimelineWidget(QWidget):
             item.start = new_start
             item.duration = original_end - new_start
             # En un clip de archivo, recortar por el inicio avanza el punto
-            # de entrada: se ve más adelante del original, no se estira.
+            # de entrada: se ve más adelante del original, no se estira. En
+            # tiempo de archivo, así que cuenta la velocidad.
             if drag["in_point"] is not None:
-                item.in_point = max(0.0, drag["in_point"] + (new_start - drag["start"]))
+                item.in_point = max(0.0, drag["in_point"] + (new_start - drag["start"])
+                                    * max(getattr(item, "speed", 1.0), 0.0))
+            corrido = new_start - drag["start"]
+            for otro, inicio, duracion, entrada in drag.get("partners", ()):
+                # Solo se recorta junto el compañero que empezaba en el mismo
+                # lugar: recortar la cabeza de un audio más largo que su video
+                # le comería material que nadie pidió quitar.
+                if abs(inicio - drag["start"]) > 1e-6:
+                    continue
+                otro.start = inicio + corrido
+                otro.duration = max(minimum, duracion - corrido)
+                if entrada is not None:
+                    otro.in_point = max(0.0, entrada + corrido * max(otro.speed, 0.0))
         else:
             item.duration = max(minimum, edge - item.start)
+            fin_original = drag["start"] + drag["duration"]
+            for otro, inicio, duracion, _ in drag.get("partners", ()):
+                if abs(inicio + duracion - fin_original) > 1e-6:
+                    continue
+                otro.duration = max(minimum, item.end - otro.start)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         self._scrubbing = False
@@ -632,6 +945,11 @@ class TimelineWidget(QWidget):
                 track = self.sequence.tracks[self._drag["track"]]
                 self._resolve_overlap(track, self._drag["item"])
                 track.clips.sort(key=lambda c: c.start)
+                if self._drag["zone"] == "cuerpo":
+                    for otro, *_ in self._drag.get("partners", ()):
+                        pista = self.sequence.track_of(otro)
+                        if pista is not None:
+                            self._resolve_overlap(pista, otro)
                 label = {"cuerpo": "Mover clip", "slip": "Deslizar contenido"}.get(
                     self._drag["zone"], "Recortar clip")
                 self.edit_finished.emit(label)
@@ -640,27 +958,45 @@ class TimelineWidget(QWidget):
 
     @staticmethod
     def _resolve_overlap(track, item) -> None:
-        """Lo que se suelta encima tapa a lo que ya estaba.
+        """Lo que se suelta encima tapa a lo que ya estaba. Ver `overwrite`."""
+        overwrite(track, item)
 
-        Es como funciona el arrastre por defecto en un editor: mandas algo
-        sobre otra cosa y la pisa. Antes se permitía el traslape en silencio
-        y lo que veías era el primero de la lista, que no siempre es el de
-        arriba — parecía que el clip se había perdido.
-        """
-        for other in list(track.clips):
-            if other is item or other.end <= item.start or other.start >= item.end:
-                continue
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
+        """Doble clic en un marcador lo abre para ponerle nombre, nota y color."""
+        pos = event.position()
+        marcador, dueno = self.markers_near(pos.x(), pos.y())
+        if marcador is not None:
+            self._drag = None
+            self.marker_activated.emit(marcador, dueno)
+            return
+        super().mouseDoubleClickEvent(event)
 
-            if other.start >= item.start and other.end <= item.end:
-                track.clips.remove(other)          # queda tapado por completo
-            elif other.start < item.start:
-                other.duration = item.start - other.start   # se le corta la cola
-            else:
-                recorte = item.end - other.start             # se le corta la cabeza
-                other.start = item.end
-                other.duration -= recorte
-                if hasattr(other, "in_point"):
-                    other.in_point += recorte
+    # --- soltar medios desde el panel ----------------------------------------
+
+    def dragEnterEvent(self, event) -> None:
+        if event.mimeData().hasFormat(MEDIA_MIME):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event) -> None:
+        if event.mimeData().hasFormat(MEDIA_MIME):
+            event.acceptProposedAction()
+
+    def dropEvent(self, event) -> None:
+        datos = event.mimeData()
+        if not datos.hasFormat(MEDIA_MIME):
+            event.ignore()
+            return
+        pos = event.position()
+        indice = self._track_index_at(pos.y())
+        tiempo = self._snap(self.time_for(pos.x()))
+        self._snap_at = None
+        for linea in bytes(datos.data(MEDIA_MIME)).decode("utf-8").splitlines():
+            if linea.strip():
+                self.media_dropped.emit(Path(linea.strip()), tiempo,
+                                        -1 if indice is None else indice)
+        event.acceptProposedAction()
 
     def _update_cursor(self, pos) -> None:
         if self.tool in (TOOL_RAZOR, TOOL_SLIP):
