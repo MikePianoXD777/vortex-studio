@@ -11,7 +11,7 @@ def pestana(ventana) -> str:
 def test_las_paginas_estan_y_en_orden(ventana):
     tabs = ventana.panel._tabs
     titulos = [tabs.tabText(i).split()[-1] for i in range(tabs.count())]
-    assert titulos == ["Transformar", "Color", "Máscara", "Efectos", "Clip", "Audio",
+    assert titulos == ["Clip", "Transformar", "Color", "Máscara", "Efectos", "Audio",
                        "Texto", "Imagen"]
 
 

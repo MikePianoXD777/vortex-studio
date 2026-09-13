@@ -1,40 +1,34 @@
-"""Barra de transporte: reproducción, velocidad, loop y lectura de tiempo."""
+"""Barra de transporte: una sola línea bajo el monitor.
+
+Antes era una botonera de reproductor —diez botones con repetir y volumen
+en cajitas— y era lo que más hacía ver al editor como OBS. Con el diseño de
+la beta queda lo mínimo a la vista: el código de tiempo a la izquierda, ir al
+inicio, play y final al centro, y velocidad y volumen a la derecha. Saltar
+diez segundos sigue en el teclado y en el menú Reproducción.
+"""
 
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import (
-    QComboBox,
-    QHBoxLayout,
-    QLabel,
-    QPushButton,
-    QSlider,
-    QWidget,
-)
+from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QSlider, QWidget
+
+from vortex_studio.ui import theme
+from vortex_studio.ui.widgets import IconButton
 
 SPEEDS = [0.25, 0.5, 1.0, 1.5, 2.0, 4.0]
 
-BUTTON_STYLE = """
-QPushButton {
-    background: #2b2f34; color: #d6dae0; border: 1px solid #3a3f46;
-    border-radius: 4px; padding: 4px 10px; min-width: 34px;
-}
-QPushButton:hover { background: #353a41; }
-QPushButton:pressed { background: #23272b; }
-QPushButton:checked { background: #3d6fa8; border-color: #4d82bf; color: #ffffff; }
-QPushButton:disabled { color: #5a6068; border-color: #2e3238; background: #232629; }
-"""
-
-COMBO_STYLE = """
-QComboBox {
-    background: #2b2f34; color: #d6dae0; border: 1px solid #3a3f46;
-    border-radius: 4px; padding: 3px 8px; min-width: 62px;
-}
-QComboBox:hover { background: #353a41; }
-QComboBox QAbstractItemView {
-    background: #24282d; color: #d6dae0;
-    selection-background-color: #3d6fa8; border: 1px solid #3a3f46;
-}
+COMBO_STYLE = f"""
+QComboBox {{
+    background: transparent; border: none; color: {theme.TENUE};
+    font-family: {theme.MONO}; font-size: 11px; padding: 2px 4px; min-width: 30px;
+}}
+QComboBox:hover {{ color: {theme.TEXTO}; }}
+QComboBox::drop-down {{ width: 0; border: none; }}
+QComboBox::down-arrow {{ image: none; border: none; width: 0; height: 0; }}
+QComboBox QAbstractItemView {{
+    background: {theme.CAMPO}; color: {theme.TEXTO}; border: 1px solid {theme.BORDE_FUERTE};
+    selection-background-color: {theme.PILDORA}; outline: none;
+}}
 """
 
 
@@ -52,39 +46,27 @@ class TransportBar(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setStyleSheet("QWidget { background: #1b1d21; }")
+        self.setFixedHeight(52)
 
         self._current = QLabel("00:00:00:00")
         self._current.setStyleSheet(
-            "color:#e6e9ed; font-family:monospace; font-size:15px;"
-        )
+            f"color:{theme.TEXTO}; font-family:{theme.MONO}; font-size:13px;")
         self._total = QLabel("/ 00:00:00:00")
         self._total.setStyleSheet(
-            "color:#767c85; font-family:monospace; font-size:15px;"
-        )
+            f"color:{theme.MUY_TENUE}; font-family:{theme.MONO}; font-size:13px;")
 
-        start = self._button("⏮", "Ir al inicio  ·  Inicio")
+        start = IconButton("inicio", "Ir al inicio  ·  Inicio", 30)
         start.clicked.connect(self.go_start.emit)
-
-        back10 = self._button("◀◀", "Atrás 10 s  ·  Ctrl+←")
-        back10.clicked.connect(lambda: self.skip.emit(-10.0))
-
-        back = self._button("◀|", "Frame anterior  ·  ←")
+        back = IconButton("anterior", "Cuadro anterior  ·  ←", 26)
         back.clicked.connect(lambda: self.step.emit(-1))
-
-        self._play = self._button("▶", "Reproducir / pausar  ·  Espacio")
+        self._play = IconButton("play", "Reproducir / pausar  ·  Espacio", 38, circle=True)
         self._play.clicked.connect(self.play_pause.emit)
-
-        forward = self._button("|▶", "Frame siguiente  ·  →")
+        forward = IconButton("siguiente", "Cuadro siguiente  ·  →", 26)
         forward.clicked.connect(lambda: self.step.emit(1))
-
-        fwd10 = self._button("▶▶", "Adelante 10 s  ·  Ctrl+→")
-        fwd10.clicked.connect(lambda: self.skip.emit(10.0))
-
-        end = self._button("⏭", "Ir al final  ·  Fin")
+        end = IconButton("fin", "Ir al final  ·  Fin", 30)
         end.clicked.connect(self.go_end.emit)
 
-        self._loop = self._button("⟲", "Repetir  ·  L")
+        self._loop = IconButton("repetir", "Repetir  ·  L", 26)
         self._loop.setCheckable(True)
         self._loop.toggled.connect(self.loop_toggled.emit)
 
@@ -92,52 +74,60 @@ class TransportBar(QWidget):
         self._speed.setStyleSheet(COMBO_STYLE)
         self._speed.setToolTip("Velocidad  ·  J más lento, K normal, Shift+L más rápido")
         self._speed.setFocusPolicy(Qt.NoFocus)
+        self._speed.setCursor(Qt.PointingHandCursor)
         for value in SPEEDS:
             self._speed.addItem(f"{value:g}×", value)
         self._speed.setCurrentIndex(SPEEDS.index(1.0))
         self._speed.currentIndexChanged.connect(
-            lambda i: self.speed_changed.emit(SPEEDS[i])
-        )
+            lambda i: self.speed_changed.emit(SPEEDS[i]))
 
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(10, 6, 10, 6)
-        layout.setSpacing(6)
-        layout.addWidget(self._current)
-        layout.addWidget(self._total)
-        layout.addStretch(1)
-        for widget in (start, back10, back, self._play, forward, fwd10, end):
-            layout.addWidget(widget)
-        layout.addStretch(1)
-        self._mute = self._button("🔊", "Silenciar")
+        self._mute = IconButton("volumen", "Silenciar", 26)
         self._mute.setCheckable(True)
         self._mute.toggled.connect(self._toggle_mute)
 
         self._volume = QSlider(Qt.Horizontal)
         self._volume.setRange(0, 100)
         self._volume.setValue(80)
-        self._volume.setFixedWidth(84)
+        self._volume.setFixedWidth(76)
         self._volume.setToolTip("Volumen")
-        self._volume.setStyleSheet("""
-            QSlider::groove:horizontal { height:4px; background:#2c3037; border-radius:2px; }
-            QSlider::sub-page:horizontal { background:#3f7d5c; border-radius:2px; }
-            QSlider::handle:horizontal {
-                width:11px; height:11px; margin:-4px 0; background:#d6dae0; border-radius:5px;
-            }
-        """)
+        self._volume.setStyleSheet(theme.SLIDER_STYLE)
         self._volume.valueChanged.connect(
             lambda v: self.volume_changed.emit(v / 100.0))
 
-        layout.addWidget(self._mute)
-        layout.addWidget(self._volume)
-        layout.addWidget(self._loop)
-        layout.addWidget(self._speed)
+        # Tres columnas del mismo ancho: así el play queda al centro exacto
+        # aunque el código de tiempo y los controles de la derecha midan
+        # distinto.
+        izquierda = QWidget()
+        caja = QHBoxLayout(izquierda)
+        caja.setContentsMargins(0, 0, 0, 0)
+        caja.setSpacing(6)
+        caja.addWidget(self._current)
+        caja.addWidget(self._total)
+        caja.addStretch(1)
 
-    def _button(self, text: str, tip: str) -> QPushButton:
-        button = QPushButton(text)
-        button.setToolTip(tip)
-        button.setStyleSheet(BUTTON_STYLE)
-        button.setFocusPolicy(Qt.NoFocus)
-        return button
+        centro = QWidget()
+        caja = QHBoxLayout(centro)
+        caja.setContentsMargins(0, 0, 0, 0)
+        caja.setSpacing(6)
+        for widget in (back, start, self._play, end, forward):
+            caja.addWidget(widget)
+
+        derecha = QWidget()
+        caja = QHBoxLayout(derecha)
+        caja.setContentsMargins(0, 0, 0, 0)
+        caja.setSpacing(4)
+        caja.addStretch(1)
+        caja.addWidget(self._loop)
+        caja.addWidget(self._speed)
+        caja.addWidget(self._mute)
+        caja.addWidget(self._volume)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(4, 6, 4, 2)
+        layout.setSpacing(8)
+        layout.addWidget(izquierda, 1)
+        layout.addWidget(centro, 0)
+        layout.addWidget(derecha, 1)
 
     # --- estado que refleja, no controla ----------------------------------
 
@@ -147,7 +137,7 @@ class TransportBar(QWidget):
             self._total.setText(f"/ {total}")
 
     def set_playing(self, playing: bool) -> None:
-        self._play.setText("❚❚" if playing else "▶")
+        self._play.set_icon("pausa" if playing else "play")
 
     def set_speed(self, speed: float) -> None:
         """Para cuando la velocidad cambia por teclado y hay que reflejarla."""
@@ -162,7 +152,7 @@ class TransportBar(QWidget):
         self._loop.blockSignals(False)
 
     def _toggle_mute(self, silenciado: bool) -> None:
-        self._mute.setText("🔇" if silenciado else "🔊")
+        self._mute.set_icon("silencio" if silenciado else "volumen")
         self._volume.setEnabled(not silenciado)
         self.volume_changed.emit(0.0 if silenciado else self._volume.value() / 100.0)
 

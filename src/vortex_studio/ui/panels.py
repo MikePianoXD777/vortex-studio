@@ -77,33 +77,54 @@ from vortex_studio.model.color import (
 from vortex_studio.model import timeremap
 from vortex_studio.model.color import INPUT_SPACES, SPACE_NONE, SPACE_OCIO
 from vortex_studio.model.mask import NONE as MASK_NONE
-from vortex_studio.model.project import SAMPLE_NEAREST, SAMPLINGS
+from vortex_studio.model.project import (
+    KEEP_PITCH,
+    MUTE_AUDIO,
+    SAMPLE_NEAREST,
+    SAMPLINGS,
+    SHIFT_PITCH,
+)
 from vortex_studio.model.transform import CORNERS, TILT
+from vortex_studio.ui import theme
 from vortex_studio.ui.widgets import (
     Collapsible,
     CurveView,
+    PillTabs,
+    SwitchRow,
+    style_dock,
     SliderRow,
     column,
     section,
 )
 
-PANEL_STYLE = """
-QWidget { background: #1b1d21; color: #d6dae0; }
-QPushButton {
-    background: #2b2f34; border: 1px solid #3a3f46; border-radius: 4px;
-    padding: 5px 10px; color: #d6dae0;
-}
-QPushButton:hover { background: #353a41; }
-QPushButton:disabled { color: #5a6068; background: #232629; }
-QComboBox, QPlainTextEdit, QDoubleSpinBox, QListWidget {
-    background: #24282d; border: 1px solid #363b42; border-radius: 4px;
-    padding: 4px; color: #d6dae0;
-}
-QComboBox QAbstractItemView {
-    background: #24282d; selection-background-color: #3d6fa8; border: 1px solid #363b42;
-}
-QListWidget::item:selected { background: #3d6fa8; color: #ffffff; }
-QCheckBox { color: #b6bcc4; font-size: 11px; spacing: 6px; }
+PANEL_STYLE = f"""
+QWidget {{ background: {theme.TARJETA}; color: {theme.TEXTO}; font-size: 12px; }}
+QLabel {{ background: transparent; }}
+QPushButton {{
+    background: {theme.CAMPO}; border: 1px solid {theme.BORDE}; border-radius: 8px;
+    padding: 6px 10px; color: {theme.TEXTO};
+}}
+QPushButton:hover {{ background: {theme.PILDORA}; }}
+QPushButton:disabled {{ color: {theme.APAGADO}; background: {theme.TARJETA}; }}
+QComboBox, QPlainTextEdit, QDoubleSpinBox, QListWidget, QLineEdit, QFontComboBox {{
+    background: {theme.CAMPO}; border: 1px solid {theme.BORDE}; border-radius: 8px;
+    padding: 6px 10px; color: {theme.TEXTO};
+}}
+QComboBox:hover {{ border-color: {theme.BORDE_FUERTE}; }}
+QComboBox:disabled, QDoubleSpinBox:disabled {{ color: {theme.APAGADO}; }}
+QComboBox::drop-down {{ border: none; width: 22px; background: transparent; }}
+QComboBox::down-arrow {{ {theme.ARROW_RULE} }}
+QComboBox QAbstractItemView {{
+    background: {theme.CAMPO}; selection-background-color: {theme.PILDORA};
+    border: 1px solid {theme.BORDE_FUERTE}; outline: none;
+}}
+QListWidget::item:selected {{ background: {theme.PILDORA}; color: {theme.TEXTO}; }}
+QCheckBox {{ color: {theme.TENUE}; font-size: 12px; spacing: 7px; background: transparent; }}
+QCheckBox::indicator {{
+    width: 14px; height: 14px; border-radius: 4px;
+    border: 1px solid {theme.BORDE_FUERTE}; background: {theme.CAMPO};
+}}
+QCheckBox::indicator:checked {{ background: {theme.ACENTO}; border-color: {theme.ACENTO}; }}
 """
 
 
@@ -130,6 +151,19 @@ class Page(QWidget):
         area.setFrameShape(QScrollArea.NoFrame)
         area.setWidget(widget)
         self._layout.addWidget(area)
+
+    def _set_footer(self, widget: QWidget) -> None:
+        """Un pie fijo bajo la página, separado por una línea, como en el diseño."""
+        pie = QWidget()
+        caja = QVBoxLayout(pie)
+        caja.setContentsMargins(14, 0, 14, 4)
+        caja.setSpacing(8)
+        linea = QWidget()
+        linea.setFixedHeight(1)
+        linea.setStyleSheet(f"background:{theme.BORDE};")
+        caja.addWidget(linea)
+        caja.addWidget(widget)
+        self._layout.addWidget(pie)
 
 
 class ColorPanel(Page):
@@ -847,13 +881,14 @@ class ClipPanel(Page):
 
         self._name = QLabel("Nada seleccionado")
         self._name.setWordWrap(True)
-        self._name.setStyleSheet("color:#7d838c; font-size:10px;")
+        self._name.setStyleSheet(f"color:{theme.MUY_TENUE}; font-size:11px;")
 
-        self._fade_in = SliderRow("Entrada", 0, 300, 0)      # décimas de segundo
-        self._fade_out = SliderRow("Salida", 0, 300, 0)
-        self._dissolve = SliderRow("Transición", 0, 300, 0)
+        # décimas de segundo, que se ven como segundos
+        self._fade_in = SliderRow("Entrada", 0, 300, 0, scale=10, decimals=1)
+        self._fade_out = SliderRow("Salida", 0, 300, 0, scale=10, decimals=1)
+        self._dissolve = SliderRow("Duración", 0, 300, 0, scale=10, decimals=1)
         self._speed = SliderRow("Velocidad", int(SPEED_MIN * 100), int(SPEED_MAX * 100),
-                                100)   # porcentaje
+                                100, scale=100, decimals=2, suffix="×")   # porcentaje
         self._gain = SliderRow("Volumen", 0, 400, 100)
 
         for row in (self._fade_in, self._fade_out, self._dissolve,
@@ -870,10 +905,20 @@ class ClipPanel(Page):
                                     "pasan por ese color")
         self._transition.currentTextChanged.connect(self._transition_changed)
 
+        # La lista de tres modos sigue siendo la que manda; se ve como dos
+        # interruptores, que es como se piensa: ¿mantengo el tono?, ¿lo callo?
         self._audio_mode = QComboBox()
         self._audio_mode.addItems(AUDIO_MODES)
         self._audio_mode.setToolTip("Qué pasa con el sonido cuando el clip no va a 100 %")
         self._audio_mode.currentTextChanged.connect(self._audio_mode_changed)
+        self._audio_mode.hide()
+
+        self._keep_pitch = SwitchRow("Mantener tono")
+        self._keep_pitch.setToolTip("Encendido, la voz se oye natural a cualquier velocidad; "
+                                    "apagado, se oye más aguda si va rápido, como una cinta")
+        self._keep_pitch.toggled.connect(self._switches_changed)
+        self._mute_audio = SwitchRow("Silenciar audio")
+        self._mute_audio.toggled.connect(self._switches_changed)
 
         self._interp = QComboBox()
         self._interp.addItems(SAMPLINGS)
@@ -881,21 +926,47 @@ class ClipPanel(Page):
                                 "o inventar el de en medio siguiendo el movimiento (lento: "
                                 "renderiza la zona con Enter)")
         self._interp.currentTextChanged.connect(self._interp_changed)
+        interp_label = QLabel("Cuadros intermedios")
+        interp_label.setStyleSheet(f"color:{theme.TENUE}; font-size:12px; padding-top:4px;")
 
         self._info = QLabel("")
         self._info.setWordWrap(True)
-        self._info.setStyleSheet("color:#6f757e; font-size:10px;")
+        self._info.setStyleSheet(
+            f"color:{theme.MUY_TENUE}; font-family:{theme.MONO}; font-size:11px;")
 
         self._set_content(column(
             self._name,
-            section("Fundidos (segundos)"), self._fade_in, self._fade_out,
-            section("Transición con el anterior"), self._transition, self._dissolve,
-            section("Tiempo"), self._speed, self._audio_mode, self._interp,
+            section("Fundidos"), self._fade_in, self._fade_out,
+            section("Transición"), self._transition, self._dissolve,
+            section("Tiempo"), self._speed, self._keep_pitch, self._mute_audio,
+            self._audio_mode, interp_label, self._interp,
             section("Audio"), self._gain,
-            self._info,
             None,
+            spacing=6, margins=(14, 2, 14, 12),
         ))
+        self._set_footer(self._info)
         self.set_target(None, False)
+
+    def _sync_switches(self) -> None:
+        modo = self._audio_mode.currentText()
+        for fila, valor in ((self._keep_pitch, modo == KEEP_PITCH),
+                            (self._mute_audio, modo == MUTE_AUDIO)):
+            fila.switch.blockSignals(True)
+            fila.setChecked(valor)
+            fila.switch.blockSignals(False)
+        self._keep_pitch.setEnabled(self._audio_mode.isEnabled() and modo != MUTE_AUDIO)
+        self._mute_audio.setEnabled(self._audio_mode.isEnabled())
+
+    def _switches_changed(self, *_args) -> None:
+        if self._mute_audio.isChecked():
+            modo = MUTE_AUDIO
+        elif self._audio_mode.currentText() == MUTE_AUDIO:
+            # Al volver a prender el sonido, que regrese con el tono natural.
+            modo = KEEP_PITCH
+        else:
+            modo = KEEP_PITCH if self._keep_pitch.isChecked() else SHIFT_PITCH
+        self._audio_mode.setCurrentText(modo)
+        self._sync_switches()
 
     # --- estado -----------------------------------------------------------
 
@@ -932,6 +1003,7 @@ class ClipPanel(Page):
         else:
             self._info.setText("")
 
+        self._sync_switches()
         self._loading = False
 
     def _describe(self) -> None:
@@ -974,6 +1046,7 @@ class ClipPanel(Page):
         if self._loading or self._item is None or not hasattr(self._item, "audio_mode"):
             return
         self._item.audio_mode = nombre
+        self._sync_switches()
         self.committed.emit(f"Audio: {nombre.lower()}")
 
     def _commit_heavy(self) -> None:
@@ -1859,27 +1932,18 @@ class EffectsPanel(Page):
         self.changed.emit()
 
 
-TAB_STYLE = """
-QTabWidget::pane { border: none; background: #1b1d21; }
-QTabBar { background: #16181c; qproperty-drawBase: 0; }
-QTabBar::tab {
-    background: transparent; color: #808790; padding: 9px 14px 7px 14px;
-    border: none; border-bottom: 2px solid transparent;
-    font-size: 11px; min-width: 42px;
-}
-QTabBar::tab:hover { color: #c3c9d1; }
-QTabBar::tab:selected { color: #f0f3f6; border-bottom: 2px solid #e0574a; }
-QTabBar::tab:disabled { color: #464b52; }
-QScrollArea { border: none; background: #1b1d21; }
-QScrollBar:vertical {
+TAB_STYLE = f"""
+QTabWidget::pane {{ border: none; background: {theme.TARJETA}; }}
+QScrollArea {{ border: none; background: {theme.TARJETA}; }}
+QScrollBar:vertical {{
     background: transparent; width: 9px; margin: 2px;
-}
-QScrollBar::handle:vertical {
-    background: #3a3f46; border-radius: 4px; min-height: 24px;
-}
-QScrollBar::handle:vertical:hover { background: #4a5058; }
-QScrollBar::add-line, QScrollBar::sub-line { height: 0; }
-QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
+}}
+QScrollBar::handle:vertical {{
+    background: {theme.BORDE}; border-radius: 4px; min-height: 24px;
+}}
+QScrollBar::handle:vertical:hover {{ background: {theme.APAGADO}; }}
+QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; }}
+QScrollBar::add-page, QScrollBar::sub-page {{ background: transparent; }}
 """
 
 
@@ -1893,7 +1957,7 @@ class PropertiesPanel(QDockWidget):
 
     def __init__(self) -> None:
         super().__init__("Propiedades")
-        self.setStyleSheet(PANEL_STYLE)
+        self.setObjectName("propiedades")
         self.setAllowedAreas(Qt.RightDockWidgetArea | Qt.LeftDockWidgetArea)
         self.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable)
 
@@ -1909,15 +1973,25 @@ class PropertiesPanel(QDockWidget):
         self._tabs = QTabWidget()
         self._tabs.setStyleSheet(TAB_STYLE)
         self._tabs.setDocumentMode(True)
-        self._tabs.setUsesScrollButtons(False)
 
-        iconos = {"Transformar": "⤢", "Color": "◐", "Máscara": "⬭", "Efectos": "✦",
-                  "Clip": "▮", "Audio": "♪", "Texto": "T", "Imagen": "▣"}
-        for pagina in (self.transform, self.color, self.mask, self.effects, self.clip,
+        # Clip va primero, como en el diseño: es lo que se toca con cualquier
+        # cosa seleccionada.
+        for pagina in (self.clip, self.transform, self.color, self.mask, self.effects,
                        self.audio, self.text, self.image):
-            self._tabs.addTab(pagina, f"{iconos.get(pagina.TITULO, '')}  {pagina.TITULO}")
+            self._tabs.addTab(pagina, pagina.TITULO)
 
-        self.setWidget(self._tabs)
+        self.pills = PillTabs(self._tabs)
+        cuerpo = QWidget()
+        cuerpo.setStyleSheet(PANEL_STYLE)
+        capas = QVBoxLayout(cuerpo)
+        # Abajo se deja el radio de la tarjeta libre para que el contenido no
+        # tape las esquinas redondeadas.
+        capas.setContentsMargins(1, 0, 1, 10)
+        capas.setSpacing(0)
+        capas.addWidget(self.pills)
+        capas.addWidget(self._tabs, 1)
+        self.setWidget(cuerpo)
+        style_dock(self)
 
     def show_page(self, pagina: QWidget) -> None:
         indice = self._tabs.indexOf(pagina)
@@ -1936,3 +2010,4 @@ class PropertiesPanel(QDockWidget):
         indice = self._tabs.indexOf(pagina)
         if indice >= 0:
             self._tabs.setTabEnabled(indice, activa)
+            self.pills.sync()

@@ -93,7 +93,9 @@ def test_rellenar_crecido_no_se_sale_del_cuadro_en_el_preview(ventana, media):
     dentro = QColor(imagen.pixel(int(objetivo.center().x()), 200)).lightness()
     fuera = QColor(imagen.pixel(int(objetivo.left()) - 20, 200)).lightness()
     assert dentro > 100, "el cuadro no se pintó"
-    assert fuera < 10, "el material rellenado se salió sobre la franja"
+    # Fuera del cuadro va el fondo de la tarjeta, casi negro; el gris del
+    # material tiene brillo de ~128.
+    assert fuera < 30, "el material rellenado se salió sobre la franja"
 
 
 # --- el modelo ------------------------------------------------------------

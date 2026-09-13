@@ -3,16 +3,21 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QImage, QPainter
+from PySide6.QtGui import QColor, QImage, QPainter, QPainterPath
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from vortex_studio.media import Frame
 from vortex_studio.model import ImageOverlay, Title
+from vortex_studio.ui import theme
 from vortex_studio.ui.compositor import compose, draw_layers, draw_overlay, draw_title
 
-BG = QColor("#101113")
+# Dentro del editor el monitor es parte de su tarjeta: alrededor del cuadro va
+# el color de la tarjeta y el cuadro lleva esquinas redondeadas. En pantalla
+# completa todo es negro.
+BG = QColor(theme.TARJETA)
 LETTERBOX = QColor("#000000")
-HINT = QColor("#6c727b")
+HINT = QColor(theme.MUY_TENUE)
+RADIO = 10
 
 
 class PreviewWidget(QWidget):
@@ -94,7 +99,8 @@ class PreviewWidget(QWidget):
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
-        painter.fillRect(self.rect(), BG)
+        fondo = LETTERBOX if self.isWindow() else BG
+        painter.fillRect(self.rect(), fondo)
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setRenderHint(QPainter.TextAntialiasing)
         painter.setRenderHint(QPainter.SmoothPixmapTransform)
@@ -107,7 +113,7 @@ class PreviewWidget(QWidget):
 
         if self._layers:
             target = self._fit(self._aspect)
-            painter.fillRect(self.rect(), LETTERBOX)
+            painter.fillRect(target, LETTERBOX)
             if any(len(c) > 7 and c[7] is not None for c in self._layers):
                 # Una capa de ajuste corrige lo ya pintado, y eso solo se puede
                 # sobre una imagen: se compone al tamaño en pantalla y se pinta.
@@ -120,7 +126,6 @@ class PreviewWidget(QWidget):
             # Sin video de fondo el lienzo es negro, pero el texto y las
             # imágenes se siguen viendo: así se puede armar una portada.
             target = self._fit(self._aspect)
-            painter.fillRect(self.rect(), LETTERBOX)
             painter.fillRect(target, QColor("#000000"))
 
         t = self._time
@@ -131,11 +136,20 @@ class PreviewWidget(QWidget):
             draw_title(painter, target, title,
                        title.fade_at(t) if t is not None else 1.0, t)
 
+        if not self.isWindow():
+            # Las esquinas se tapan después de pintar todo: recortar antes
+            # chocaría con los recortes que ya usa el compositor.
+            esquinas = QPainterPath()
+            esquinas.addRect(target)
+            redondo = QPainterPath()
+            redondo.addRoundedRect(target, RADIO, RADIO)
+            painter.fillPath(esquinas.subtracted(redondo), fondo)
+
         painter.end()
 
     def _fit(self, aspect: float) -> QRectF:
         """El rectángulo más grande con esa relación de aspecto que cabe."""
-        w, h = self.width(), self.height()
+        w, h = self.width(), max(1, self.height())
         if w / h > aspect:
             fit_w, fit_h = h * aspect, float(h)
         else:

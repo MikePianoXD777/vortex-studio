@@ -31,7 +31,9 @@ from vortex_studio.model import animate
 from vortex_studio.model.commands import link_offset, overwrite
 from vortex_studio.model.commands import slip as slip_clip
 from vortex_studio.model.project import DIP_BLACK, DIP_WHITE
+from vortex_studio.ui import theme
 from vortex_studio.ui.waveforms import WaveformCache
+from vortex_studio.ui.widgets import draw_icon
 
 MEDIA_MIME = "application/x-vortex-media"
 
@@ -47,26 +49,38 @@ TOOL_SELECT = "seleccion"
 TOOL_RAZOR = "navaja"
 TOOL_SLIP = "deslizar"
 
-BG = QColor("#1b1d21")
-RULER_BG = QColor("#232629")
-TRACK_BG = QColor("#212429")
-TRACK_BG_TARGET = QColor("#262b32")
-CLIP_VIDEO = QColor("#3d6fa8")
-CLIP_AUDIO = QColor("#3f7d5c")
-CLIP_TEXT = QColor("#a8763d")
-CLIP_IMAGE = QColor("#7a5aa8")
-CLIP_ADJUST = QColor("#7f8a3a")
-CLIP_NESTED = QColor("#357f82")
+# Colores del diseño de la beta: fondo de tarjeta, pistas apenas marcadas y
+# clips oscuros con borde y letra del mismo tono, uno por clase de cosa.
+BG = QColor(theme.TARJETA)
+RULER_BG = QColor(theme.TARJETA)
+RULER_TICK = QColor(theme.BORDE_FUERTE)
+TRACK_BG = QColor("#141417")
+TRACK_BG_TARGET = QColor("#1c1c21")
+CLIP_VIDEO = QColor("#1b2242")
+CLIP_AUDIO = QColor("#13261a")
+CLIP_TEXT = QColor("#2b2316")
+CLIP_IMAGE = QColor("#261b35")
+CLIP_ADJUST = QColor("#23261a")
+CLIP_NESTED = QColor("#132a2c")
 CLIP_BORDER = QColor("#0f1113")
+# (borde, letra) de cada color de clip
+CLIP_TINTS = {
+    CLIP_VIDEO.name(): (QColor("#36437a"), QColor("#c9d3f2")),
+    CLIP_AUDIO.name(): (QColor("#2a4d34"), QColor("#a9d6b5")),
+    CLIP_TEXT.name(): (QColor("#8a6a30"), QColor("#ecca8c")),
+    CLIP_IMAGE.name(): (QColor("#53407a"), QColor("#d7c6f0")),
+    CLIP_ADJUST.name(): (QColor("#5b6632"), QColor("#dbe0a8")),
+    CLIP_NESTED.name(): (QColor("#2f6063"), QColor("#a9dddd")),
+}
 SELECTED = QColor("#ffffff")
-TEXT = QColor("#c8ccd2")
-DIM_TEXT = QColor("#7d838c")
-PLAYHEAD = QColor("#e0574a")
+TEXT = QColor(theme.TEXTO)
+DIM_TEXT = QColor(theme.MUY_TENUE)
+PLAYHEAD = QColor(theme.PLAYHEAD)
 RANGE_FILL = QColor(61, 111, 168, 46)
 RANGE_EDGE = QColor("#5f9bd8")
 OUTSIDE = QColor(10, 11, 13, 96)
 SNAP_LINE = QColor("#e8c15a")
-WAVE = QColor(190, 235, 210, 190)
+WAVE = QColor("#3f8a56")
 FADE = QColor(12, 14, 16, 170)
 FADE_EDGE = QColor(235, 238, 242, 130)
 SPEED_TAG = QColor("#f0d68a")
@@ -119,6 +133,18 @@ def _color_for(track, clip) -> QColor:
     return CLIP_AUDIO if track.kind == "audio" else CLIP_VIDEO
 
 
+def _tints(color: QColor) -> tuple[QColor, QColor]:
+    """El borde y la letra que van con el color de un clip."""
+    return CLIP_TINTS.get(color.name(), (color.lighter(170), TEXT))
+
+
+def _mono(pixels: int) -> QFont:
+    fuente = QFont()
+    fuente.setFamilies(theme.MONO_FAMILIAS)
+    fuente.setPixelSize(pixels)
+    return fuente
+
+
 class TimelineWidget(QWidget):
     """Muestra la secuencia y deja editarla."""
 
@@ -148,6 +174,10 @@ class TimelineWidget(QWidget):
         # Alt+clic selecciona un lado del enlace sin el otro, como en
         # Premiere: para mover el audio suelto sin desenlazar.
         self.ignore_link = False
+        # Los interruptores de Imán y Enlace de la fila de herramientas.
+        # Apagar el enlace es como tener Alt apretado en cada clic.
+        self.snapping = True
+        self.linked_selection = True
 
         self._scrubbing = False
         self._drag: dict | None = None
@@ -218,14 +248,14 @@ class TimelineWidget(QWidget):
     def selected_items(self, with_links: bool = True) -> list:
         """Todo lo seleccionado; con sus enlazados salvo que fue Alt+clic."""
         base = [x for x in [self.selected, *self.extra] if x is not None]
-        if with_links and not self.ignore_link:
+        if with_links and not self.ignore_link and self.linked_selection:
             return self.sequence.with_linked(base)
         return base
 
     def _is_selected(self, item) -> tuple[bool, bool]:
         """(seleccionado directo, seleccionado por enlace)."""
         directo = item is self.selected or any(item is x for x in self.extra)
-        if directo or self.ignore_link:
+        if directo or self.ignore_link or not self.linked_selection:
             return directo, False
         return False, any(item is x for x in self.selected_items())
 
@@ -280,18 +310,30 @@ class TimelineWidget(QWidget):
 
     def _draw_ruler(self, painter: QPainter) -> None:
         painter.fillRect(0, 0, self.width(), RULER_HEIGHT, RULER_BG)
-        painter.setFont(QFont("", 7))
+        painter.setFont(_mono(9))
 
         step = self._ruler_step()
         t = 0.0
         while self.x_for(t) < self.width():
             x = self.x_for(t)
-            painter.setPen(QPen(DIM_TEXT, 1))
-            painter.drawLine(QPointF(x, RULER_HEIGHT - 7), QPointF(x, RULER_HEIGHT))
-            painter.setPen(TEXT)
-            painter.drawText(QPointF(x + 3, RULER_HEIGHT - 9), timecode(t, self.sequence.fps))
+            painter.setPen(QPen(RULER_TICK, 1))
+            painter.drawLine(QPointF(x, RULER_HEIGHT - 14), QPointF(x, RULER_HEIGHT - 3))
+            painter.setPen(DIM_TEXT)
+            painter.drawText(QPointF(x + 4, RULER_HEIGHT - 9), self._ruler_label(t, step))
             t += step
         self._draw_render_bar(painter)
+
+    @staticmethod
+    def _ruler_label(t: float, step: float) -> str:
+        """«00:04» en la regla; el código de tiempo completo ya está en el monitor."""
+        centesimas = int(round(t * 100))
+        horas, resto = divmod(centesimas, 360000)
+        minutos, resto = divmod(resto, 6000)
+        segundos = resto / 100
+        base = f"{horas}:{minutos:02d}" if horas else f"{minutos:02d}"
+        if step < 1:
+            return f"{base}:{segundos:04.1f}"
+        return f"{base}:{int(segundos):02d}"
 
     def _draw_render_bar(self, painter: QPainter) -> None:
         """La barra de Premiere: verde renderizado, rojo pesado, amarillo ligero."""
@@ -347,7 +389,7 @@ class TimelineWidget(QWidget):
     def _ruler_step(self) -> float:
         """Separación entre marcas, para que no se encimen al alejar el zoom."""
         for step in (0.5, 1, 2, 5, 10, 30, 60, 300):
-            if step * self.pixels_per_second >= 72:
+            if step * self.pixels_per_second >= 110:
                 return float(step)
         return 600.0
 
@@ -359,8 +401,10 @@ class TimelineWidget(QWidget):
 
             # Al arrastrar, las pistas donde sí cabe lo que traes se aclaran.
             highlight = dragging is not None and isinstance(dragging, ACCEPTS.get(track.kind, ()))
-            painter.fillRect(QRectF(0, y, self.width(), TRACK_HEIGHT),
-                             TRACK_BG_TARGET if highlight else TRACK_BG)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(TRACK_BG_TARGET if highlight else TRACK_BG)
+            painter.drawRoundedRect(QRectF(HEADER_WIDTH - 2, y, self.width() - HEADER_WIDTH,
+                                           TRACK_HEIGHT), 6, 6)
 
             self._draw_header(painter, index, track, y)
 
@@ -400,19 +444,32 @@ class TimelineWidget(QWidget):
         return salida
 
     def _draw_header(self, painter: QPainter, index: int, track, y: float) -> None:
-        painter.setPen(DIM_TEXT if track.enabled else QColor("#4d535b"))
-        painter.setFont(QFont("", 8, QFont.Bold))
-        painter.drawText(QRectF(6, y, 34, TRACK_HEIGHT),
+        """Cabecera mínima: el nombre con su puntito y los botones sin caja.
+
+        Los botones se ven tenues mientras están en su estado normal y toman
+        color solo cuando algo está fuera de lo normal (oculta, bloqueada, en
+        silencio o en solo), que es lo único que hay que notar de un vistazo.
+        """
+        painter.setFont(_mono(10))
+        painter.setPen(DIM_TEXT if track.enabled else QColor(theme.APAGADO))
+        painter.drawText(QRectF(12, y, 30, TRACK_HEIGHT),
                          Qt.AlignLeft | Qt.AlignVCenter, track.name)
+        ancho = painter.fontMetrics().horizontalAdvance(track.name)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(theme.APAGADO))
+        painter.drawEllipse(QPointF(12 + ancho + 8, y + TRACK_HEIGHT / 2), 1.7, 1.7)
 
         for nombre, rect in self.header_buttons(index):
             valor = getattr(track, nombre)
             # "enabled" se prende al revés que los demás: encendido es lo normal.
             resaltado = (not valor) if nombre == "enabled" else valor
-            painter.setPen(QPen(QColor("#3a3f46"), 1))
-            painter.setBrush(BUTTON_ON[nombre].darker(160) if resaltado else BUTTON_BG)
-            painter.drawRoundedRect(rect, 3, 3)
-            color = BUTTON_ON[nombre] if resaltado else QColor("#8a9099")
+            if resaltado:
+                fondo = QColor(BUTTON_ON[nombre])
+                fondo.setAlpha(38)
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(fondo)
+                painter.drawRoundedRect(rect, 4, 4)
+            color = BUTTON_ON[nombre] if resaltado else QColor(theme.APAGADO)
             self._draw_button_icon(painter, nombre, rect, color, valor)
 
     @staticmethod
@@ -445,16 +502,20 @@ class TimelineWidget(QWidget):
 
     def _draw_clip(self, painter: QPainter, clip, y: float, color: QColor,
                    track_kind: str = "video") -> None:
-        rect = QRectF(self.x_for(clip.start), y + 2,
-                      clip.duration * self.pixels_per_second, TRACK_HEIGHT - 4)
+        rect = QRectF(self.x_for(clip.start), y + 3,
+                      clip.duration * self.pixels_per_second, TRACK_HEIGHT - 6)
         if rect.right() < HEADER_WIDTH or rect.left() > self.width():
             return
 
         chosen, por_enlace = self._is_selected(clip)
-        borde = SELECTED if chosen else (LINKED_SELECTED if por_enlace else CLIP_BORDER)
-        painter.setPen(QPen(borde, 2 if chosen or por_enlace else 1))
-        painter.setBrush(color.lighter(115) if chosen or por_enlace else color)
-        painter.drawRoundedRect(rect, 3, 3)
+        borde, tinta = _tints(color)
+        if chosen:
+            borde = SELECTED
+        elif por_enlace:
+            borde = LINKED_SELECTED
+        painter.setPen(QPen(borde, 1.5 if chosen or por_enlace else 1))
+        painter.setBrush(color.lighter(135) if chosen or por_enlace else color)
+        painter.drawRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), 6, 6)
 
         if track_kind == "audio" and rect.width() > 8:
             self._draw_wave(painter, clip, rect)
@@ -465,14 +526,21 @@ class TimelineWidget(QWidget):
         self._draw_clip_markers(painter, clip, rect)
 
         if rect.width() > 34:
-            painter.setPen(QColor("#eef1f4"))
-            fuente = QFont("", 8)
-            # Enlazado se ve subrayado, como en Premiere: se nota sin ocupar
-            # lugar y sin un ícono más.
-            fuente.setUnderline(bool(getattr(clip, "link", "")))
+            painter.setPen(tinta)
+            fuente = QFont()
+            fuente.setPixelSize(11)
             painter.setFont(fuente)
-            painter.drawText(rect.adjusted(6, 0, -6, 0),
-                             Qt.AlignLeft | Qt.AlignVCenter, clip.name)
+            letrero = rect.adjusted(10, 0, -8, 0)
+            painter.drawText(letrero, Qt.AlignLeft | Qt.AlignVCenter, clip.name)
+            # Enlazado lleva un eslabón junto al nombre: se nota sin ocupar
+            # lugar, igual que el subrayado de antes pero sin ensuciar la letra.
+            if getattr(clip, "link", "") and rect.width() > 70:
+                ancho = min(painter.fontMetrics().horizontalAdvance(clip.name), letrero.width())
+                caja = QRectF(letrero.left() + ancho + 6, rect.center().y() - 5, 10, 10)
+                if caja.right() < rect.right() - 6:
+                    eslabon = QColor(tinta)
+                    eslabon.setAlpha(140)
+                    draw_icon(painter, "enlace", caja, eslabon)
 
         desfase = link_offset(self.sequence, clip)
         if abs(desfase) > 1e-6 and rect.width() > 40:
@@ -658,19 +726,26 @@ class TimelineWidget(QWidget):
         cubos_por_pixel = velocidad * PEAKS_PER_SECOND / self.pixels_per_second
         total = data.shape[1]
 
-        painter.setPen(QPen(WAVE, 1))
-        for x in range(int(visible.left()), int(visible.right())):
+        # Barras de 3 px cada 5 px, como en el diseño. Cada barra toma el pico
+        # de todos los cubos de sus 5 pixeles, por la misma razón de arriba.
+        paso = 5
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(WAVE)
+        x = rect.left() + int((visible.left() - rect.left()) // paso) * paso
+        while x < visible.right():
             # De pixel a tiempo del clip, y de ahí a tiempo del archivo.
             dentro = (x - rect.left()) / self.pixels_per_second
             desde = int((entrada + dentro * velocidad) * PEAKS_PER_SECOND)
-            hasta = max(desde + 1, int(desde + cubos_por_pixel))
-            if desde >= total or hasta <= 0:
-                continue
+            hasta = max(desde + 1, int(desde + cubos_por_pixel * paso))
             desde, hasta = max(0, desde), min(total, hasta)
-            bajo = float(data[0, desde:hasta].min())
-            alto = float(data[1, desde:hasta].max())
-            painter.drawLine(QPointF(x, middle - alto * half),
-                             QPointF(x, middle - bajo * half))
+            if hasta > desde:
+                bajo = float(data[0, desde:hasta].min())
+                alto = float(data[1, desde:hasta].max())
+                pico = max(abs(bajo), abs(alto))
+                medio_alto = max(1.0, pico * half)
+                painter.drawRoundedRect(QRectF(x + 1, middle - medio_alto, 3, medio_alto * 2),
+                                        1, 1)
+            x += paso
 
     def _wave_for(self, source):
         return self.waves.get(source)
@@ -715,11 +790,11 @@ class TimelineWidget(QWidget):
             return
 
         painter.setPen(QPen(PLAYHEAD, 1))
-        painter.drawLine(QPointF(x, 0), QPointF(x, self.height()))
+        painter.drawLine(QPointF(x, 4), QPointF(x, self.height()))
 
         painter.setPen(Qt.NoPen)
         painter.setBrush(PLAYHEAD)
-        painter.drawRect(QRectF(x - 5, 0, 10, 9))
+        painter.drawRoundedRect(QRectF(x - 4.5, 1, 9, 9), 2, 2)
 
     # --- imantado ---------------------------------------------------------
 
@@ -733,6 +808,9 @@ class TimelineWidget(QWidget):
         Sin esto es imposible pegar dos clips sin dejar un hueco de un par
         de milisegundos, que luego se ve como un parpadeo negro.
         """
+        if not self.snapping:
+            self._snap_at = None
+            return self.sequence.snap_to_frame(t)
         candidates = [0.0, self.playhead]
         candidates += [m.time for m in self.sequence.markers]
         for track in self.sequence.tracks:

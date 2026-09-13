@@ -6,6 +6,10 @@ el mismo video sin volver a buscarlo en el disco. Aquí vive todo lo que el
 proyecto conoce —el caché de sondeos del proyecto—, con su miniatura, y de
 aquí se arrastra al timeline o se agrega con doble clic en el playhead.
 
+Con el diseño de la beta se ve como biblioteca: pestañas Medios, Audio y
+Texto, tarjetas con la duración encima de la miniatura y una tarjeta punteada
+para importar al final de la cuadrícula.
+
 Las miniaturas se sacan en hilos del pool de Qt y se guardan en disco: el
 panel nunca decodifica.
 """
@@ -15,9 +19,21 @@ from __future__ import annotations
 import unicodedata
 from pathlib import Path
 
-from PySide6.QtCore import QMimeData, QObject, QRunnable, QSize, Qt, QThreadPool, Signal, Slot
-from PySide6.QtGui import QColor, QFont, QIcon, QImage, QPainter, QPixmap
+from PySide6.QtCore import (
+    QMimeData,
+    QObject,
+    QRect,
+    QRectF,
+    QRunnable,
+    QSize,
+    Qt,
+    QThreadPool,
+    Signal,
+    Slot,
+)
+from PySide6.QtGui import QColor, QFont, QIcon, QImage, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QComboBox,
     QDockWidget,
     QHBoxLayout,
@@ -27,19 +43,56 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QPushButton,
+    QStackedWidget,
+    QStyle,
+    QStyledItemDelegate,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
 from vortex_studio.media.thumbnails import extract, thumbnail_path
 from vortex_studio.model.media import AUDIO, IMAGE, VIDEO
+from vortex_studio.ui import theme
 from vortex_studio.ui.compositor import frame_to_image
 from vortex_studio.ui.timeline import MEDIA_MIME
+from vortex_studio.ui.widgets import FlowLayout, draw_icon, make_icon, style_dock
 
 ICON = QSize(128, 72)
+CARD = QSize(90, 54)           # la miniatura; dos por fila en un panel de 250 px
+GRID = QSize(CARD.width() + 8, CARD.height() + 30)
 KINDS = {"Todo": None, "Video": VIDEO, "Audio": AUDIO, "Imágenes": IMAGE}
 PATH_ROLE = Qt.UserRole
 KIND_ROLE = Qt.UserRole + 1
+DURATION_ROLE = Qt.UserRole + 2
+THUMB_ROLE = Qt.UserRole + 3
+
+# Las pestañas del diseño y el filtro de tipo que ponen.
+TAB_MEDIA, TAB_AUDIO, TAB_TEXT = 0, 1, 2
+TEXT_CARDS = ("Subtítulo", "Centro", "Arriba centro")    # posiciones de `ANCHORS`
+
+BIN_STYLE = f"""
+QLineEdit {{
+    background: {theme.CAMPO}; color: {theme.TEXTO}; border: 1px solid {theme.BORDE};
+    border-radius: 8px; padding: 6px 8px; font-size: 12px;
+}}
+QLineEdit:focus {{ border-color: {theme.BORDE_FUERTE}; }}
+QListWidget {{ background: transparent; border: none; outline: none; }}
+QPushButton {{
+    background: transparent; color: {theme.TENUE}; border: 1px solid {theme.BORDE};
+    border-radius: 7px; padding: 3px 10px; font-size: 11px;
+}}
+QPushButton:hover {{ color: {theme.TEXTO}; background: {theme.PILDORA_HOVER}; }}
+QPushButton:disabled {{ color: {theme.APAGADO}; }}
+"""
+
+TEXT_CARD_STYLE = f"""
+QToolButton {{
+    background: {theme.CAMPO}; color: {theme.TENUE}; border: 1px solid {theme.BORDE};
+    border-radius: 8px; font-size: 11px; padding: 6px;
+}}
+QToolButton:hover {{ color: {theme.TEXTO}; border-color: {theme.BORDE_FUERTE}; }}
+"""
 
 
 def _plain(texto: str) -> str:
@@ -53,12 +106,19 @@ def _duration(segundos: float) -> str:
     return f"{segundos // 60}:{segundos % 60:02d}"
 
 
+def _mono(pixels: int) -> QFont:
+    fuente = QFont()
+    fuente.setFamilies(theme.MONO_FAMILIAS)
+    fuente.setPixelSize(pixels)
+    return fuente
+
+
 def placeholder(kind: str) -> QPixmap:
     """El cuadro que se ve mientras llega la miniatura, o siempre en un audio."""
     pixmap = QPixmap(ICON)
-    pixmap.fill(QColor("#24282d"))
+    pixmap.fill(QColor(theme.CAMPO))
     painter = QPainter(pixmap)
-    painter.setPen(QColor("#6f9b84" if kind == AUDIO else "#5d636b"))
+    painter.setPen(QColor("#6f9b84" if kind == AUDIO else theme.MUY_TENUE))
     painter.setFont(QFont("", 22))
     painter.drawText(pixmap.rect(), Qt.AlignCenter,
                      {AUDIO: "♪", IMAGE: "▣"}.get(kind, "▶"))
@@ -100,8 +160,81 @@ class _Miniatura(QRunnable):
             pass        # el panel ya se cerró
 
 
+class _CardDelegate(QStyledItemDelegate):
+    """Dibuja cada medio como tarjeta: miniatura redondeada, duración y nombre."""
+
+    def sizeHint(self, option, index) -> QSize:
+        return GRID
+
+    def paint(self, painter: QPainter, option, index) -> None:
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform)
+
+        celda = option.rect
+        miniatura = QRectF(celda.x() + (celda.width() - CARD.width()) / 2, celda.y() + 4,
+                           CARD.width(), CARD.height())
+        forma = QPainterPath()
+        forma.addRoundedRect(miniatura, 8, 8)
+        painter.fillPath(forma, QColor(theme.CAMPO))
+
+        kind = index.data(KIND_ROLE)
+        icono = index.data(Qt.DecorationRole)
+        if index.data(THUMB_ROLE) and isinstance(icono, QIcon):
+            pixmap = icono.pixmap(ICON)
+            escalado = pixmap.scaled(miniatura.size().toSize(), Qt.KeepAspectRatioByExpanding,
+                                     Qt.SmoothTransformation)
+            origen = QRectF((escalado.width() - miniatura.width()) / 2,
+                            (escalado.height() - miniatura.height()) / 2,
+                            miniatura.width(), miniatura.height())
+            painter.setClipPath(forma)
+            painter.drawPixmap(miniatura, escalado, origen)
+            painter.setClipping(False)
+        else:
+            lado = 16
+            caja = QRectF(miniatura.center().x() - lado / 2, miniatura.center().y() - lado / 2,
+                          lado, lado)
+            draw_icon(painter, "volumen" if kind == AUDIO else "play", caja,
+                      QColor("#6f9b84" if kind == AUDIO else theme.TEXTO))
+
+        seleccionado = bool(option.state & QStyle.State_Selected)
+        painter.setBrush(Qt.NoBrush)
+        painter.setPen(QPen(QColor(theme.ACENTO if seleccionado else theme.BORDE),
+                            1.5 if seleccionado else 1))
+        painter.drawPath(forma)
+
+        duracion = index.data(DURATION_ROLE)
+        if duracion:
+            painter.setFont(_mono(9))
+            texto = _duration(duracion)
+            ancho = painter.fontMetrics().horizontalAdvance(texto) + 8
+            etiqueta = QRectF(miniatura.right() - ancho - 4, miniatura.bottom() - 17, ancho, 13)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(0, 0, 0, 150))
+            painter.drawRoundedRect(etiqueta, 4, 4)
+            painter.setPen(QColor(theme.TEXTO))
+            painter.drawText(etiqueta, Qt.AlignCenter, texto)
+
+        fuente = QFont()
+        fuente.setPixelSize(11)
+        painter.setFont(fuente)
+        nombre = QRectF(miniatura.left(), miniatura.bottom() + 4, miniatura.width(), 16)
+        texto = painter.fontMetrics().elidedText(index.data(Qt.DisplayRole) or "",
+                                                 Qt.ElideMiddle, int(nombre.width()))
+        painter.setPen(QColor(theme.TEXTO if seleccionado else theme.TENUE))
+        painter.drawText(nombre, Qt.AlignLeft | Qt.AlignVCenter, texto)
+        painter.restore()
+
+
 class _BinList(QListWidget):
-    """La lista de medios. Arrastrar lleva las rutas al timeline."""
+    """La lista de medios. Arrastrar lleva las rutas al timeline.
+
+    La tarjeta de importar no es un elemento de la lista: se dibuja en la
+    celda que sigue al último medio visible. Así `count()` sigue contando
+    solo lo importado, y buscar o filtrar no la esconde.
+    """
+
+    import_clicked = Signal()
 
     def mimeData(self, items):
         datos = QMimeData()
@@ -113,10 +246,55 @@ class _BinList(QListWidget):
     def mimeTypes(self):
         return [MEDIA_MIME]
 
+    def import_rect(self) -> QRect:
+        """Dónde va la tarjeta punteada, en coordenadas del viewport."""
+        visibles = [self.visualItemRect(self.item(i)) for i in range(self.count())
+                    if not self.item(i).isHidden()]
+        paso = self.gridSize()
+        if not visibles:
+            celda = QRect(0, 0, paso.width(), paso.height())
+        else:
+            ultima = visibles[-1]
+            celda = QRect(ultima.x() + paso.width(), ultima.y(), paso.width(), paso.height())
+            if celda.right() > self.viewport().width():
+                celda = QRect(visibles[0].x(), ultima.y() + paso.height(),
+                              paso.width(), paso.height())
+        return QRect(celda.x() + (celda.width() - CARD.width()) // 2, celda.y() + 4,
+                     CARD.width(), CARD.height())
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        painter = QPainter(self.viewport())
+        painter.setRenderHint(QPainter.Antialiasing)
+        caja = QRectF(self.import_rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        painter.setPen(QPen(QColor(theme.BORDE_FUERTE), 1, Qt.DashLine))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRoundedRect(caja, 8, 8)
+        lado = 14
+        draw_icon(painter, "mas", QRectF(caja.center().x() - lado / 2,
+                                         caja.center().y() - lado / 2, lado, lado),
+                  QColor(theme.TENUE))
+        fuente = QFont()
+        fuente.setPixelSize(11)
+        painter.setFont(fuente)
+        painter.setPen(QColor(theme.MUY_TENUE))
+        painter.drawText(QRectF(caja.left(), caja.bottom() + 4, caja.width(), 16),
+                         Qt.AlignLeft | Qt.AlignVCenter, "Importar")
+        painter.end()
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton and \
+                self.import_rect().contains(event.position().toPoint()):
+            self.import_clicked.emit()
+            return
+        super().mousePressEvent(event)
+
 
 class MediaBin(QDockWidget):
     import_requested = Signal()
     insert_requested = Signal(object)       # ruta
+    title_requested = Signal(str)           # posición del texto
+    subtitles_requested = Signal()
 
     def __init__(self) -> None:
         super().__init__("Medios")
@@ -132,54 +310,144 @@ class MediaBin(QDockWidget):
         self._pool = QThreadPool.globalInstance()
         self._proxies: set[Path] = set()
 
+        # --- pestañas ---
+        self.tabs = QWidget()
+        self.tabs.setStyleSheet(theme.PILL_STYLE)
+        fila = QHBoxLayout(self.tabs)
+        fila.setContentsMargins(0, 0, 0, 0)
+        fila.setSpacing(2)
+        self._tab_group = QButtonGroup(self)
+        for indice, texto in ((TAB_MEDIA, "Medios"), (TAB_AUDIO, "Audio"), (TAB_TEXT, "Texto")):
+            boton = QToolButton()
+            boton.setText(texto)
+            boton.setCheckable(True)
+            boton.setCursor(Qt.PointingHandCursor)
+            boton.setFocusPolicy(Qt.NoFocus)
+            self._tab_group.addButton(boton, indice)
+            fila.addWidget(boton)
+        fila.addStretch(1)
+        self._tab_group.button(TAB_MEDIA).setChecked(True)
+        self._tab_group.idClicked.connect(self._tab_chosen)
+
+        # --- medios ---
         self.search = QLineEdit()
-        self.search.setPlaceholderText("Buscar…")
+        self.search.setPlaceholderText("Buscar")
         self.search.setClearButtonEnabled(True)
+        self.search.addAction(make_icon("buscar", theme.MUY_TENUE, 14),
+                              QLineEdit.LeadingPosition)
         self.search.textChanged.connect(self._apply_filter)
 
+        # El filtro por tipo sigue existiendo, escondido: las pestañas lo
+        # mueven, y Video e Imágenes se pueden seguir pidiendo por código.
         self.kind = QComboBox()
         self.kind.addItems(KINDS)
         self.kind.currentTextChanged.connect(self._apply_filter)
+        self.kind.currentTextChanged.connect(self._sync_tabs)
+        self.kind.hide()
 
         self.list = _BinList()
         self.list.setViewMode(QListView.IconMode)
         self.list.setIconSize(ICON)
-        self.list.setGridSize(QSize(ICON.width() + 16, ICON.height() + 40))
+        self.list.setGridSize(GRID)
         self.list.setResizeMode(QListView.Adjust)
         self.list.setMovement(QListView.Static)
         self.list.setWordWrap(True)
         self.list.setSelectionMode(QListWidget.ExtendedSelection)
         self.list.setDragEnabled(True)
         self.list.setDragDropMode(QListWidget.DragOnly)
+        self.list.setItemDelegate(_CardDelegate(self.list))
+        self.list.setMouseTracking(True)
         self.list.itemDoubleClicked.connect(
             lambda item: self.insert_requested.emit(Path(item.data(PATH_ROLE))))
+        self.list.import_clicked.connect(self.import_requested.emit)
 
+        pagina_medios = QWidget()
+        caja = QVBoxLayout(pagina_medios)
+        caja.setContentsMargins(0, 0, 0, 0)
+        caja.setSpacing(10)
+        caja.addWidget(self.search)
+        caja.addWidget(self.kind)
+        caja.addWidget(self.list, 1)
+
+        # --- texto ---
+        pagina_texto = QWidget()
+        flujo = FlowLayout(pagina_texto, spacing=8)
+        flujo.setContentsMargins(0, 0, 0, 0)
+        self.text_cards: dict[str, QToolButton] = {}
+        for posicion in TEXT_CARDS:
+            tarjeta = self._text_card("Aa", posicion)
+            tarjeta.clicked.connect(lambda _=False, p=posicion: self.title_requested.emit(p))
+            self.text_cards[posicion] = tarjeta
+            flujo.addWidget(tarjeta)
+        subtitulos = self._text_card("SRT", "Subtítulos…")
+        subtitulos.setToolTip("Importar subtítulos SRT o VTT")
+        subtitulos.clicked.connect(self.subtitles_requested.emit)
+        self.text_cards["subtitulos"] = subtitulos
+        flujo.addWidget(subtitulos)
+
+        self.pages = QStackedWidget()
+        self.pages.addWidget(pagina_medios)
+        self.pages.addWidget(pagina_texto)
+
+        # --- pie ---
         self._count = QLabel()
-        self._count.setStyleSheet("color:#6f757e; font-size:10px;")
-
-        importar = QPushButton("Importar…")
-        importar.clicked.connect(self.import_requested.emit)
-        self.insert_button = QPushButton("Agregar al timeline")
-        self.insert_button.setToolTip("En el playhead. También puedes arrastrarlo.")
+        self._count.setStyleSheet(
+            f"color:{theme.MUY_TENUE}; font-family:{theme.MONO}; font-size:11px;")
+        self._count.setWordWrap(True)
+        self.insert_button = QPushButton("Agregar")
+        self.insert_button.setToolTip("Agregar lo seleccionado en el playhead. "
+                                      "También puedes arrastrarlo.")
+        self.insert_button.setCursor(Qt.PointingHandCursor)
         self.insert_button.clicked.connect(self._insert_selected)
 
-        filtros = QHBoxLayout()
-        filtros.addWidget(self.search, 1)
-        filtros.addWidget(self.kind)
-        botones = QHBoxLayout()
-        botones.addWidget(importar)
-        botones.addWidget(self.insert_button)
+        pie = QHBoxLayout()
+        pie.setSpacing(6)
+        pie.addWidget(self._count, 1)
+        pie.addWidget(self.insert_button)
 
         cuerpo = QWidget()
+        cuerpo.setStyleSheet(BIN_STYLE)
         layout = QVBoxLayout(cuerpo)
-        layout.setContentsMargins(6, 6, 6, 6)
-        layout.setSpacing(5)
-        layout.addLayout(filtros)
-        layout.addWidget(self.list, 1)
-        layout.addWidget(self._count)
-        layout.addLayout(botones)
+        layout.setContentsMargins(14, 4, 14, 12)
+        layout.setSpacing(12)
+        layout.addWidget(self.tabs)
+        layout.addWidget(self.pages, 1)
+        layout.addLayout(pie)
         self.setWidget(cuerpo)
+        style_dock(self)
         self._update_count()
+
+    def _text_card(self, muestra: str, nombre: str) -> QToolButton:
+        tarjeta = QToolButton()
+        tarjeta.setText(f"{muestra}\n{nombre}")
+        tarjeta.setFixedSize(CARD.width(), CARD.height() + 10)
+        tarjeta.setStyleSheet(TEXT_CARD_STYLE)
+        tarjeta.setCursor(Qt.PointingHandCursor)
+        tarjeta.setFocusPolicy(Qt.NoFocus)
+        tarjeta.setToolTip(f"Agregar un texto ({nombre.lower()}) en el playhead")
+        return tarjeta
+
+    # --- pestañas -----------------------------------------------------------
+
+    def _tab_chosen(self, indice: int) -> None:
+        if indice == TAB_TEXT:
+            self.pages.setCurrentIndex(1)
+        else:
+            self.pages.setCurrentIndex(0)
+            self.kind.setCurrentText("Audio" if indice == TAB_AUDIO else "Todo")
+        self._update_count()
+
+    def _sync_tabs(self, texto: str) -> None:
+        if self.pages.currentIndex() == 1:
+            return
+        indice = {"Todo": TAB_MEDIA, "Audio": TAB_AUDIO}.get(texto)
+        self._tab_group.setExclusive(False)
+        for boton in self._tab_group.buttons():
+            boton.setChecked(self._tab_group.id(boton) == indice)
+        self._tab_group.setExclusive(True)
+
+    def tab_button(self, indice: int) -> QToolButton:
+        return self._tab_group.button(indice)
 
     # --- contenido --------------------------------------------------------
 
@@ -196,11 +464,14 @@ class MediaBin(QDockWidget):
         item = QListWidgetItem(path.name)
         item.setData(PATH_ROLE, str(path))
         item.setData(KIND_ROLE, info.kind)
+        if info.kind != IMAGE:
+            item.setData(DURATION_ROLE, float(getattr(info, "duration", 0.0) or 0.0))
         item.setToolTip(self._describe(info))
         item.setSizeHint(self.list.gridSize())
         imagen = self._thumbs.get(path)
         item.setIcon(QIcon(QPixmap.fromImage(imagen)) if imagen is not None
                      else QIcon(placeholder(info.kind)))
+        item.setData(THUMB_ROLE, imagen is not None)
         self.list.addItem(item)
         item.setSelected(selected)
         if imagen is None and info.kind != AUDIO and path not in self._working \
@@ -239,6 +510,7 @@ class MediaBin(QDockWidget):
             item = self.list.item(i)
             if Path(item.data(PATH_ROLE)) == path:
                 item.setIcon(QIcon(QPixmap.fromImage(imagen)))
+                item.setData(THUMB_ROLE, True)
 
     def wait_thumbnails(self, timeout_ms: int = 30000) -> bool:
         """Solo para las pruebas."""
@@ -255,6 +527,7 @@ class MediaBin(QDockWidget):
                 (clase is None or item.data(KIND_ROLE) == clase)
             item.setHidden(not coincide)
         self._update_count()
+        self.list.viewport().update()
 
     def visible_paths(self) -> list[Path]:
         return [Path(self.list.item(i).data(PATH_ROLE)) for i in range(self.list.count())
@@ -270,6 +543,7 @@ class MediaBin(QDockWidget):
         else:
             self._count.setText(f"{visibles} de {total}")
         self.insert_button.setEnabled(visibles > 0)
+        self.insert_button.setVisible(total > 0 and self.pages.currentIndex() == 0)
 
     @staticmethod
     def path_of(item) -> Path:

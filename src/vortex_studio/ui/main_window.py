@@ -89,6 +89,10 @@ from vortex_studio.ui.audio_player import AudioPlayer
 from vortex_studio.ui.compositor import Layer, clear_mask_cache, compose
 from vortex_studio.ui.dialogs import MarkerDialog, PasteAttributesDialog
 from vortex_studio.ui.panels import PropertiesPanel
+from vortex_studio.ui import theme
+from vortex_studio.ui.timeline_tools import TimelineTools
+from vortex_studio.ui.topbar import TopBar
+from vortex_studio.ui.widgets import Card, style_dock
 from vortex_studio.model.overlays import AdjustmentLayer
 from vortex_studio.model.project import NestedClip
 from vortex_studio.model.nesting import would_cycle
@@ -338,21 +342,50 @@ class MainWindow(QMainWindow):
 
     # --- armado -----------------------------------------------------------
 
+    def menuBar(self):
+        """La barra de menús vive dentro de la barra superior.
+
+        `QMainWindow.menuBar()` crearía una barra nueva encima de la nuestra
+        en cuanto alguien la pidiera; así todos reciben la de la barra superior.
+        """
+        return self.top_bar.menu
+
     def _build_layout(self) -> None:
-        self._top = QWidget()
-        self._top_layout = QVBoxLayout(self._top)
-        self._top_layout.setContentsMargins(0, 0, 0, 0)
-        self._top_layout.setSpacing(0)
+        # Diseño de la beta: fondo casi negro y cada zona en su tarjeta.
+        self.setStyleSheet(theme.WINDOW_STYLE)
+        self.setContentsMargins(8, 0, 8, 0)
+        self.top_bar = TopBar()
+        self.top_bar.export_button.clicked.connect(self.export_video)
+        self.setMenuWidget(self.top_bar)
+        self.statusBar().setSizeGripEnabled(False)
+
+        monitor = Card(padding=(14, 14, 14, 6))
+        self._top = monitor
+        self._top_layout = monitor.body
         self._top_layout.addWidget(self.preview, 1)
         self._top_layout.addWidget(self.transport)
 
+        self.timeline_tools = TimelineTools()
+        self.timeline_tools.tool_chosen.connect(self.set_tool)
+        self.timeline_tools.split_requested.connect(self.cut_at_playhead)
+        self.timeline_tools.snap_toggled.connect(self._set_snapping)
+        self.timeline_tools.link_toggled.connect(self._set_linked_selection)
+        linea = Card(padding=(12, 10, 12, 8))
+        linea.body.addWidget(self.timeline_tools)
+        linea.body.addWidget(self.timeline, 1)
+        self._timeline_card = linea
+
         splitter = QSplitter(Qt.Vertical)
-        splitter.addWidget(self._top)
-        splitter.addWidget(self.timeline)
+        splitter.setHandleWidth(8)
+        splitter.addWidget(monitor)
+        splitter.addWidget(linea)
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 2)
         splitter.setChildrenCollapsible(False)
         self.setCentralWidget(splitter)
+
+        for dock in (self.queue_panel, self.keyframe_editor, self.scopes):
+            style_dock(dock, show_title=True)
 
         self.addDockWidget(Qt.RightDockWidgetArea, self.panel)
         self.addDockWidget(Qt.LeftDockWidgetArea, self.media_bin)
@@ -365,6 +398,18 @@ class MainWindow(QMainWindow):
             lambda visible: visible and self.scopes.submit(self.scope_image()))
         self.queue_panel.hide()
         self.resizeDocks([self.panel, self.media_bin], [330, 250], Qt.Horizontal)
+
+    def _set_snapping(self, on: bool) -> None:
+        self.timeline.snapping = on
+        self.statusBar().showMessage("Imán encendido." if on else
+                                     "Imán apagado: los clips no se pegan.", 3000)
+
+    def _set_linked_selection(self, on: bool) -> None:
+        self.timeline.linked_selection = on
+        self.timeline.update()
+        self.statusBar().showMessage(
+            "Enlace encendido: video y audio se seleccionan juntos." if on else
+            "Enlace apagado: cada lado se selecciona solo.", 3000)
 
     def _build_menu(self) -> None:
         # Cada atajo se pide por su clave, no por su tecla: la tecla sale del
@@ -717,6 +762,8 @@ class MainWindow(QMainWindow):
         self.media_bin.import_requested.connect(lambda: self.import_to_bin())
         self.media_bin.insert_requested.connect(
             lambda path: self.place_media(path, at=self.timeline.playhead))
+        self.media_bin.title_requested.connect(lambda posicion: self.add_title(posicion))
+        self.media_bin.subtitles_requested.connect(lambda: self.import_subtitles())
         self.render_queue.finished.connect(self._render_finished)
         self.keyframe_editor.changed.connect(self._keyframes_edited)
         self.keyframe_editor.committed.connect(self._keyframes_committed)
@@ -1071,6 +1118,7 @@ class MainWindow(QMainWindow):
     def _update_title(self) -> None:
         name = self._path.stem if self._path else "Sin título"
         self.setWindowTitle(f"{'*' if self._dirty else ''}{name} — Vortex Studio")
+        self._update_top_info()
 
     def _update_status(self) -> None:
         """Lo que hay que saber de un vistazo sin abrir ningún menú."""
@@ -1094,6 +1142,19 @@ class MainWindow(QMainWindow):
             f"{piezas} elemento{'s' if piezas != 1 else ''}   ·   "
             f"{herramienta}{marcadores}{marcas}{proxies}"
         )
+        if hasattr(self, "timeline_tools"):
+            self.timeline_tools.set_count(piezas)
+        self._update_top_info()
+
+    def _update_top_info(self) -> None:
+        """«demo.vortex · 1280×720 · 30 fps», a la derecha de la barra de arriba."""
+        barra = getattr(self, "top_bar", None)
+        if barra is None:
+            return
+        seq = self.sequence
+        nombre = self._path.name if self._path else "Sin título"
+        barra.info.setText(f"{'• ' if self._dirty else ''}{nombre}  ·  "
+                           f"{seq.width}×{seq.height}  ·  {seq.fps:g} fps")
 
     # --- historial --------------------------------------------------------
 
@@ -1880,6 +1941,8 @@ class MainWindow(QMainWindow):
 
     def set_tool(self, tool: str) -> None:
         self.timeline.set_tool(tool)
+        if hasattr(self, "timeline_tools"):
+            self.timeline_tools.set_tool(tool)
         accion = getattr(self, "_tool_actions", {}).get(tool)
         if accion is not None and not accion.isChecked():
             accion.setChecked(True)
