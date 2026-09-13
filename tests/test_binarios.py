@@ -412,7 +412,8 @@ def test_la_maquina_de_linux_tiene_la_biblioteca_de_sonido():
     linux = _flujo().split("\n  windows:")[0]
     instalacion = next(l for l in linux.splitlines() if "apt-get install" in l)
     assert "libpulse0" in instalacion
-    assert linux.index("libpulse0") < linux.index("--smoke-test")
+    # El paso de la prueba, no la mención en el comentario de arriba del archivo.
+    assert linux.index("libpulse0") < linux.index("run: ./dist/vortex-studio/vortex-studio --smoke-test")
 
 
 def test_la_compilacion_corre_al_publicar():
