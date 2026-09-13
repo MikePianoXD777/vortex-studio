@@ -19,6 +19,8 @@ from __future__ import annotations
 
 from typing import Iterator
 
+import numpy as np
+
 from vortex_studio.media.audio import (
     FORMAT,
     HAS_PYAV,
@@ -66,11 +68,16 @@ class AudioMixer:
     """
 
     def __init__(self, clips: list, rate: int = RATE,
-                 layout: str = LAYOUT, fmt: str = FORMAT) -> None:
+                 layout: str = LAYOUT, fmt: str = FORMAT,
+                 voices=None, ducked=None, depth: float = 12.0) -> None:
         self.lanes = lanes(clips)
         self.rate = rate
         self.layout = layout
         self.format = fmt
+        self.voices = set(voices or ())
+        self.ducked = set(ducked or ())
+        self.depth = depth
+        self._duck = _Ducker(rate, depth)
 
     @property
     def count(self) -> int:
@@ -125,8 +132,11 @@ class AudioMixer:
             if bloque <= 0:
                 break
 
-            for entrada, fifo in zip(entradas, fifos):
-                trozo = fifo.read(bloque)
+            trozos = [fifo.read(bloque) for fifo in fifos]
+            if self.voices and self.ducked:
+                inicio = start + (int(round((end - start) * self.rate)) - pendientes) / self.rate
+                trozos = self._duck.apply(trozos, self.lanes, inicio, self.voices, self.ducked)
+            for entrada, trozo in zip(entradas, trozos):
                 trozo.pts = None
                 entrada.push(trozo)
 
@@ -179,3 +189,112 @@ class AudioMixer:
         graph.configure()
 
         return graph, entradas
+
+
+class _Ducker:
+    """Agacha la música cuando suena la voz: el ducking de Premiere y CapCut.
+
+    Se hace sobre los bloques parejos que ya se le mandan a `amix`, así que
+    no retrasa nada ni necesita un segundo paso. Muestra por muestra:
+
+    1. la voz se mide con un RMS de 20 ms; hay voz donde pasa de −40 dB;
+    2. la voz "se sostiene" 300 ms después de callar, para que la música no
+       suba entre palabra y palabra;
+    3. la ganancia objetivo —`depth` dB abajo donde hay voz— se suaviza con
+       un promedio de 80 ms, para que bajar y subir no sean un salto.
+
+    El estado de los últimos milisegundos pasa de un bloque al siguiente: si
+    no, cada segundo habría un escalón.
+    """
+
+    UMBRAL = 10 ** (-40 / 20)
+
+    def __init__(self, rate: int, depth: float) -> None:
+        self.rate = rate
+        self.depth = 10 ** (-abs(depth) / 20)
+        self.ventana = max(1, int(0.020 * rate))
+        self.sostener = int(0.300 * rate)
+        self.suavizar = max(1, int(0.080 * rate))
+        self._desde_voz = 10 ** 9           # muestras desde la última voz
+        self._cola = np.ones(self.suavizar, dtype=np.float64)
+
+    @staticmethod
+    def _matriz(frame) -> np.ndarray:
+        crudo = frame.to_ndarray()
+        datos = crudo.astype(np.float64)
+        if not frame.format.is_planar:
+            # Empaquetado viene como (1, n × canales), entrelazado.
+            datos = datos.reshape(-1, len(frame.layout.channels)).T
+        if np.issubdtype(crudo.dtype, np.integer):
+            datos = datos / 32768.0
+        return datos
+
+    @staticmethod
+    def _cuadro(original, datos: np.ndarray):
+        tipo = original.to_ndarray().dtype
+        if np.issubdtype(tipo, np.integer):
+            datos = np.clip(np.rint(datos * 32768.0), -32768, 32767)
+        if not original.format.is_planar:
+            datos = datos.T.reshape(1, -1)
+        nuevo = av.AudioFrame.from_ndarray(np.ascontiguousarray(datos.astype(tipo)),
+                                           format=original.format.name,
+                                           layout=original.layout.name)
+        nuevo.sample_rate = original.sample_rate
+        return nuevo
+
+    def _mascara(self, carril, inicio: float, n: int, ids: set) -> np.ndarray:
+        mascara = np.zeros(n, dtype=bool)
+        for clip in carril:
+            if id(clip) not in ids:
+                continue
+            a = int(round((clip.start - inicio) * self.rate))
+            b = int(round((clip.end - inicio) * self.rate))
+            if b > 0 and a < n:
+                mascara[max(0, a):min(n, b)] = True
+        return mascara
+
+    def apply(self, trozos, carriles, inicio: float, voices: set, ducked: set):
+        n = trozos[0].samples
+        matrices = [self._matriz(t) for t in trozos]
+
+        voz = np.zeros(n, dtype=np.float64)
+        for matriz, carril in zip(matrices, carriles):
+            mascara = self._mascara(carril, inicio, n, voices)
+            if mascara.any():
+                voz += np.where(mascara, np.mean(matriz * matriz, axis=0), 0.0)
+
+        acumulado = np.concatenate([[0.0], np.cumsum(voz)])
+        izquierda = np.maximum(0, np.arange(n) - self.ventana + 1)
+        rms = np.sqrt((acumulado[np.arange(n) + 1] - acumulado[izquierda])
+                      / (np.arange(n) + 1 - izquierda))
+        activa = rms > self.UMBRAL
+
+        # Muestras desde la última voz, arrastrando lo que traía el bloque anterior.
+        indices = np.arange(n)
+        ultima = np.where(activa, indices, -10 ** 9)
+        ultima = np.maximum.accumulate(ultima)
+        desde = np.where(ultima >= 0, indices - ultima, self._desde_voz + indices + 1)
+        self._desde_voz = int(desde[-1])
+        objetivo = np.where(desde <= self.sostener, self.depth, 1.0)
+
+        relleno = np.concatenate([self._cola, objetivo])
+        suave = self._promedio(relleno)[-n:]
+        self._cola = relleno[-self.suavizar:]
+
+        salida = []
+        for trozo, matriz, carril in zip(trozos, matrices, carriles):
+            mascara = self._mascara(carril, inicio, n, ducked)
+            if not mascara.any():
+                salida.append(trozo)
+                continue
+            ganancia = np.where(mascara, suave, 1.0)
+            salida.append(self._cuadro(trozo, matriz * ganancia[None, :]))
+        return salida
+
+    def _promedio(self, valores: np.ndarray) -> np.ndarray:
+        acumulado = np.concatenate([[0.0], np.cumsum(valores)])
+        k = self.suavizar
+        salida = np.empty_like(valores)
+        salida[k - 1:] = (acumulado[k:] - acumulado[:-k]) / k
+        salida[:k - 1] = valores[:k - 1]
+        return salida

@@ -23,6 +23,7 @@ from vortex_studio.media import HAS_PYAV, probe_media
 from vortex_studio.media.pool import SourcePool
 from vortex_studio.model import animate
 from vortex_studio.model.media import lookup
+from vortex_studio.model.overlays import AdjustmentLayer
 from vortex_studio.model.project import Fill
 from vortex_studio.ui.compositor import Layer, compose, framing_of
 
@@ -62,6 +63,12 @@ def overlays_at(sequence, t: float, image_for) -> list:
 
 def titles_at(sequence, t: float) -> list:
     return [animate.view(ti, local_in(ti, t)) for ti in sequence.titles_at(t)]
+
+
+def adjustment_layer(capa, t: float, weight: float) -> Layer:
+    vista = animate.view(capa, local_in(capa, t))
+    return Layer(None, weight * capa.fade_at(t) * max(0.0, vista.opacity), None,
+                 vista.blend, vista.mask, None, None, vista.color)
 
 
 def fill_layer(fill: Fill, weight: float) -> Layer:
@@ -117,6 +124,8 @@ class SequenceRenderer:
         for item, peso in self.stack(t):
             if isinstance(item, Fill):
                 capas.append(fill_layer(item, peso))
+            elif isinstance(item, AdjustmentLayer):
+                capas.append(adjustment_layer(item, t, peso))
             else:
                 capas.append(layer_for(item, self.frame_of(item, t), t, peso))
         return capas

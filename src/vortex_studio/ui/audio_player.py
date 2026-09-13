@@ -58,7 +58,7 @@ class AudioPlayer(QObject):
 
     # --- control ----------------------------------------------------------
 
-    def start(self, clips: list, desde: float, hasta: float) -> bool:
+    def start(self, clips: list, desde: float, hasta: float, options: dict | None = None) -> bool:
         self.stop()
         if not clips or not self.available or hasta <= desde:
             return False
@@ -67,7 +67,7 @@ class AudioPlayer(QObject):
             # Mezclador y no un solo `AudioRenderer`: si la voz y la música
             # están encimadas, al editar se tiene que oír lo mismo que va a
             # salir en el archivo final.
-            mezcla = AudioMixer(clips, rate=RATE, layout=LAYOUT, fmt="s16")
+            mezcla = AudioMixer(clips, rate=RATE, layout=LAYOUT, fmt="s16", **(options or {}))
             self._frames = mezcla.stream(desde, hasta)
             self._sink = QAudioSink(QMediaDevices.defaultAudioOutput(), self._format)
             self._sink.setVolume(self._volume)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import time
 import uuid
 from pathlib import Path
@@ -78,8 +79,10 @@ from vortex_studio.ui.audio_player import AudioPlayer
 from vortex_studio.ui.compositor import Layer, clear_mask_cache, compose
 from vortex_studio.ui.dialogs import MarkerDialog, PasteAttributesDialog
 from vortex_studio.ui.panels import PropertiesPanel
+from vortex_studio.model.overlays import AdjustmentLayer
 from vortex_studio.ui.renderer import (
     SequenceRenderer,
+    adjustment_layer,
     fill_layer,
     inside,
     layer_for,
@@ -88,6 +91,9 @@ from vortex_studio.ui.renderer import (
     titles_at,
 )
 from vortex_studio.ui.keyframe_editor import KeyframeEditor
+from vortex_studio.ui.scopes import ScopesDock
+from vortex_studio.model import subtitles
+from vortex_studio.model.project import Track
 from vortex_studio.model import animate
 from vortex_studio.ui.preview import PreviewWidget
 from vortex_studio.ui.shortcuts import DEFAULTS, ShortcutsDialog, load_shortcuts
@@ -243,6 +249,7 @@ class MainWindow(QMainWindow):
         self.transform_panel = self.panel.transform
         self.mask_panel = self.panel.mask
         self.effects_panel = self.panel.effects
+        self.audio_panel = self.panel.audio
 
         # Lo importado, a la izquierda como en Premiere; la cola de render
         # se asoma sola cuando hay algo exportándose.
@@ -250,6 +257,7 @@ class MainWindow(QMainWindow):
         self.render_queue = RenderQueue(self)
         self.queue_panel = RenderQueuePanel(self.render_queue)
         self.keyframe_editor = KeyframeEditor()
+        self.scopes = ScopesDock()
 
         # Proxies: interruptor global, recordado entre sesiones.
         self.proxies = ProxyManager(self)
@@ -322,6 +330,10 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.RightDockWidgetArea, self.queue_panel)
         self.addDockWidget(Qt.BottomDockWidgetArea, self.keyframe_editor)
         self.keyframe_editor.hide()
+        self.addDockWidget(Qt.RightDockWidgetArea, self.scopes)
+        self.scopes.hide()
+        self.scopes.visibilityChanged.connect(
+            lambda visible: visible and self.scopes.submit(self.scope_image()))
         self.queue_panel.hide()
         self.resizeDocks([self.panel, self.media_bin], [330, 250], Qt.Horizontal)
 
@@ -340,6 +352,10 @@ class MainWindow(QMainWindow):
                      lambda: self.import_to_bin())
         self._action(archivo, "Exportar &video…", "archivo.exportar_video", self.export_video)
         self._action(archivo, "Exportar &cuadro…", "archivo.exportar_cuadro", self.export_frame)
+        archivo.addSeparator()
+        self._action(archivo, "Importar &subtítulos (SRT, VTT)…", None,
+                     lambda: self.import_subtitles())
+        self._action(archivo, "Exportar s&ubtítulos…", None, lambda: self.export_subtitles())
         archivo.addSeparator()
         self._action(archivo, "&Salir", "archivo.salir", self.close)
 
@@ -445,6 +461,7 @@ class MainWindow(QMainWindow):
         self._action(insertar, "&Subtítulo aquí", "insertar.subtitulo",
                      lambda: self.add_title(anchor="Subtítulo"))
         self._action(insertar, "&Imagen…", "insertar.imagen", self.import_image)
+        self._action(insertar, "Capa de &ajuste", None, lambda: self.add_adjustment_layer())
 
         reproducir = self.menuBar().addMenu("&Reproducción")
         self._action(reproducir, "Reproducir / pausar", "reproducir.play", self.toggle_play)
@@ -523,6 +540,7 @@ class MainWindow(QMainWindow):
         ver.addAction(self.media_bin.toggleViewAction())
         ver.addAction(self.queue_panel.toggleViewAction())
         ver.addAction(self.keyframe_editor.toggleViewAction())
+        ver.addAction(self.scopes.toggleViewAction())
 
         self._classify_actions()
         self._update_history_actions()
@@ -631,6 +649,9 @@ class MainWindow(QMainWindow):
         self.mask_panel.changed.connect(lambda: self._schedule("Máscara"))
         self.effects_panel.changed.connect(lambda: self._schedule("Efectos"))
         self.effects_panel.committed.connect(self._effects_committed)
+        self.audio_panel.changed.connect(lambda: self._schedule("Efectos de audio"))
+        self.audio_panel.committed.connect(self._effects_committed)
+        self.audio_panel.normalize_requested.connect(lambda meta: self.normalize_loudness(meta))
         self.mask_panel.committed.connect(self._commit)
         self.text_panel.changed.connect(self._text_changed)
         self.text_panel.add_requested.connect(self.add_title)
@@ -1285,7 +1306,8 @@ class MainWindow(QMainWindow):
                 fps,
                 quality,
                 report,
-                AudioMixer(self._audio_clips()).stream(start, end)
+                AudioMixer(self._audio_clips(), **self.sequence.audio_mix_options())
+                .stream(start, end)
                 if with_audio and self._audio_clips() else None,
             )
         except Cancelled:
@@ -1325,7 +1347,8 @@ class MainWindow(QMainWindow):
             return not dialog.wasCanceled()
 
         try:
-            export_audio(path, AudioMixer(self._audio_clips()).stream(start, end),
+            export_audio(path, AudioMixer(self._audio_clips(), **self.sequence.audio_mix_options())
+                         .stream(start, end),
                          end - start, report)
         except Cancelled:
             dialog.close()
@@ -1359,7 +1382,7 @@ class MainWindow(QMainWindow):
         """
         plan = []
         for clip, peso in self.sequence.video_stack_at(t, self._aspect_of):
-            if isinstance(clip, Fill):
+            if isinstance(clip, (Fill, AdjustmentLayer)):
                 plan.append((clip, None, peso))
                 continue
             vista = animate.view(clip, local_in(clip, t))
@@ -1388,7 +1411,8 @@ class MainWindow(QMainWindow):
         trabajos = []
         for clip, trabajo, peso in self._jobs_at(t):
             if trabajo is None:
-                capas.append(fill_layer(clip, peso))
+                capas.append(adjustment_layer(clip, t, peso) if isinstance(clip, AdjustmentLayer)
+                             else fill_layer(clip, peso))
                 continue
             frame = self.frames.get(trabajo) or self.frames.latest(trabajo.key)
             trabajos.append(trabajo)
@@ -1972,6 +1996,13 @@ class MainWindow(QMainWindow):
                                self.mask_panel.target is not None)
 
     def _follow_selection(self, item) -> None:
+        if isinstance(item, AdjustmentLayer):
+            self.color_panel.set_target(item.color, item.name)
+            self.mask_panel.set_target(item)
+            self.panel.set_enabled(self.color_panel, True)
+            if not self.panel.current_is(self.color_panel, self.mask_panel):
+                self.panel.show_page(self.color_panel)
+            return
         if isinstance(item, Title):
             self._title = item
             self.text_panel.set_titles(self._titles_in_track(), item)
@@ -1990,6 +2021,9 @@ class MainWindow(QMainWindow):
             self.color_panel.set_target(item.color, item.name)
             self.mask_panel.set_target(None if es_audio else item)
             self.effects_panel.set_target(None if es_audio else item)
+            self.audio_panel.set_target(item if es_audio else None,
+                                        track if es_audio else None, self.sequence)
+            self.panel.set_enabled(self.audio_panel, es_audio)
             self.panel.set_enabled(self.transform_panel, not es_audio)
             self.panel.set_enabled(self.effects_panel, not es_audio)
 
@@ -1997,7 +2031,7 @@ class MainWindow(QMainWindow):
             # el usuario ya estaba en Color o en Transformar, se respeta:
             # arrancarle la pestaña de abajo cada vez que selecciona algo es
             # de las cosas que más estorban de un editor.
-            aplica = [self.clip_panel]
+            aplica = [self.clip_panel] + ([self.audio_panel] if es_audio else [])
             if not es_audio:
                 aplica += [self.transform_panel, self.color_panel, self.mask_panel,
                            self.effects_panel]
@@ -2024,6 +2058,96 @@ class MainWindow(QMainWindow):
         self._sync_panels(self.timeline.playhead)
         self.panel.show()
         self.panel.show_page(self.text_panel)
+
+    # --- scopes -------------------------------------------------------------
+
+    def scope_image(self, width: int = 320):
+        """El cuadro de ahora, chico, para los scopes. Nunca espera al decodificador:
+        usa lo que el preview ya tiene."""
+        from vortex_studio.ui.compositor import compose
+
+        if self.preview.is_empty:
+            return None
+        alto = max(2, round(width * self.sequence.height / max(1, self.sequence.width)))
+        return compose(width, alto, self.preview._layers, self.preview._overlays,
+                       self.preview._titles, self.preview._time)
+
+    def show_scopes(self) -> None:
+        self.scopes.show()
+        self.scopes.raise_()
+        self.scopes.submit(self.scope_image())
+
+    # --- subtítulos ---------------------------------------------------------
+
+    def import_subtitles(self, path=None) -> int:
+        """Cada subtítulo del archivo entra como un texto en la posición de subtítulo.
+
+        Van a la primera pista de texto que esté libre en todo el tramo; si
+        ninguna lo está, se crea otra arriba. Así importar nunca pisa los
+        títulos que ya estaban.
+        """
+        if path is None:
+            path, _ = QFileDialog.getOpenFileName(self, "Importar subtítulos", "",
+                                                  "Subtítulos (*.srt *.vtt)")
+            if not path:
+                return 0
+        try:
+            cues = subtitles.read_file(path)
+        except OSError as error:
+            self.statusBar().showMessage(f"No se pudo leer {Path(path).name}: {error}", 6000)
+            return 0
+        if not cues:
+            self.statusBar().showMessage(f"{Path(path).name} no trae subtítulos válidos.", 6000)
+            return 0
+
+        inicio, fin = cues[0].start, max(c.end for c in cues)
+        pista = next((p for p in self.sequence.text_tracks() if not p.locked and
+                      all(c.end <= inicio + 1e-9 or c.start >= fin - 1e-9 for c in p.clips)),
+                     None)
+        if pista is None:
+            pista = Track(f"T{len(self.sequence.text_tracks()) + 1}", kind="texto")
+            self.sequence.tracks.insert(0, pista)
+            self.timeline.refresh()
+
+        x, y = ANCHORS["Subtítulo"]
+        for cue in cues:
+            pista.add(Title(start=cue.start, duration=cue.end - cue.start, text=cue.text,
+                            x=x, y=y, size=0.06, bold=False))
+        self._fit_zoom()
+        self._commit("Importar subtítulos")
+        self.statusBar().showMessage(f"{len(cues)} subtítulos en {pista.name}.", 5000)
+        return len(cues)
+
+    def export_subtitles(self, path=None):
+        """Escribe los textos de las pistas visibles como SRT o VTT."""
+        textos = sorted((t for p in self.sequence.text_tracks() if p.enabled
+                         for t in p.clips if isinstance(t, Title) and t.text.strip()),
+                        key=lambda t: t.start)
+        if not textos:
+            self.statusBar().showMessage("No hay ningún texto que exportar.", 5000)
+            return None
+        if path is None:
+            path, _ = QFileDialog.getSaveFileName(self, "Exportar subtítulos", "subtitulos.srt",
+                                                  "SRT (*.srt);;WebVTT (*.vtt)")
+            if not path:
+                return None
+        ruta = subtitles.write_file(path, [subtitles.Cue(t.start, t.end, t.text) for t in textos])
+        self.statusBar().showMessage(f"{len(textos)} subtítulos en {ruta.name}.", 5000)
+        return ruta
+
+    def add_adjustment_layer(self, seconds: float = 5.0) -> AdjustmentLayer | None:
+        """Una capa de ajuste en V2, en el playhead, encima del material."""
+        pista = next((p for p in self.sequence.video_tracks() if not p.locked), None)
+        if pista is None:
+            self.statusBar().showMessage("Todas las pistas de video están bloqueadas.", 4000)
+            return None
+        capa = AdjustmentLayer(start=self.timeline.playhead, duration=seconds)
+        overwrite(pista, capa)
+        pista.add(capa)
+        self.timeline.select(capa)
+        self._commit("Capa de ajuste")
+        self._sync_panels(self.timeline.playhead)
+        return capa
 
     def delete_title(self, title: Title | None) -> None:
         if title is None:
@@ -2086,8 +2210,11 @@ class MainWindow(QMainWindow):
                 animate.bake(item, local_in(item, t))
 
         clip = self.sequence.top_clip_at(t)
-        self.color_panel.set_target(clip.color if clip else None,
-                                    clip.name if clip else "")
+        if isinstance(self.timeline.selected, AdjustmentLayer):
+            self.color_panel.set_target(self.timeline.selected.color, "Capa de ajuste")
+        else:
+            self.color_panel.set_target(clip.color if clip else None,
+                                        clip.name if clip else "")
 
         seleccion = self.timeline.selected
         objetivo = seleccion if isinstance(seleccion, Clip) else clip
@@ -2101,7 +2228,7 @@ class MainWindow(QMainWindow):
 
         # La máscara y la fusión aplican a lo que se pinta: un clip de video
         # o una imagen encima. En una pista de audio no hay nada que tapar.
-        capa = seleccion if isinstance(seleccion, ImageOverlay) else (
+        capa = seleccion if isinstance(seleccion, (ImageOverlay, AdjustmentLayer)) else (
             None if es_audio else objetivo)
         self.mask_panel.set_target(capa)
 
@@ -2123,15 +2250,55 @@ class MainWindow(QMainWindow):
         self.panel.set_enabled(self.image_panel, bool(overlays))
         self.panel.set_enabled(self.clip_panel, objetivo is not None)
         self.panel.set_enabled(self.transform_panel, objetivo is not None and not es_audio)
-        self.panel.set_enabled(self.color_panel, clip is not None)
+        self.panel.set_enabled(self.color_panel, clip is not None
+                               or isinstance(seleccion, AdjustmentLayer))
         self.panel.set_enabled(self.mask_panel, capa is not None)
         efectos = None if es_audio or not isinstance(objetivo, Clip) else objetivo
         self.effects_panel.set_target(efectos)
         self.panel.set_enabled(self.effects_panel, efectos is not None)
+        sonido = objetivo if es_audio and isinstance(objetivo, Clip) else None
+        self.audio_panel.set_target(sonido, pista if sonido is not None else None, self.sequence)
+        self.panel.set_enabled(self.audio_panel, sonido is not None)
 
         destino = seleccion if seleccion is not None else clip
         self.keyframe_editor.set_target(
             destino, local_in(destino, t) if destino is not None else 0.0)
+
+    def normalize_loudness(self, target: float = -14.0, clips=None) -> dict:
+        """Lleva cada clip de audio a `target` LUFS ajustando su volumen.
+
+        Se mide cada clip por separado, con sus efectos pero sin su volumen
+        ni sus fundidos: lo que se quiere igualar es el material. Devuelve
+        lo que midió cada uno, en LUFS.
+        """
+        from vortex_studio.media.audio import AudioRenderer
+        from vortex_studio.media.loudness import gain_for, integrated
+
+        if clips is None:
+            seleccion = [c for c in self.timeline.selected_items(with_links=False)
+                         if isinstance(c, Clip)
+                         and getattr(self._track_of(c), "kind", "") == "audio"]
+            clips = seleccion or [c for t in self.sequence.audio_tracks() for c in t.clips]
+        medidas = {}
+        for clip in clips:
+            prueba = copy.copy(clip)
+            prueba.gain, prueba.fade_in, prueba.fade_out = 1.0, 0.0, 0.0
+            prueba.anim = {k: v for k, v in (clip.anim or {}).items() if k != "gain"}
+            try:
+                lufs = integrated(AudioRenderer([prueba]).stream(clip.start, clip.end))
+            except Exception:
+                continue
+            medidas[id(clip)] = lufs
+            clip.anim.pop("gain", None)
+            clip.gain = gain_for(lufs, target)
+        if medidas:
+            self._commit(f"Normalizar a {target:g} LUFS")
+            self._sync_panels(self.timeline.playhead)
+            self.statusBar().showMessage(
+                f"{len(medidas)} clip{'s' if len(medidas) != 1 else ''} a {target:g} LUFS.", 5000)
+        else:
+            self.statusBar().showMessage("No hay audio que normalizar.", 4000)
+        return medidas
 
     def _effects_committed(self, label: str) -> None:
         self._commit(label)
@@ -2188,6 +2355,8 @@ class MainWindow(QMainWindow):
         self.preview.set_layers(self._layers_at(t))
         self.preview.set_overlays(overlays_at(self.sequence, t, self._image_for))
         self.preview.set_titles(titles_at(self.sequence, t))
+        if not self.scopes.isHidden():
+            self.scopes.submit(self.scope_image())
 
     def _refresh(self) -> None:
         """Vuelve a componer el cuadro actual sin mover el playhead."""
@@ -2296,7 +2465,8 @@ class MainWindow(QMainWindow):
         # oiría con el tono cambiado, que es peor que no oírlo.
         self._audio_on = (
             self._speed == 1.0
-            and self.audio.start(self._audio_clips(), self._origin, end)
+            and self.audio.start(self._audio_clips(), self._origin, end,
+                                 self.sequence.audio_mix_options())
         )
 
         self._clock.start(self._interval())
@@ -2330,7 +2500,8 @@ class MainWindow(QMainWindow):
                 self._origin = start
                 self._elapsed.restart()
                 if self._audio_on:
-                    self._audio_on = self.audio.start(self._audio_clips(), start, end)
+                    self._audio_on = self.audio.start(self._audio_clips(), start, end,
+                                                      self.sequence.audio_mix_options())
                 self._seek(start)
                 return
             self._pause()

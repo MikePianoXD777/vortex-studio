@@ -50,7 +50,8 @@ class PreviewWidget(QWidget):
         """
         # Una capa de color liso (fundido a negro) no trae cuadro y sí cuenta.
         self._layers = [capa for capa in layers
-                        if capa[0] is not None or (len(capa) > 5 and capa[5] is not None)]
+                        if capa[0] is not None or (len(capa) > 5 and capa[5] is not None)
+                        or (len(capa) > 7 and capa[7] is not None)]
         self.update()
 
     def set_frame(self, frame: Frame | None, alpha: float = 1.0) -> None:
@@ -107,7 +108,14 @@ class PreviewWidget(QWidget):
         if self._layers:
             target = self._fit(self._aspect)
             painter.fillRect(self.rect(), LETTERBOX)
-            draw_layers(painter, target, self._layers)
+            if any(len(c) > 7 and c[7] is not None for c in self._layers):
+                # Una capa de ajuste corrige lo ya pintado, y eso solo se puede
+                # sobre una imagen: se compone al tamaño en pantalla y se pinta.
+                imagen = compose(max(1, int(target.width())), max(1, int(target.height())),
+                                 self._layers, [], [], None)
+                painter.drawImage(target, imagen)
+            else:
+                draw_layers(painter, target, self._layers)
         else:
             # Sin video de fondo el lienzo es negro, pero el texto y las
             # imágenes se siguen viendo: así se puede armar una portada.

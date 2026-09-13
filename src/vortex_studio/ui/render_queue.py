@@ -231,7 +231,8 @@ class RenderQueue(QObject):
             if not clips:
                 raise RuntimeError("La secuencia no tiene audio que exportar.")
             job.total = max(1, int(round((job.end - job.start) * 1000)))
-            export_audio(job.path, AudioMixer(clips).stream(job.start, job.end),
+            export_audio(job.path, AudioMixer(clips, **secuencia.audio_mix_options())
+                         .stream(job.start, job.end),
                          job.end - job.start, avance)
             return
 
@@ -244,7 +245,7 @@ class RenderQueue(QObject):
                 job.path,
                 renderer.frames(job.start, job.end, fps, (ancho, alto)),
                 job.total, ancho, alto, fps, job.quality, avance,
-                AudioMixer(clips).stream(job.start, job.end)
+                AudioMixer(clips, **secuencia.audio_mix_options()).stream(job.start, job.end)
                 if job.with_audio and clips else None,
             )
         finally:

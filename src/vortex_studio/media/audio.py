@@ -134,7 +134,11 @@ class AudioRenderer:
             # a oírse a la mitad salía de otro punto del archivo.
             desde = clip.source_time(cursor)
             hasta = min(clip.end, end)
-            for frame in self._from_clip(clip, desde, hasta - cursor):
+            fuente = self._from_clip(clip, desde, hasta - cursor)
+            fx = getattr(clip, "audio_fx", None)
+            if fx is not None and not fx.is_neutral:
+                fuente = self._with_fx(fx, fuente, int(round((hasta - cursor) * self.rate)))
+            for frame in fuente:
                 yield self._apply_level(frame, clip, cursor)
                 cursor += frame.samples / self.rate
             cursor = hasta
@@ -276,6 +280,72 @@ class AudioRenderer:
                 break
             faltan -= trozo.samples
             yield trozo
+
+    def _with_fx(self, fx, frames, total: int) -> Iterator:
+        """Pasa el audio del clip por su ecualizador y su compresor.
+
+        Los filtros biquad del ecualizador no retrasan nada y `acompressor`
+        no mira hacia adelante, así que salen las mismas muestras que entran;
+        igual se cuentan con un FIFO, porque los filtros sueltan bloques del
+        tamaño que les acomoda.
+        """
+        graph = av.filter.Graph()
+        entrada = graph.add("abuffer", f"sample_rate={self.rate}:sample_fmt={self.format}"
+                                       f":channel_layout={self.layout}:time_base=1/{self.rate}")
+        cadena = []
+        if not fx.eq_is_flat:
+            from vortex_studio.model.audio_fx import HIGH_HZ, LOW_HZ, MID_HZ
+            cadena += [
+                graph.add("bass", f"g={fx.low:.2f}:f={LOW_HZ}"),
+                graph.add("equalizer", f"f={MID_HZ}:width_type=o:width=1.2:g={fx.mid:.2f}"),
+                graph.add("treble", f"g={fx.high:.2f}:f={HIGH_HZ}"),
+            ]
+        if fx.compressor:
+            cadena.append(graph.add(
+                "acompressor",
+                f"threshold={10 ** (fx.threshold / 20):.6f}:ratio={max(1.0, fx.ratio):.3f}"
+                f":attack={max(0.01, fx.attack):.3f}:release={max(0.01, fx.release):.3f}"
+                f":makeup={max(1.0, 10 ** (fx.makeup / 20)):.4f}"))
+        cadena += [graph.add("aformat", f"sample_fmts={self.format}:channel_layouts={self.layout}"
+                                        f":sample_rates={self.rate}"),
+                   graph.add("abuffersink")]
+        anterior = entrada
+        for nodo in cadena:
+            anterior.link_to(nodo)
+            anterior = nodo
+        graph.configure()
+
+        salida = AudioFifo()
+        faltan = total
+
+        def jalar():
+            while True:
+                try:
+                    bloque = graph.pull()
+                except (av.error.BlockingIOError, av.error.EOFError, EOFError):
+                    return
+                bloque.pts = None
+                salida.write(bloque)
+
+        for frame in frames:
+            frame.pts = None
+            entrada.push(frame)
+            jalar()
+            while salida.samples > 0 and faltan > 0:
+                trozo = salida.read(min(salida.samples, faltan))
+                faltan -= trozo.samples
+                yield trozo
+        try:
+            entrada.push(None)
+        except Exception:
+            pass
+        jalar()
+        while faltan > 0 and salida.samples > 0:
+            trozo = salida.read(min(salida.samples, faltan))
+            faltan -= trozo.samples
+            yield trozo
+        if faltan > 0:
+            yield from self._silence(faltan / self.rate)
 
     def _speed_graph(self, velocidad: float, modo: str):
         """abuffer → (atempo… | asetrate, aresample) → aformat → sink.

@@ -16,6 +16,7 @@ from pathlib import Path
 
 from vortex_studio.model.animation import DEFAULT_TIME
 from vortex_studio.model.blend import NORMAL
+from vortex_studio.model.color import ColorAdjust
 from vortex_studio.model.mask import Mask
 
 ALIGNMENTS = ("izquierda", "centro", "derecha")
@@ -143,3 +144,26 @@ class ImageOverlay(TimedItem):
     @property
     def name(self) -> str:
         return self.source.stem[:28]
+
+
+@dataclass(eq=False)
+class AdjustmentLayer(TimedItem):
+    """Capa de ajuste: corrige el color de todo lo que tiene debajo.
+
+    Como en Premiere y After Effects: se pone en una pista de video encima
+    del material y afecta a las pistas de abajo durante lo que dure, sin
+    tocar cada clip. Los textos y las imágenes van encima de todo el video,
+    así que no se corrigen: es lo que uno quiere con un subtítulo.
+
+    Trae su propia máscara y su opacidad, para corregir solo una zona o
+    aplicar el look a medias.
+    """
+
+    color: ColorAdjust = field(default_factory=ColorAdjust)
+    opacity: float = 1.0
+    blend: str = NORMAL
+    mask: Mask = field(default_factory=Mask)
+
+    @property
+    def name(self) -> str:
+        return "Capa de ajuste"

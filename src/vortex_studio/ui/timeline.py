@@ -55,6 +55,7 @@ CLIP_VIDEO = QColor("#3d6fa8")
 CLIP_AUDIO = QColor("#3f7d5c")
 CLIP_TEXT = QColor("#a8763d")
 CLIP_IMAGE = QColor("#7a5aa8")
+CLIP_ADJUST = QColor("#7f8a3a")
 CLIP_BORDER = QColor("#0f1113")
 SELECTED = QColor("#ffffff")
 TEXT = QColor("#c8ccd2")
@@ -110,6 +111,8 @@ def _color_for(track, clip) -> QColor:
         return CLIP_TEXT
     if isinstance(clip, ImageOverlay):
         return CLIP_IMAGE
+    if type(clip).__name__ == "AdjustmentLayer":
+        return CLIP_ADJUST
     return CLIP_AUDIO if track.kind == "audio" else CLIP_VIDEO
 
 

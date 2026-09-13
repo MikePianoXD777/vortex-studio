@@ -783,7 +783,7 @@ class ClipPanel(Page):
         self._dissolve = SliderRow("Transición", 0, 300, 0)
         self._speed = SliderRow("Velocidad", int(SPEED_MIN * 100), int(SPEED_MAX * 100),
                                 100)   # porcentaje
-        self._gain = SliderRow("Volumen", 0, 200, 100)
+        self._gain = SliderRow("Volumen", 0, 400, 100)
 
         for row in (self._fade_in, self._fade_out, self._dissolve,
                     self._speed, self._gain):
@@ -1327,6 +1327,145 @@ class MaskPanel(Page):
         self.committed.emit("Quitar máscara")
 
 
+class AudioPanel(Page):
+    TITULO = "Audio"
+
+    """Ecualizador, compresor, normalización y ducking del clip de audio.
+
+    Lo de todos los días va arriba: tres bandas y normalizar. El compresor
+    arranca apagado y cerrado. El papel de la pista —voz o música que se
+    agacha— está aquí porque se decide mirando el clip, aunque sea de la
+    pista.
+    """
+
+    changed = Signal()
+    committed = Signal(str)
+    normalize_requested = Signal(float)
+
+    def __init__(self) -> None:
+        super().__init__()
+        from vortex_studio.model.audio_fx import LOUDNESS_TARGETS, ROLES
+
+        self._clip = None
+        self._track = None
+        self._sequence = None
+        self._loading = False
+
+        self._name = QLabel("Selecciona un clip de audio")
+        self._name.setStyleSheet("color:#7d838c; font-size:10px;")
+
+        # En décimas de dB, para que el deslizador tenga pasos finos.
+        self.low = SliderRow("Graves", -120, 120, 0)
+        self.mid = SliderRow("Medios", -120, 120, 0)
+        self.high = SliderRow("Agudos", -120, 120, 0)
+
+        self.compressor = QCheckBox("Compresor")
+        self.threshold = SliderRow("Umbral dB", -60, 0, -18)
+        self.ratio = SliderRow("Relación ×10", 10, 200, 30)
+        self.attack = SliderRow("Ataque ms", 1, 200, 10)
+        self.release = SliderRow("Soltar ms", 10, 1000, 150)
+        self.makeup = SliderRow("Ganancia ×10", 0, 240, 0)
+        for row in (self.low, self.mid, self.high, self.threshold, self.ratio,
+                    self.attack, self.release, self.makeup):
+            row.changed.connect(self._push)
+        self.compressor.toggled.connect(self._compressor_toggled)
+        self._comp_group = Collapsible("Compresor", self.compressor, self.threshold, self.ratio,
+                                       self.attack, self.release, self.makeup)
+
+        self.target = QComboBox()
+        for nombre, valor in LOUDNESS_TARGETS.items():
+            self.target.addItem(nombre, valor)
+        self.normalize = QPushButton("Normalizar")
+        self.normalize.setToolTip("Mide la sonoridad y ajusta el volumen para llegar a la meta")
+        self.normalize.clicked.connect(
+            lambda: self.normalize_requested.emit(float(self.target.currentData())))
+        fila = QHBoxLayout()
+        fila.addWidget(self.target, 1)
+        fila.addWidget(self.normalize)
+
+        self.role = QComboBox()
+        self.role.addItems(ROLES)
+        self.role.setToolTip("Voz: manda. Música: baja sola cuando suena una pista de voz")
+        self.role.currentTextChanged.connect(self._role_changed)
+        self.depth = SliderRow("Cuánto baja dB", 0, 30, 12)
+        self.depth.changed.connect(self._depth_changed)
+
+        self._set_content(column(
+            self._name,
+            section("Ecualizador (dB × 10)"), self.low, self.mid, self.high,
+            section("Sonoridad"), fila,
+            section("Ducking de la pista"), self.role, self.depth,
+            self._comp_group,
+            None,
+        ))
+        self.set_target(None, None, None)
+
+    def set_target(self, clip, track, sequence) -> None:
+        self._clip, self._track, self._sequence = clip, track, sequence
+        self._loading = True
+        tiene = clip is not None and hasattr(clip, "audio_fx")
+        self._name.setText(f"Clip: {clip.name}" if tiene else "Selecciona un clip de audio")
+        for widget in (self.low, self.mid, self.high, self.compressor, self.target,
+                       self.normalize, self.role, self.depth):
+            widget.setEnabled(tiene)
+        if tiene:
+            fx = clip.audio_fx
+            self.low.set_value(round(fx.low * 10))
+            self.mid.set_value(round(fx.mid * 10))
+            self.high.set_value(round(fx.high * 10))
+            self.compressor.setChecked(fx.compressor)
+            self.threshold.set_value(round(fx.threshold))
+            self.ratio.set_value(round(fx.ratio * 10))
+            self.attack.set_value(round(fx.attack))
+            self.release.set_value(round(fx.release))
+            self.makeup.set_value(round(fx.makeup * 10))
+            if track is not None:
+                self.role.setCurrentText(track.role)
+            if sequence is not None:
+                self.depth.set_value(round(sequence.duck_depth))
+            if fx.compressor:
+                self._comp_group.abrir()
+        self._loading = False
+        self._describe()
+
+    def _describe(self) -> None:
+        prendido = self._clip is not None and self._clip.audio_fx.compressor
+        for row in (self.threshold, self.ratio, self.attack, self.release, self.makeup):
+            row.setEnabled(bool(prendido))
+
+    def _push(self, *_):
+        if self._loading or self._clip is None:
+            return
+        fx = self._clip.audio_fx
+        fx.low, fx.mid, fx.high = (self.low.value() / 10, self.mid.value() / 10,
+                                   self.high.value() / 10)
+        fx.threshold = float(self.threshold.value())
+        fx.ratio = self.ratio.value() / 10
+        fx.attack = float(self.attack.value())
+        fx.release = float(self.release.value())
+        fx.makeup = self.makeup.value() / 10
+        self.changed.emit()
+
+    def _compressor_toggled(self, prendido: bool) -> None:
+        if self._loading or self._clip is None:
+            return
+        self._clip.audio_fx.compressor = prendido
+        self._describe()
+        self.committed.emit("Compresor" if prendido else "Quitar compresor")
+
+    def _role_changed(self, rol: str) -> None:
+        if self._loading or self._track is None:
+            return
+        self._track.role = rol
+        self.committed.emit(f"{self._track.name}: {rol.split(':')[0].lower()}")
+
+    def _depth_changed(self, valor: int) -> None:
+        if self._loading or self._sequence is None:
+            return
+        self._sequence.duck_depth = float(valor)
+        self.changed.emit()
+
+
 class EffectsPanel(Page):
     TITULO = "Efectos"
 
@@ -1480,6 +1619,7 @@ class PropertiesPanel(QDockWidget):
         self.mask = MaskPanel()
         self.clip = ClipPanel()
         self.effects = EffectsPanel()
+        self.audio = AudioPanel()
         self.text = TextPanel()
         self.image = ImagePanel()
 
@@ -1489,9 +1629,9 @@ class PropertiesPanel(QDockWidget):
         self._tabs.setUsesScrollButtons(False)
 
         iconos = {"Transformar": "⤢", "Color": "◐", "Máscara": "⬭", "Efectos": "✦",
-                  "Clip": "▮", "Texto": "T", "Imagen": "▣"}
+                  "Clip": "▮", "Audio": "♪", "Texto": "T", "Imagen": "▣"}
         for pagina in (self.transform, self.color, self.mask, self.effects, self.clip,
-                       self.text, self.image):
+                       self.audio, self.text, self.image):
             self._tabs.addTab(pagina, f"{iconos.get(pagina.TITULO, '')}  {pagina.TITULO}")
 
         self.setWidget(self._tabs)

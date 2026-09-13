@@ -13,12 +13,13 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from vortex_studio.model.audio_fx import AudioFx
 from vortex_studio.model.chroma import ChromaKey
 from vortex_studio.model.color import ColorAdjust
 from vortex_studio.model.curves import Curves
 from vortex_studio.model.mask import Mask
 from vortex_studio.model.media import MediaInfo, library_key
-from vortex_studio.model.overlays import ImageOverlay, Title
+from vortex_studio.model.overlays import AdjustmentLayer, ImageOverlay, Title
 from vortex_studio.model.project import Clip, Marker, Project, Sequence, Track
 from vortex_studio.model.transform import Transform
 
@@ -72,6 +73,10 @@ def item_to_dict(item: Any, base: Path | None = None) -> dict:
         data["source"] = _write_path(item.source, base)
     elif isinstance(item, Title):
         data["tipo"] = "texto"
+    elif isinstance(item, AdjustmentLayer):
+        data["tipo"] = "ajuste"
+        if item.color.lut:
+            data["color"]["lut"] = _write_path(Path(item.color.lut), base)
     else:  # pragma: no cover - no debería pasar
         raise TypeError(f"No sé guardar {type(item).__name__}")
     return data
@@ -113,17 +118,25 @@ def item_from_dict(data: dict, base: Path | None = None) -> Any:
     if kind == "clip":
         color = _color(data.pop("color", None), base)
         chroma = data.pop("chroma", None)
+        audio_fx = data.pop("audio_fx", None)
         data["source"] = _read_path(data["source"], base)
         item = Clip(**data)
         if color:
             item.color = color
         if chroma:
             item.chroma = ChromaKey(**chroma)
+        if audio_fx:
+            item.audio_fx = AudioFx(**audio_fx)
     elif kind == "imagen":
         data["source"] = _read_path(data["source"], base)
         item = ImageOverlay(**data)
     elif kind == "texto":
         item = Title(**data)
+    elif kind == "ajuste":
+        color = _color(data.pop("color", None), base)
+        item = AdjustmentLayer(**data)
+        if color:
+            item.color = color
     else:
         raise ValueError(f"Tipo desconocido en el proyecto: {kind}")
 
@@ -150,11 +163,13 @@ def sequence_to_dict(sequence: Sequence, base: Path | None = None) -> dict:
                 "locked": track.locked,
                 "muted": track.muted,
                 "solo": track.solo,
+                "role": track.role,
                 "clips": [item_to_dict(c, base) for c in track.clips],
             }
             for track in sequence.tracks
         ],
         "markers": [asdict(m) for m in sequence.markers],
+        "duck_depth": sequence.duck_depth,
     }
 
 
@@ -174,10 +189,12 @@ def sequence_from_dict(data: dict, base: Path | None = None) -> Sequence:
             locked=track.get("locked", False),
             muted=track.get("muted", False),
             solo=track.get("solo", False),
+            role=track.get("role", "Normal"),
         )
         for track in data.get("tracks", [])
     ]
     sequence.markers = [Marker(**m) for m in data.get("markers", [])]
+    sequence.duck_depth = float(data.get("duck_depth", 12.0))
     return sequence
 
 

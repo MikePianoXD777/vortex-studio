@@ -72,6 +72,7 @@ class Layer(NamedTuple):
     mask: Mask | None = None
     fill: str | None = None       # color liso en vez de cuadro (fundido a color)
     framing: dict | None = None   # encuadre, recorte y ancla; ver `framing_of`
+    adjust: object = None         # capa de ajuste: corrige lo ya pintado debajo
 
 
 def framing_of(transform) -> dict:
@@ -286,6 +287,8 @@ def draw_layers(painter: QPainter, target: QRectF, layers: list) -> None:
         mask = capa[4] if len(capa) > 4 else None
         fill = capa[5] if len(capa) > 5 else None
         framing = capa[6] if len(capa) > 6 else None
+        if len(capa) > 7 and capa[7] is not None:
+            continue        # la capa de ajuste la resuelve `compose`: ver ahí
 
         if fill is not None:
             if alpha > 0:
@@ -537,6 +540,72 @@ def _draw_line(painter: QPainter, row: QRectF, line: str, font: QFont,
 
 # --- el cuadro completo ---------------------------------------------------
 
+def _painter(canvas: QImage) -> QPainter:
+    painter = QPainter(canvas)
+    painter.setRenderHint(QPainter.Antialiasing)
+    painter.setRenderHint(QPainter.TextAntialiasing)
+    painter.setRenderHint(QPainter.SmoothPixmapTransform)
+    return painter
+
+
+_adjust_processors: dict = {}
+
+
+def apply_adjustment(canvas: QImage, capa) -> None:
+    """Corrige el lienzo con la capa de ajuste, en su lugar.
+
+    El lienzo pasa por el mismo `ColorProcessor` que corrige cada clip, así
+    que una capa de ajuste con exposición +1 hace exactamente lo mismo que
+    poner +1 en el clip. Luego se pinta encima con la opacidad, el modo de
+    fusión y la máscara de la capa.
+
+    Un procesador por hilo: el preview y la cola de render pueden estar
+    corrigiendo a la vez, y un grafo de FFmpeg no se comparte.
+    """
+    import threading
+
+    from vortex_studio.media.color import ColorProcessor
+    from vortex_studio.media.decoder import HAS_PYAV
+
+    alpha, adjust = capa[1], capa[7]
+    mask = capa[4] if len(capa) > 4 else None
+    blend = capa[3] if len(capa) > 3 else NORMAL
+    if not HAS_PYAV or alpha <= 0 or adjust.is_neutral:
+        return
+
+    from vortex_studio.media.encoder import image_to_frame
+
+    ancho, alto = canvas.width(), canvas.height()
+    clave = (threading.get_ident(), ancho, alto)
+    procesador = _adjust_processors.get(clave)
+    if procesador is None:
+        if len(_adjust_processors) > 8:
+            _adjust_processors.clear()
+        procesador = _adjust_processors[clave] = ColorProcessor()
+
+    salida = procesador.apply(image_to_frame(canvas, ancho, alto), adjust)
+    plano = salida.reformat(format="rgb24")
+    datos = bytes(plano.planes[0])
+    corregida = QImage(datos, ancho, alto, plano.planes[0].line_size,
+                       QImage.Format_RGB888).copy()
+
+    painter = QPainter(canvas)
+    painter.setOpacity(max(0.0, min(1.0, alpha)))
+    if not is_normal(blend):
+        painter.setCompositionMode(BLEND_MODES[blend])
+    if mask is not None and not mask.is_off:
+        capa_img = QImage(ancho, alto, QImage.Format_ARGB32_Premultiplied)
+        capa_img.fill(Qt.transparent)
+        interno = QPainter(capa_img)
+        interno.drawImage(0, 0, corregida)
+        _apply_mask(interno, ancho, alto, mask)
+        interno.end()
+        painter.drawImage(0, 0, capa_img)
+    else:
+        painter.drawImage(0, 0, corregida)
+    painter.end()
+
+
 def compose(width: int, height: int, layers: list,
             overlays: list[tuple[ImageOverlay, QImage]],
             titles: list[Title], t: float | None = None) -> QImage:
@@ -546,14 +615,25 @@ def compose(width: int, height: int, layers: list,
     """
     canvas = QImage(width, height, QImage.Format_RGB888)
     canvas.fill(Qt.black)
-
-    painter = QPainter(canvas)
-    painter.setRenderHint(QPainter.Antialiasing)
-    painter.setRenderHint(QPainter.TextAntialiasing)
-    painter.setRenderHint(QPainter.SmoothPixmapTransform)
     target = QRectF(0, 0, width, height)
 
-    draw_layers(painter, target, layers)
+    # Las capas se pintan por tandas: cada capa de ajuste corta la tanda,
+    # corrige lo que ya está pintado y se sigue con lo de arriba.
+    tanda: list = []
+    for capa in list(layers) + [None]:
+        es_ajuste = capa is not None and len(capa) > 7 and capa[7] is not None
+        if capa is not None and not es_ajuste:
+            tanda.append(capa)
+            continue
+        if tanda:
+            pintor = _painter(canvas)
+            draw_layers(pintor, target, tanda)
+            pintor.end()
+            tanda = []
+        if es_ajuste:
+            apply_adjustment(canvas, capa)
+
+    painter = _painter(canvas)
 
     for overlay, image in overlays:
         draw_overlay(painter, target, overlay, image,

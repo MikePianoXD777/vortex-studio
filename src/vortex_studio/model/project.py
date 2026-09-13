@@ -11,11 +11,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from vortex_studio.model.blend import NORMAL, is_normal
+from vortex_studio.model.audio_fx import DUCKED, NORMAL as ROLE_NORMAL, VOICE, AudioFx
 from vortex_studio.model.chroma import ChromaKey
 from vortex_studio.model.color import ColorAdjust
 from vortex_studio.model.mask import Mask
 from vortex_studio.model.media import MediaInfo
-from vortex_studio.model.overlays import ImageOverlay, Title
+from vortex_studio.model.overlays import AdjustmentLayer, ImageOverlay, Title
 from vortex_studio.model.transform import FIT, Transform
 
 SPEED_MIN = 0.25
@@ -109,6 +110,7 @@ class Clip:
     # Ver `model/animate.py`.
     anim: dict = field(default_factory=dict)
     chroma: ChromaKey = field(default_factory=ChromaKey)
+    audio_fx: AudioFx = field(default_factory=AudioFx)
 
     def __post_init__(self) -> None:
         self.source = Path(self.source)
@@ -170,7 +172,7 @@ class Clip:
 def accepts(track, item) -> bool:
     """¿Cabe este elemento en esa pista? Video e imágenes en video, texto en
     texto, y clips de archivo en audio."""
-    tipos = {"video": (Clip, ImageOverlay), "texto": (Title,), "audio": (Clip,)}
+    tipos = {"video": (Clip, ImageOverlay, AdjustmentLayer), "texto": (Title,), "audio": (Clip,)}
     return isinstance(item, tipos.get(track.kind, ()))
 
 
@@ -198,6 +200,8 @@ class Track:
     locked: bool = False
     muted: bool = False
     solo: bool = False
+    # En audio: "Voz", o "Música" que se agacha cuando suena la voz.
+    role: str = ROLE_NORMAL
 
     @property
     def duration(self) -> float:
@@ -249,6 +253,7 @@ class Sequence:
     height: int = 1080
     tracks: list[Track] = field(default_factory=list)
     markers: list[Marker] = field(default_factory=list)
+    duck_depth: float = 12.0      # cuántos dB baja la música cuando habla la voz
 
     @classmethod
     def default(cls) -> Sequence:
@@ -295,6 +300,13 @@ class Sequence:
         """Lo que va a la mezcla: los clips de las pistas que suenan."""
         return [c for t in self.audible_tracks() for c in t.clips
                 if getattr(c, "audio_mode", KEEP_PITCH) != MUTE_AUDIO]
+
+    def audio_mix_options(self) -> dict:
+        """Lo que el mezclador necesita para el ducking: quién es voz y quién se agacha."""
+        pistas = self.audible_tracks()
+        voces = {id(c) for t in pistas if t.role == VOICE for c in t.clips}
+        agachados = {id(c) for t in pistas if t.role == DUCKED for c in t.clips}
+        return {"voices": voces, "ducked": agachados, "depth": self.duck_depth}
 
     def track_of(self, item) -> Track | None:
         """La pista que tiene a ese elemento, comparando por identidad."""
@@ -400,6 +412,11 @@ class Sequence:
                 capas.append((visible, 1.0))
                 if cubierta >= 0.999 or self.covers(visible, t, aspect_of):
                     break
+                continue
+
+            ajuste = next((c for c in track.items_at(t) if isinstance(c, AdjustmentLayer)), None)
+            if ajuste is not None:
+                capas.append((ajuste, 1.0))     # nunca tapa: corrige lo de abajo
                 continue
 
             clip = track.video_at(t)

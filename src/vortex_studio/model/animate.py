@@ -77,7 +77,7 @@ PARAMS: dict[str, Param] = {p.path: p for p in (
     _p("chroma.similarity", "Llave: similitud", "Efectos", 1.0, 100.0),
     _p("chroma.smoothness", "Llave: suavidad", "Efectos", 0.0, 100.0),
     _p("chroma.spill", "Llave: derrame", "Efectos", 0.0, 100.0),
-    _p("gain", "Volumen", "Audio", 0.0, 2.0),
+    _p("gain", "Volumen", "Audio", 0.0, 4.0),
     _p("x", "Horizontal", "Imagen", 0.0, 1.0, ("imagen", "texto")),
     _p("y", "Vertical", "Imagen", 0.0, 1.0, ("imagen", "texto")),
     _p("scale", "Tamaño", "Imagen", 0.02, 2.0, ("imagen",)),
@@ -87,7 +87,9 @@ PARAMS: dict[str, Param] = {p.path: p for p in (
 
 
 def kind_of(item) -> str:
-    from vortex_studio.model.overlays import ImageOverlay, Title
+    from vortex_studio.model.overlays import AdjustmentLayer, ImageOverlay, Title
+    if isinstance(item, AdjustmentLayer):
+        return "ajuste"
     if isinstance(item, Title):
         return "texto"
     if isinstance(item, ImageOverlay):
@@ -99,7 +101,11 @@ def params_for(item) -> list[Param]:
     clase = kind_of(item)
     salida = []
     for param in PARAMS.values():
-        if clase not in param.kinds:
+        # Una capa de ajuste tiene lo del clip que le aplica —color, máscara—
+        # y la opacidad de una imagen; lo que no tiene lo descarta `_has`.
+        aplica = clase in param.kinds or (
+            clase == "ajuste" and bool({"clip", "imagen"} & set(param.kinds)))
+        if not aplica:
             continue
         cabeza = param.path.split(".")[0]
         if "." in param.path and not hasattr(item, cabeza):
