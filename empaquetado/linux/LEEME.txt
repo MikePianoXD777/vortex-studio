@@ -1,0 +1,28 @@
+Vortex Studio para Linux
+========================
+
+Instalar (agrega Vortex Studio a tu menú de aplicaciones, sin contraseña):
+
+    ./instalar.sh
+
+Abrir sin instalar:
+
+    ./vortex-studio/vortex-studio
+
+Desinstalar:
+
+    ~/.local/opt/vortex-studio/desinstalar.sh
+
+Tus proyectos y ajustes no se borran al desinstalar.
+
+Es una beta: guarda seguido y reporta lo que se rompa en
+https://github.com/MikePianoXD777/vortex-studio/issues
+
+---
+
+Install (adds Vortex Studio to your applications menu, no password needed):
+
+    ./instalar.sh
+
+Run without installing: ./vortex-studio/vortex-studio
+Uninstall: ~/.local/opt/vortex-studio/desinstalar.sh

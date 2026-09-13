@@ -7,39 +7,60 @@ A non-linear video editor. Part of Vortex Suite.
 The features of DaVinci Resolve, CapCut, Premiere Pro and After Effects, but
 easy to use. The capability, yes; the complexity, no.
 
-> ### ⚠️ Pre-alpha — `0.6.0a1`
+> ### 🧪 Beta — `0.1.0b1`
 >
-> **This is not ready for real work.** It passes 1000 automated tests, but
-> nobody has actually used it on their own footage yet. That is not the same
-> as being tested.
+> **It's usable now, but it's a beta.** It passes 1121 automated tests
+> and left pre-alpha with a new design and executables, but it still needs
+> real footage to find what the tests don't see.
 >
 > What to expect:
 >
-> - Things breaking in ways we haven't seen
-> - The `.vortex` file format moved to version 6: projects from 0.1 through
->   0.5 open fine, but not the other way around
+> - Things breaking in ways we haven't seen: save often
+> - Numbering started over: `0.1.0b1` is newer than `0.6.0a1` and opens all
+>   of its projects
 > - Optical flow takes over a second per frame: render its zone with `Enter`
 >   before playing it back
 > - The render cache and stabilization analyses take disk space in the
 >   system cache; they can be deleted without losing anything
 > - During video transitions, audio still hard-cuts
 >
-> Use it to poke around and to report what breaks. Not to edit anything you
-> care about without a backup.
+> Report what breaks in
+> [Issues](https://github.com/MikePianoXD777/vortex-studio/issues).
 
-> ### 📦 There is no ready-made download
->
-> **We don't publish executables yet.** There is no `.exe` for Windows and no
-> Linux binary: this repo is source code only.
->
-> To use it you **have to build it yourself**, which needs Python 3.11 or
-> newer. The steps are right below. It takes a couple of minutes the first
-> time, mostly downloading PySide6, which is around 250 MB.
->
-> Binaries will come once it's more stable; publishing them in pre-alpha
-> makes no sense.
+## Download
 
-## Getting started
+Every version's executables are in
+[Releases](https://github.com/MikePianoXD777/vortex-studio/releases).
+
+**Windows** (64-bit):
+
+- `VortexStudio-0.1.0b1-windows-x64-instalador.exe` installs it and adds it to
+  the Start menu. No admin rights needed.
+- `VortexStudio-0.1.0b1-windows-x64-portable.zip` is the portable version:
+  unzip it and open `vortex-studio.exe`.
+
+The executables aren't signed, so Windows may warn through SmartScreen:
+**More info → Run anyway**.
+
+**Linux** (x86_64, glibc 2.35 or newer: Ubuntu 22.04, Fedora 36, Debian 12 or
+later):
+
+```bash
+tar xzf VortexStudio-0.1.0b1-linux-x86_64.tar.gz
+cd VortexStudio-0.1.0b1-linux-x86_64
+./instalar.sh
+```
+
+It shows up in your applications menu as **Vortex Studio**, and in the
+terminal as `vortex-studio`. No password needed: everything goes in your
+home folder. To remove it, run `~/.local/opt/vortex-studio/desinstalar.sh`;
+your projects and settings are kept.
+
+*(The script names are Spanish: install, uninstall.)*
+
+**macOS** has no executable yet; run it from source, as below.
+
+## Getting started from source
 
 Linux and macOS:
 
@@ -213,6 +234,9 @@ without opening windows, so it works over SSH or on a headless machine.
 | `test_hdr_ocio.py` | HDR footage and OCIO color spaces |
 | `test_render_paralelo.py` | Parallel segment rendering |
 | `test_nivel4_ventana.py` | Level 4 from the window |
+| `test_pestanas_pildora.py` | The pill tabs in the properties panel |
+| `test_diseno_beta.py` | Top bar, transport, tools, media, switches and panels of the new design |
+| `test_binarios.py` | Icon, smoke test, Linux and Windows installers and the automated build |
 | `test_portabilidad.py` | That it behaves the same on Linux and Windows |
 
 ## Shortcuts
@@ -601,7 +625,7 @@ commands. A test watches for it.
 
 [MIT](LICENSE). You can use, modify and distribute it, including in something
 commercial; all that's asked is that you keep the copyright notice. No
-warranty of any kind — and in pre-alpha that isn't legal boilerplate, it's a
+warranty of any kind — and in beta that isn't legal boilerplate, it's a
 literal warning.
 
 ## Not there yet

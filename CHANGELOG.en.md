@@ -11,6 +11,68 @@ While we're on `0.x`, any minor version may break compatibility.
 
 Nothing yet.
 
+## [0.1.0b1] — 2026-09-13
+
+**The beta: a new design and executables.** Vortex Studio leaves pre-alpha.
+The window was redesigned from top to bottom so it looks like an editor
+instead of a player, and for the first time there's a ready-made download:
+an installer for Windows and a Linux package that adds itself to the
+applications menu. It passes 1121 automated tests, and the full suite
+ran three times in a row before publishing.
+
+### Numbering starts over
+
+The beta restarts the count at `0.1`. The pre-alphas went from `0.1.0a1` to
+`0.6.0a1`; this `0.1.0b1` carries everything from them. If you installed
+from source with `pip install .` (without `-e`), pip thinks `0.6.0a1` is
+newer: reinstall with `pip install --force-reinstall .`.
+
+The `.vortex` file format is still version 6: every pre-alpha project opens
+the same.
+
+### New design
+
+- **Near-black background with every area in its own rounded card**: media,
+  monitor, timeline and properties. The accent is white; red is left for the
+  playhead only.
+- **Top bar** with the menus, the project name, size and frame rate, and
+  **Export** in plain sight.
+- **Minimal transport** under the monitor: timecode, start, play, end, frame
+  by frame, loop, speed and volume on a single line. The monitor frame has
+  rounded corners.
+- **Tools above the timeline**: Selection, Cut, Split and Slip, plus
+  **Snap** and **Link**, which can now be turned off. Next to them, how many
+  items the sequence has.
+- **Timeline** with a `00:04` ruler, minimal track headers, clips colored by
+  type —amber text, blue video, green audio— and the waveform as bars.
+- **Media** with Media, Audio and Text tabs, cards showing the duration and
+  an import card. The Text tab adds a text at the bottom, center or top, or
+  imports subtitles.
+- **Properties** with all eight tabs as pills. Values read as what they are
+  (`1.2` seconds, `1.50×`) and can be typed. "Keep pitch" and "Mute audio"
+  are switches.
+- **Detachable panels** with a thin bar to drag, detach or close them.
+- **Drawn icons**, identical on Windows and Linux, instead of characters that
+  depended on the system fonts.
+- The start screen and the splash, in the same colors.
+- **An application icon** for the window, the taskbar and the menu.
+
+### Executables
+
+- **Windows**: an installer (`…-windows-x64-instalador.exe`) that adds Vortex
+  Studio to the Start menu without asking for admin rights, or a portable
+  `.zip`.
+- **Linux**: `…-linux-x86_64.tar.gz` with `instalar.sh`, which puts it in your
+  home folder, adds it to the applications menu and leaves a `vortex-studio`
+  command. `desinstalar.sh` removes it without touching your projects. It
+  needs a distribution with glibc 2.35 or newer (Ubuntu 22.04 onward).
+- The executables **are not signed**. Windows may warn through SmartScreen:
+  "More info → Run anyway".
+- They're built automatically on GitHub Actions for every release. Before
+  uploading, each one is opened with `--smoke-test`, which builds the whole
+  editor without a screen; an executable missing a library doesn't get
+  published.
+
 ## [0.6.0a1] — 2026-09-13
 
 **Level 4 of the roadmap: the professional editor features.** Time

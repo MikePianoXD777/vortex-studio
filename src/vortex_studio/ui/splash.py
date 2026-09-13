@@ -16,15 +16,18 @@ from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QApplication, QSplashScreen, QWidget
 
+from vortex_studio.ui import theme
+
 WIDTH, HEIGHT = 520, 300
 
-BG_TOP = QColor("#202329")
-BG_BOTTOM = QColor("#141619")
-BORDER = QColor("#31363d")
-ACCENT = QColor("#e0574a")
-TITLE = QColor("#f0f3f6")
-SUBTITLE = QColor("#878d96")
-STATUS = QColor("#9aa1aa")
+# Colores del diseño de la beta: tarjeta casi negra y acento blanco.
+BG_TOP = QColor(theme.TARJETA)
+BG_BOTTOM = QColor(theme.FONDO)
+BORDER = QColor(theme.BORDE)
+ACCENT = QColor(theme.ACENTO)
+TITLE = QColor(theme.TEXTO)
+SUBTITLE = QColor(theme.TENUE)
+STATUS = QColor(theme.MUY_TENUE)
 
 
 class SplashScreen(QSplashScreen):
@@ -57,9 +60,9 @@ class SplashScreen(QSplashScreen):
         gradient.setColorAt(1.0, BG_BOTTOM)
         painter.setBrush(gradient)
         painter.setPen(QPen(BORDER, 1))
-        painter.drawRoundedRect(card, 10, 10)
+        painter.drawRoundedRect(card, theme.RADIO_TARJETA, theme.RADIO_TARJETA)
 
-        # Barra de acento: el mismo rojo del playhead del timeline.
+        # Barra de acento, en el blanco del botón Exportar y del play.
         painter.setPen(Qt.NoPen)
         painter.setBrush(ACCENT)
         painter.drawRoundedRect(QRectF(44, 112, 52, 3), 1.5, 1.5)
@@ -82,7 +85,7 @@ class SplashScreen(QSplashScreen):
                          Qt.AlignLeft | Qt.AlignVCenter, "Editor de video no lineal")
 
         if self._version:
-            painter.setPen(QColor("#5c626b"))
+            painter.setPen(QColor(theme.MUY_TENUE))
             painter.drawText(QRectF(0, HEIGHT - 44, WIDTH - 44, 20),
                              Qt.AlignRight | Qt.AlignVCenter, f"v{self._version}")
 

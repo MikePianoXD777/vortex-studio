@@ -24,24 +24,28 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from vortex_studio.ui import theme
+
 VIDEO = "video"
 FOTOS = "fotos"
 
 CARD_W, CARD_H = 226, 252
 
-BG = QColor("#16181c")
-CARD_BG = QColor("#212429")
-CARD_BG_HOVER = QColor("#282d34")
-CARD_BG_OFF = QColor("#1c1e22")
-CARD_BORDER = QColor("#31363d")
-CARD_BORDER_HOVER = QColor("#566070")
-ACCENT = QColor("#e0574a")
-TITLE = QColor("#eef1f4")
-TITLE_OFF = QColor("#6a707a")
-SUB = QColor("#878d96")
-SUB_OFF = QColor("#565c65")
-ICON = QColor("#c3c9d1")
-ICON_OFF = QColor("#4d535b")
+# Los colores del diseño de la beta: la misma tarjeta casi negra del editor,
+# con el blanco como acento en vez del rojo, que ahora es solo del playhead.
+BG = QColor(theme.FONDO)
+CARD_BG = QColor(theme.TARJETA)
+CARD_BG_HOVER = QColor(theme.CAMPO)
+CARD_BG_OFF = QColor("#0e0e10")
+CARD_BORDER = QColor(theme.BORDE)
+CARD_BORDER_HOVER = QColor(theme.MUY_TENUE)
+ACCENT = QColor(theme.ACENTO)
+TITLE = QColor(theme.TEXTO)
+TITLE_OFF = QColor(theme.APAGADO)
+SUB = QColor(theme.TENUE)
+SUB_OFF = QColor(theme.APAGADO)
+ICON = QColor(theme.TEXTO)
+ICON_OFF = QColor(theme.APAGADO)
 
 
 class ModeCard(QWidget):
@@ -92,7 +96,7 @@ class ModeCard(QWidget):
 
         painter.setBrush(background)
         painter.setPen(QPen(border, 1))
-        painter.drawRoundedRect(card, 10, 10)
+        painter.drawRoundedRect(card, theme.RADIO_TARJETA, theme.RADIO_TARJETA)
 
         if active:
             # Filo de acento arriba, para marcar cuál está seleccionada.
@@ -132,11 +136,11 @@ class ModeCard(QWidget):
         width = painter.fontMetrics().horizontalAdvance(text) + 22
         pill = QRectF((CARD_W - width) / 2, CARD_H - 44, width, 21)
 
-        painter.setPen(QPen(QColor("#3d434b"), 1))
-        painter.setBrush(QColor("#24282e"))
+        painter.setPen(QPen(QColor(theme.BORDE_FUERTE), 1))
+        painter.setBrush(QColor(theme.CAMPO))
         painter.drawRoundedRect(pill, 10.5, 10.5)
 
-        painter.setPen(QColor("#8b929b"))
+        painter.setPen(QColor(theme.TENUE))
         painter.drawText(pill, Qt.AlignCenter, text)
 
     def _draw_icon(self, painter: QPainter) -> None:
@@ -266,7 +270,8 @@ class Launcher(QDialog):
 
     def _footer(self, version: str) -> QWidget:
         label = QLabel(f"v{version}" if version else "")
-        label.setStyleSheet("color: #4f555d; font-size: 10px;")
+        label.setStyleSheet(
+            f"color: {theme.MUY_TENUE}; font-family: {theme.MONO}; font-size: 10px;")
         label.setAlignment(Qt.AlignCenter)
         return label
 

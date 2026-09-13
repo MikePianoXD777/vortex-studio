@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vortex-studio"
-version = "0.6.0a1"
+version = "0.1.0b1"
 description = "Editor de video no lineal — Vortex Suite"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -12,7 +12,7 @@ license = "MIT"
 license-files = ["LICENSE"]
 keywords = ["video", "editor", "nle", "ffmpeg", "qt"]
 classifiers = [
-    "Development Status :: 2 - Pre-Alpha",
+    "Development Status :: 4 - Beta",
     "Environment :: X11 Applications :: Qt",
     "Intended Audience :: End Users/Desktop",
     "Natural Language :: Spanish",
@@ -36,6 +36,9 @@ vortex-studio = "vortex_studio.app:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+vortex_studio = ["assets/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

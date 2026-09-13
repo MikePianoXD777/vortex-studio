@@ -7,39 +7,59 @@ Editor de video no lineal. Parte de Vortex Suite.
 Las funciones de DaVinci Resolve, CapCut, Premiere Pro y After Effects, pero
 fáciles de usar. La capacidad sí; la complejidad no.
 
-> ### ⚠️ Pre-alfa — `0.6.0a1`
+> ### 🧪 Beta — `0.1.0b1`
 >
-> **Esto no está listo para trabajo real.** Pasa 1000 pruebas automáticas,
-> pero nadie lo ha usado todavía con material propio de verdad. Eso no es lo
-> mismo que estar probado.
+> **Ya se puede usar, pero es una beta.** Pasa 1121 pruebas automáticas
+> y salió de la pre-alfa con un diseño nuevo y ejecutables, pero todavía hay
+> que usarlo con material de verdad para encontrar lo que las pruebas no
+> ven.
 >
 > Lo que puedes esperar:
 >
-> - Cosas que fallan de formas que no hemos visto
-> - El formato del archivo `.vortex` subió a la versión 6: los proyectos de
->   la 0.1 a la 0.5 abren bien, pero al revés no
+> - Cosas que fallan de formas que no hemos visto: guarda seguido
+> - La numeración volvió a empezar: la `0.1.0b1` es más nueva que la
+>   `0.6.0a1` y abre todos sus proyectos
 > - El flujo óptico tarda más de un segundo por cuadro: renderiza su zona
 >   con `Enter` antes de reproducir
 > - La caché de render y los análisis de estabilización ocupan disco en la
 >   caché del sistema; se pueden borrar sin perder nada
 > - En las transiciones de video, el audio sigue cortando seco
 >
-> Úsalo para curiosear y para reportar lo que se rompa. No para editar algo
-> que te importe sin respaldo.
+> Reporta lo que se rompa en
+> [Issues](https://github.com/MikePianoXD777/vortex-studio/issues).
 
-> ### 📦 No hay descarga lista para usar
->
-> **No publicamos ejecutables todavía.** No hay `.exe` para Windows ni
-> binario para Linux: en este repo solo está el código fuente.
->
-> Para usarlo **tienes que compilarlo tú**, y para eso necesitas Python 3.11
-> o más nuevo. Los pasos están justo abajo. Toma un par de minutos la
-> primera vez, casi todo bajando PySide6, que pesa unos 250 MB.
->
-> Habrá binarios cuando esté más estable; en pre-alfa no tiene sentido
-> publicarlos.
+## Descarga
 
-## Arranque
+En [Releases](https://github.com/MikePianoXD777/vortex-studio/releases)
+están los ejecutables de cada versión.
+
+**Windows** (64 bits):
+
+- `VortexStudio-0.1.0b1-windows-x64-instalador.exe` lo instala y lo agrega al
+  menú Inicio. No pide permisos de administrador.
+- `VortexStudio-0.1.0b1-windows-x64-portable.zip` es la versión portátil:
+  descomprime y abre `vortex-studio.exe`.
+
+Los ejecutables no están firmados, así que Windows puede avisar con
+SmartScreen: **Más información → Ejecutar de todas formas**.
+
+**Linux** (x86_64, glibc 2.35 o más nueva: Ubuntu 22.04, Fedora 36, Debian 12
+o posteriores):
+
+```bash
+tar xzf VortexStudio-0.1.0b1-linux-x86_64.tar.gz
+cd VortexStudio-0.1.0b1-linux-x86_64
+./instalar.sh
+```
+
+Queda en tu menú de aplicaciones como **Vortex Studio**, y en la terminal
+como `vortex-studio`. No pide contraseña: todo va en tu carpeta personal.
+Para quitarlo, `~/.local/opt/vortex-studio/desinstalar.sh`; tus proyectos y
+ajustes no se borran.
+
+**macOS** no tiene ejecutable todavía; se corre desde el código, como abajo.
+
+## Arranque desde el código
 
 Linux y macOS:
 
@@ -162,6 +182,9 @@ abrir ventanas, así que funciona por SSH o en una máquina sin pantalla.
 | `test_hdr_ocio.py` | Material HDR y espacios de OCIO |
 | `test_render_paralelo.py` | Render por segmentos en paralelo |
 | `test_nivel4_ventana.py` | Lo del nivel 4 desde la ventana |
+| `test_pestanas_pildora.py` | Las pestañas en píldora del panel de propiedades |
+| `test_diseno_beta.py` | Barra superior, transporte, herramientas, medios, interruptores y paneles del diseño nuevo |
+| `test_binarios.py` | Ícono, prueba de humo, instaladores de Linux y Windows y la compilación automática |
 | `test_portabilidad.py` | Que funcione igual en Linux y Windows |
 
 ## Atajos
@@ -603,8 +626,8 @@ editor. Hay una prueba que lo vigila.
 
 [MIT](LICENSE). Puedes usarlo, modificarlo y distribuirlo, incluso en algo
 comercial; lo único que se pide es conservar el aviso de copyright. Sin
-garantía de ninguna clase — y en pre-alfa eso no es una fórmula legal, es
-una advertencia literal.
+garantía de ninguna clase — y en beta eso no es una fórmula legal, es una
+advertencia literal.
 
 ## Pendiente
 

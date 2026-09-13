@@ -7,37 +7,104 @@ de carga aparecería cuando la carga ya terminó, que es justo al revés.
 
 from __future__ import annotations
 
+import os
 import sys
+import traceback
+from pathlib import Path
 
-from PySide6.QtGui import QColor, QPalette
+from PySide6.QtGui import QColor, QIcon, QPalette
 from PySide6.QtWidgets import QApplication
 
 from vortex_studio import __version__
 
+ASSETS = Path(__file__).resolve().parent / "assets"
+SMOKE_FLAG = "--smoke-test"
+
+
+def app_icon() -> QIcon:
+    """El ícono de la ventana, con todos los tamaños que hay en `assets/`."""
+    icono = QIcon()
+    for archivo in sorted(ASSETS.glob("vortex-studio-*.png")):
+        icono.addFile(str(archivo))
+    return icono
+
+
+def smoke_test(app: QApplication) -> int:
+    """Arma el editor completo sin mostrarlo y sale. Para `--smoke-test`.
+
+    Lo corre la compilación de los binarios antes de publicarlos: un
+    ejecutable de PyInstaller puede compilar sin errores y aun así tronar al
+    abrir porque le faltó una biblioteca de Qt o de FFmpeg. Esto lo descubre
+    en la máquina de compilación y no en la del usuario.
+
+    Si algo falla y `VORTEX_SMOKE_LOG` apunta a un archivo, ahí se escribe el
+    error: en Windows el ejecutable no tiene consola donde imprimirlo.
+    """
+    try:
+        import numpy  # noqa: F401
+        import av
+
+        from vortex_studio.media import HAS_PYAV
+        from vortex_studio.ui import MainWindow
+
+        if not HAS_PYAV:
+            raise RuntimeError("PyAV no cargó")
+        faltan = [c for c in ("h264", "aac") if c not in av.codecs_available]
+        if faltan:
+            raise RuntimeError(f"Faltan códecs en el FFmpeg empacado: {', '.join(faltan)}")
+
+        ventana = MainWindow()
+        app.processEvents()
+        ventana._dirty = False
+        ventana.close()
+        app.processEvents()
+    except Exception:
+        destino = os.environ.get("VORTEX_SMOKE_LOG")
+        if destino:
+            Path(destino).write_text(traceback.format_exc(), encoding="utf-8")
+        traceback.print_exc()
+        return 1
+    return 0
+
 
 def _dark_palette() -> QPalette:
     """Tema oscuro. Un editor de video se usa en cuarto oscuro, no en blanco."""
+    from vortex_studio.ui import theme
+
     palette = QPalette()
-    palette.setColor(QPalette.Window, QColor("#1b1d21"))
-    palette.setColor(QPalette.WindowText, QColor("#d6dae0"))
-    palette.setColor(QPalette.Base, QColor("#15171a"))
-    palette.setColor(QPalette.AlternateBase, QColor("#212429"))
-    palette.setColor(QPalette.Text, QColor("#d6dae0"))
-    palette.setColor(QPalette.Button, QColor("#2b2f34"))
-    palette.setColor(QPalette.ButtonText, QColor("#d6dae0"))
-    palette.setColor(QPalette.Highlight, QColor("#3d6fa8"))
-    palette.setColor(QPalette.HighlightedText, QColor("#ffffff"))
-    palette.setColor(QPalette.ToolTipBase, QColor("#2b2f34"))
-    palette.setColor(QPalette.ToolTipText, QColor("#d6dae0"))
+    palette.setColor(QPalette.Window, QColor(theme.FONDO))
+    palette.setColor(QPalette.WindowText, QColor(theme.TEXTO))
+    palette.setColor(QPalette.Base, QColor(theme.CAMPO))
+    palette.setColor(QPalette.AlternateBase, QColor(theme.TARJETA))
+    palette.setColor(QPalette.Text, QColor(theme.TEXTO))
+    palette.setColor(QPalette.Button, QColor(theme.CAMPO))
+    palette.setColor(QPalette.ButtonText, QColor(theme.TEXTO))
+    palette.setColor(QPalette.Highlight, QColor(theme.PILDORA))
+    palette.setColor(QPalette.HighlightedText, QColor(theme.ACENTO))
+    palette.setColor(QPalette.ToolTipBase, QColor(theme.CAMPO))
+    palette.setColor(QPalette.ToolTipText, QColor(theme.TEXTO))
+    palette.setColor(QPalette.PlaceholderText, QColor(theme.MUY_TENUE))
     return palette
 
 
-def main() -> int:
-    app = QApplication(sys.argv)
+def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv if argv is None else argv)
+    humo = SMOKE_FLAG in argv
+    if humo:
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+    app = QApplication.instance() or QApplication(argv)
     app.setApplicationName("Vortex Studio")
     app.setApplicationVersion(__version__)
+    # Con este nombre el escritorio de Linux empareja la ventana con su
+    # entrada del menú, y en Wayland la barra de tareas le pone su ícono.
+    app.setDesktopFileName("vortex-studio")
+    app.setWindowIcon(app_icon())
     app.setStyle("Fusion")
     app.setPalette(_dark_palette())
+
+    if humo:
+        return smoke_test(app)
 
     from vortex_studio.ui.splash import SplashScreen
 

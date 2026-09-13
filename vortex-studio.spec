@@ -5,12 +5,19 @@ Modo onedir: arranca rápido porque no descomprime nada al abrir.
 El resultado queda en dist/vortex-studio/.
 """
 
+import importlib.util
+
+# OCIO y AAF son opcionales: entran al ejecutable solo si están instalados
+# en el entorno que compila (la compilación de los binarios instala `.[pro]`).
+OPCIONALES = [m for m in ("PyOpenColorIO", "aaf2") if importlib.util.find_spec(m)]
+
 a = Analysis(
     ["src/vortex_studio/__main__.py"],
     pathex=["src"],
     binaries=[],
-    datas=[],
-    hiddenimports=["av"],
+    # El ícono va adentro para que la ventana lo use en cualquier sistema.
+    datas=[("src/vortex_studio/assets", "vortex_studio/assets")],
+    hiddenimports=["av", *OPCIONALES],
     # PySide6 trae módulos pesados que no usamos; fuera del paquete.
     excludes=[
         "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets", "PySide6.QtWebEngineQuick",
@@ -32,6 +39,7 @@ exe = EXE(
     console=False,          # app de ventana: sin terminal detrás
     strip=False,
     upx=False,
+    icon="src/vortex_studio/assets/vortex-studio.ico",   # el del .exe en Windows
 )
 
 coll = COLLECT(

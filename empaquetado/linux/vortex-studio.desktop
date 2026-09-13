@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name=Vortex Studio
+GenericName=Editor de video
+GenericName[en]=Video Editor
+Comment=Editor de video no lineal
+Comment[en]=Non-linear video editor
+Exec="@EXEC@"
+TryExec=@EXEC@
+Icon=vortex-studio
+Terminal=false
+Categories=AudioVideo;Video;AudioVideoEditing;
+Keywords=video;editor;nle;timeline;montaje;edición;
+StartupNotify=true
+StartupWMClass=vortex-studio
