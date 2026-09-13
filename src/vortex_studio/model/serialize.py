@@ -29,6 +29,7 @@ from vortex_studio.model.chroma import ChromaKey
 from vortex_studio.model.color import ColorAdjust
 from vortex_studio.model.curves import Curves
 from vortex_studio.model.mask import Mask
+from vortex_studio.model.multicam import MulticamClip
 from vortex_studio.model.media import MediaInfo, library_key
 from vortex_studio.model.overlays import AdjustmentLayer, ImageOverlay, Title
 from vortex_studio.model.project import (
@@ -57,7 +58,7 @@ from vortex_studio.model.transform import Transform
 FORMAT_VERSION = 6
 EXTENSION = ".vortex"
 
-KINDS = ("clip", "anidada", "imagen", "texto", "ajuste")
+KINDS = ("clip", "anidada", "multicam", "imagen", "texto", "ajuste")
 TRACK_KINDS = ("video", "audio", "texto")
 MIN_DURATION = 1.0 / 30.0       # lo mínimo que se le deja a un elemento dañado
 
@@ -181,7 +182,10 @@ def _read_path(texto: str, base: Path | None) -> Path:
 
 def item_to_dict(item: Any, base: Path | None = None) -> dict:
     data = asdict(item)
-    if isinstance(item, NestedClip):
+    if isinstance(item, MulticamClip):
+        data["tipo"] = "multicam"
+        data["source"] = ""
+    elif isinstance(item, NestedClip):
         data["tipo"] = "anidada"
         data["source"] = ""
     elif isinstance(item, Clip):
@@ -244,11 +248,15 @@ def item_from_dict(data: dict, base: Path | None = None) -> Any:
     mask = data.pop("mask", None)
     markers = data.pop("markers", None)
 
-    if kind in ("clip", "anidada"):
+    if kind in ("clip", "anidada", "multicam"):
         color = _color(data.pop("color", None), base)
         chroma = data.pop("chroma", None)
         audio_fx = data.pop("audio_fx", None)
-        if kind == "anidada":
+        if kind == "multicam":
+            data["source"] = Path("")
+            item = MulticamClip(**_fields(MulticamClip, data))
+            item.angle = int(_number(item.angle, 0.0, 0.0, 64.0))
+        elif kind == "anidada":
             data["source"] = Path("")
             item = NestedClip(**_fields(NestedClip, data))
         else:

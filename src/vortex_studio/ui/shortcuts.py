@@ -54,6 +54,7 @@ GROUPS = {
     "reproducir": "Reproducción",
     "navegar": "Navegación",
     "marcar": "Marcar",
+    "multicam": "Multicámara",
     "ver": "Ver",
 }
 
@@ -130,6 +131,11 @@ DEFAULTS: dict[str, tuple[str, str]] = {
     "marcar.borrar": ("Borrar marcadores", "Ctrl+Shift+M"),
     "marcar.ir_entrada": ("Ir a la entrada", "Shift+I"),
     "marcar.ir_salida": ("Ir a la salida", "Shift+O"),
+
+    "multicam.camara_1": ("Cortar a la cámara 1", "1"),
+    "multicam.camara_2": ("Cortar a la cámara 2", "2"),
+    "multicam.camara_3": ("Cortar a la cámara 3", "3"),
+    "multicam.camara_4": ("Cortar a la cámara 4", "4"),
 
     "ver.pantalla_completa": ("Pantalla completa", "F"),
     "ver.ajustar": ("Ajustar timeline", "Shift+Z"),

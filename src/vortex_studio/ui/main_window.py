@@ -74,7 +74,7 @@ from vortex_studio.model import (
 )
 from vortex_studio.model.commands import copy_items, new_link, overwrite
 from vortex_studio.model.project import DIP_BLACK, DIP_WHITE, CROSS, SAMPLINGS, Marker
-from vortex_studio.model import timeremap
+from vortex_studio.model import multicam, timeremap
 from vortex_studio.model.transform import FILL
 from vortex_studio.model.autosave import (
     AUTOSAVE_SECONDS,
@@ -462,6 +462,19 @@ class MainWindow(QMainWindow):
         remapeo.addSeparator()
         self._action(remapeo, "Quitar remapeo", None, self.remove_time_remap)
         clip_menu.addSeparator()
+        analisis = clip_menu.addMenu("&Detectar y seguir")
+        self._action(analisis, "Que la &máscara siga al objeto", None,
+                     lambda: self.track_with_mask("mascara"))
+        self._action(analisis, "Que el &texto siga al objeto (de la máscara)", None,
+                     lambda: self.track_with_mask("texto"))
+        analisis.addSeparator()
+        self._action(analisis, "&Quitar silencios del clip", None, lambda: self.remove_silences())
+        analisis.addSeparator()
+        self._action(analisis, "Dividir en cada &escena", None,
+                     lambda: self.detect_scenes(split=True))
+        self._action(analisis, "Poner un marcador en cada escena", None,
+                     lambda: self.detect_scenes(split=False))
+        clip_menu.addSeparator()
         self._action(clip_menu, "&Transición cruzada (1 s)", "clip.transicion",
                      lambda: self.set_dissolve(1.0, CROSS))
         self._action(clip_menu, "Fundido a &negro (1 s)", "clip.fundido_negro",
@@ -577,6 +590,15 @@ class MainWindow(QMainWindow):
         self._switch_menu.aboutToShow.connect(self._fill_switch_menu)
         self._insert_menu = formato.addMenu("&Insertar secuencia")
         self._insert_menu.aboutToShow.connect(self._fill_insert_menu)
+        formato.addSeparator()
+        self._action(formato, "Crear &multicámara (sincronizar por audio)…", None,
+                     lambda: self.create_multicam(method="audio"))
+        self._action(formato, "Crear multicámara (por código de &tiempo)…", None,
+                     lambda: self.create_multicam(method="timecode"))
+        camaras = formato.addMenu("Cortar a &cámara")
+        for indice in range(4):
+            self._action(camaras, f"Cámara {indice + 1}", f"multicam.camara_{indice + 1}",
+                         lambda _=False, i=indice: self.switch_angle(i))
 
         ver = self.menuBar().addMenu("&Ver")
         self._action(ver, "Pantalla &completa", "ver.pantalla_completa", self.toggle_fullscreen)
@@ -1563,10 +1585,15 @@ class MainWindow(QMainWindow):
             if isinstance(clip, NestedClip):
                 datos, firma, medios = self._project_snapshot()
                 vista = animate.view(clip, local_in(clip, t))
+                angulo = None
+                if isinstance(clip, multicam.MulticamClip):
+                    hija = self.project.sequence_by_id(clip.sequence_id)
+                    angulo = multicam.angle_at(clip, local_in(clip, t),
+                                               multicam.angle_count(hija))
                 trabajo = FrameJob.make(
-                    id(clip), Path(f"secuencia-{clip.sequence_id}-{firma}"),
+                    id(clip), Path(f"secuencia-{clip.sequence_id}-{firma}-{angulo}"),
                     clip.source_time(inside(clip, t)), vista.color, None,
-                    nested=(datos, firma, clip.sequence_id, medios))
+                    nested=(datos, firma, clip.sequence_id, medios, angulo))
                 plan.append((clip, trabajo, peso))
                 continue
             vista = animate.view(clip, local_in(clip, t))
@@ -1827,6 +1854,245 @@ class MainWindow(QMainWindow):
             return False
         self._commit("Quitar remapeo")
         self._sync_panels(self.timeline.playhead)
+        return True
+
+    # --- detectar y seguir ------------------------------------------------------
+
+    def _file_clip_at_playhead(self):
+        """El clip de archivo seleccionado, o el de video bajo el playhead."""
+        seleccion = self.timeline.selected
+        if isinstance(seleccion, Clip) and not isinstance(seleccion, NestedClip):
+            return seleccion
+        clip = self.sequence.top_clip_at(self.timeline.playhead)
+        return None if isinstance(clip, NestedClip) else clip
+
+    def _source_size(self, clip) -> tuple[int, int]:
+        try:
+            info = self._media_info(Path(clip.source))
+            if info.width and info.height:
+                return info.width, info.height
+        except Exception:
+            pass
+        return self.sequence.width, self.sequence.height
+
+    def track_with_mask(self, target: str = "mascara") -> int:
+        """Sigue lo que encierra la máscara, desde el playhead hasta el final del clip.
+
+        Con `target="mascara"` la máscara se mueve con el objeto; con
+        `"texto"`, el texto del playhead. Devuelve cuántos keyframes puso.
+        """
+        from vortex_studio.media.tracking import LOST, track
+        from vortex_studio.model import tracking as seguir
+
+        t = self.timeline.playhead
+        clip = self._file_clip_at_playhead()
+        if clip is None or not clip.contains(t):
+            self.statusBar().showMessage("Pon el playhead sobre un clip de video.", 4000)
+            return 0
+        local = t - clip.start
+        mascara = animate.view(clip, local).mask
+        if mascara.is_off or not mascara.uses_size:
+            self.statusBar().showMessage(
+                "Pon una máscara de rectángulo o círculo sobre el objeto que quieres seguir.", 5000)
+            return 0
+        destino = clip
+        if target == "texto":
+            textos = self.sequence.titles_at(t)
+            destino = self._title if self._title in textos else (textos[0] if textos else None)
+            if destino is None:
+                self.statusBar().showMessage("No hay texto en el playhead que siga al objeto.", 4000)
+                return 0
+        if not self._can_edit(clip) or not self._can_edit(destino):
+            return 0
+
+        fuente, cuadro = self._source_size(clip), (self.sequence.width, self.sequence.height)
+
+        def a_material(fx, fy):
+            return seguir.frame_to_source(fx, fy, fuente, cuadro, clip.transform, local)
+
+        cx, cy = a_material(mascara.x, mascara.y)
+        izquierda, _ = a_material(mascara.x - mascara.width / 2, mascara.y)
+        derecha, _ = a_material(mascara.x + mascara.width / 2, mascara.y)
+        _, arriba = a_material(mascara.x, mascara.y - mascara.height / 2)
+        _, abajo = a_material(mascara.x, mascara.y + mascara.height / 2)
+        caja = (cx, cy, abs(derecha - izquierda), abs(abajo - arriba))
+
+        desde, hasta = clip.source_time(t), clip.source_time(clip.end - 1e-3)
+        self.statusBar().showMessage("Siguiendo el objeto…")
+        QApplication.processEvents()
+        try:
+            filas = track(clip.source, min(desde, hasta), max(desde, hasta), caja)
+        except Exception as error:
+            self.statusBar().showMessage(f"No se pudo seguir el objeto: {error}", 6000)
+            return 0
+        puntos = seguir.samples(clip, filas, local, self.sequence.fps, fuente, cuadro)
+        hechos = (seguir.apply_to_item(destino, clip, puntos) if target == "texto"
+                  else seguir.apply_to_mask(clip, puntos))
+        if not hechos:
+            self.statusBar().showMessage("No se pudo seguir el objeto.", 4000)
+            return 0
+        self._commit("El texto sigue al objeto" if target == "texto" else "Seguir con la máscara")
+        self._sync_panels(t)
+        perdidos = int((filas[:, 3] < LOST).sum()) if len(filas) else 0
+        aviso = f"{hechos} keyframes siguiendo al objeto."
+        if perdidos:
+            aviso += f" Se perdió en {perdidos} cuadros: revísalos en el editor de keyframes."
+        self.statusBar().showMessage(aviso, 8000)
+        return hechos
+
+    def remove_silences(self, threshold_db: float = -40.0, min_duration: float = 0.5) -> int:
+        """Corta los silencios del clip y cierra los huecos, con su enlazado."""
+        from vortex_studio.media.silence import silent_ranges
+        from vortex_studio.model.cuts import CutRanges, timeline_ranges
+
+        item = self._file_clip_at_playhead()
+        if item is None:
+            self.statusBar().showMessage("Selecciona el clip al que le quieres quitar los silencios.",
+                                         4000)
+            return 0
+        if not self._can_edit(item):
+            return 0
+        tramos = timeline_ranges(item, silent_ranges(item.source, threshold_db, min_duration))
+        if not tramos:
+            self.statusBar().showMessage(
+                f"No hay silencios de más de {min_duration:g} s que cortar en el clip.", 5000)
+            return 0
+        comando = CutRanges(item=item, ranges=tramos, name="Quitar silencios")
+        if not self._run(comando):
+            return 0
+        self._fit_zoom()
+        self.statusBar().showMessage(
+            f"Se quitaron {comando.count} silencio{'s' if comando.count != 1 else ''} "
+            f"({comando.removed:.1f} s).", 6000)
+        return comando.count
+
+    def detect_scenes(self, split: bool = True, sensitivity: float = 50.0) -> int:
+        """Busca los cortes dentro del clip y lo divide o pone marcadores ahí."""
+        from vortex_studio.media.scenes import cuts, scores
+
+        item = self._file_clip_at_playhead()
+        if item is None:
+            self.statusBar().showMessage("Selecciona el clip donde buscar escenas.", 4000)
+            return 0
+        if split and not self._can_edit(item):
+            return 0
+        if timeremap.is_remapped(item) or item.speed <= 0:
+            self.statusBar().showMessage("No se buscan escenas en un clip remapeado o congelado.",
+                                         5000)
+            return 0
+        self.statusBar().showMessage("Buscando cambios de escena…")
+        QApplication.processEvents()
+        try:
+            datos = scores(item.source)
+        except Exception as error:
+            self.statusBar().showMessage(f"No se pudieron buscar escenas: {error}", 6000)
+            return 0
+        fin = item.in_point + item.duration * item.speed
+        tiempos = [self.sequence.snap_to_frame(item.start + (c - item.in_point) / item.speed)
+                   for c in cuts(datos, sensitivity) if item.in_point + 1e-3 < c < fin - 1e-3]
+        tiempos = [x for x in tiempos if item.start + 1e-6 < x < item.end - 1e-6]
+        if not tiempos:
+            self.statusBar().showMessage("No se encontraron cambios de escena en el clip.", 5000)
+            return 0
+        if split:
+            for momento in sorted(tiempos, reverse=True):
+                Split(items=[item], time=momento).apply(self.sequence)
+            self._commit("Dividir por escenas")
+        else:
+            for momento in tiempos:
+                self.sequence.add_marker(momento, name="Escena")
+            self._commit("Marcar escenas")
+        self.statusBar().showMessage(f"{len(tiempos)} cambio{'s' if len(tiempos) != 1 else ''} "
+                                     f"de escena.", 5000)
+        return len(tiempos)
+
+    # --- multicámara -------------------------------------------------------------
+
+    def create_multicam(self, paths=None, method: str = "audio"):
+        """Arma la multicámara con esos archivos y la mete en el playhead."""
+        from vortex_studio.media.sync import audio_offset, timecode_seconds
+
+        if paths is None:
+            paths, _ = QFileDialog.getOpenFileNames(self, "Cámaras de la misma toma", "",
+                                                    MEDIA_FILTER)
+        rutas = [Path(p) for p in paths or []]
+        if len(rutas) < 2:
+            self.statusBar().showMessage("Elige al menos dos cámaras de la misma toma.", 5000)
+            return None
+        infos = []
+        for ruta in rutas:
+            try:
+                info = self._media_info(ruta)
+            except Exception:
+                info = None
+            if info is None or not info.has_video:
+                self.statusBar().showMessage(f"{ruta.name} no es un video que se pueda usar.", 5000)
+                return None
+            infos.append(info)
+
+        metodo, desfases, dudosas = method, [0.0], []
+        if method == "timecode":
+            codigos = [timecode_seconds(r) for r in rutas]
+            if any(c is None for c in codigos):
+                metodo = "audio"            # sin código de tiempo, por el audio
+            else:
+                desfases = [c - codigos[0] for c in codigos]
+        if metodo == "audio":
+            desfases = [0.0]
+            for ruta in rutas[1:]:
+                desfase, confianza = audio_offset(rutas[0], ruta)
+                desfases.append(desfase)
+                if confianza < 5:
+                    dudosas.append(ruta.name)
+
+        pista = self._free_track("video", last=True)
+        if pista is None:
+            self._locked_notice("video")
+            return None
+        referencia = infos[0]
+        angulos = [multicam.Angle(r, d, i.duration, i.has_audio, f"Cámara {n + 1}")
+                   for n, (r, d, i) in enumerate(zip(rutas, desfases, infos))]
+        multi = multicam.build(angulos, referencia.width or self.sequence.width,
+                               referencia.height or self.sequence.height,
+                               referencia.fps or self.sequence.fps,
+                               name=f"Multicámara {len(self.project.sequences)}")
+        self.project.sequences.append(multi)
+        if all(not t.clips for t in self.sequence.tracks):
+            self.sequence.width, self.sequence.height = multi.width, multi.height
+            self.sequence.fps = multi.fps
+            self.preview.set_canvas(multi.width, multi.height)
+
+        clip = multicam.MulticamClip(source=Path(""), start=self.timeline.playhead,
+                                     duration=multi.duration, sequence_id=multi.id,
+                                     name=multi.name)
+        overwrite(pista, clip)
+        pista.add(clip)
+        self.timeline.select(clip)
+        self._fit_zoom()
+        self._commit("Multicámara")
+        aviso = f"Multicámara de {len(rutas)} cámaras, sincronizada por " \
+                f"{'código de tiempo' if metodo == 'timecode' else 'audio'}. Corta con 1 a 4."
+        if dudosas:
+            aviso += f" Revisa la sincronía de: {', '.join(dudosas)}."
+        self.statusBar().showMessage(aviso, 8000)
+        return clip
+
+    def switch_angle(self, index: int) -> bool:
+        """Corta a esa cámara en el playhead, en el clip multicámara que haya ahí."""
+        t = self.timeline.playhead
+        clip = next((c for pista in self.sequence.visible_video_tracks()
+                     for c in pista.items_at(t) if isinstance(c, multicam.MulticamClip)), None)
+        if clip is None:
+            self.statusBar().showMessage("No hay un clip multicámara en el playhead.", 4000)
+            return False
+        cuantas = multicam.angle_count(self.project.sequence_by_id(clip.sequence_id))
+        if not 0 <= index < cuantas:
+            self.statusBar().showMessage(f"La multicámara tiene {cuantas} cámaras.", 4000)
+            return False
+        if not self._can_edit(clip):
+            return False
+        multicam.cut_to(clip, t - clip.start, index)
+        self._commit(f"Cámara {index + 1}")
         return True
 
     def set_dissolve(self, seconds: float, kind: str | None = None) -> None:
@@ -2402,7 +2668,8 @@ class MainWindow(QMainWindow):
         from vortex_studio.media.color import ColorProcessor
         from vortex_studio.ui.renderer import color_frame, image_to_rgb_frame
 
-        datos, firma, ident, medios = job.nested
+        datos, firma, ident, medios, *resto = job.nested
+        angulo = resto[0] if resto else None
         entrada = self._nested_workers.get(firma)
         if entrada is None:
             for vieja in self._nested_workers.values():
@@ -2415,9 +2682,11 @@ class MainWindow(QMainWindow):
         hija = secuencias.get(ident)
         if hija is None:
             return None
-        render = renders.get(ident)
+        render = renders.get((ident, angulo))
         if render is None:
-            render = renders[ident] = SequenceRenderer(hija, dict(medios), resolve=secuencias.get)
+            vista = multicam.angle_view(hija, angulo) if angulo is not None else hija
+            render = renders[(ident, angulo)] = SequenceRenderer(vista, dict(medios),
+                                                                 resolve=secuencias.get)
         imagen = render.compose(job.time, hija.width, hija.height)
         return color_frame(image_to_rgb_frame(imagen), job.adjust, procesador)
 

@@ -24,6 +24,7 @@ from vortex_studio.media.pool import SourcePool
 from vortex_studio.model import animate
 from vortex_studio.model.media import lookup
 from vortex_studio.model.overlays import AdjustmentLayer
+from vortex_studio.model.multicam import MulticamClip, angle_at, angle_count, angle_view
 from vortex_studio.model.project import SAMPLE_NEAREST, Fill, NestedClip
 from vortex_studio.ui.compositor import Layer, compose, framing_of
 
@@ -148,11 +149,18 @@ class SequenceRenderer:
         hija = self.resolve(clip.sequence_id)
         if hija is None or hija is self.sequence:
             return None
-        hijo = self._children.get(clip.sequence_id)
-        if hijo is None or hijo.sequence is not hija:
-            hijo = SequenceRenderer(hija, self.media, SourcePool(4), self.images, self.resolve)
+        clave, angulo = clip.sequence_id, None
+        if isinstance(clip, MulticamClip):
+            # Una multicámara muestra un solo ángulo: el del corte vigente.
+            angulo = angle_at(clip, local_in(clip, t), angle_count(hija))
+            clave = f"{clip.sequence_id}#{angulo}"
+        hijo = self._children.get(clave)
+        if hijo is None or getattr(hijo, "_base", None) is not hija:
+            vista = angle_view(hija, angulo) if angulo is not None else hija
+            hijo = SequenceRenderer(vista, self.media, SourcePool(4), self.images, self.resolve)
+            hijo._base = hija
             hijo._depth = self._depth + 1
-            self._children[clip.sequence_id] = hijo
+            self._children[clave] = hijo
         imagen = hijo.compose(clip.source_time(inside(clip, t)), hija.width, hija.height)
         if self._processor is None:
             from vortex_studio.media.color import ColorProcessor
