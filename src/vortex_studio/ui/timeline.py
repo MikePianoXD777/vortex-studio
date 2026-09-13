@@ -829,6 +829,13 @@ class TimelineWidget(QWidget):
                          for p in self._partners(item)],
             "moved": False,
         }
+        if zone == "inicio":
+            # Recortar la cabeza se recalcula desde el estado de antes en cada
+            # movimiento del mouse: los keyframes se recorren, y recorrerlos
+            # sobre lo ya recorrido los iría arrastrando.
+            from vortex_studio.model.commands import head_state
+            self._drag["heads"] = {id(x): head_state(x)
+                                   for x in [item, *self._partners(item)]}
 
     def _partners(self, item) -> list:
         """Lo que se arrastra junto con `item`: el resto de la selección y
@@ -930,27 +937,25 @@ class TimelineWidget(QWidget):
         edge = self._snap(self.time_for(pos.x()), ignore=item)
 
         if zone == "inicio":
+            from vortex_studio.model.commands import restore_head, trim_head
+
             original_end = drag["start"] + drag["duration"]
             new_start = max(0.0, min(edge, original_end - minimum))
-            item.start = new_start
-            item.duration = original_end - new_start
+            corrido = new_start - drag["start"]
             # En un clip de archivo, recortar por el inicio avanza el punto
             # de entrada: se ve más adelante del original, no se estira. En
-            # tiempo de archivo, así que cuenta la velocidad.
-            if drag["in_point"] is not None:
-                item.in_point = max(0.0, drag["in_point"] + (new_start - drag["start"])
-                                    * max(getattr(item, "speed", 1.0), 0.0))
-            corrido = new_start - drag["start"]
+            # tiempo de archivo, así que cuenta la velocidad —o el remapeo—,
+            # y la animación se recorre para seguir pegada a la imagen.
+            restore_head(item, drag["heads"][id(item)])
+            trim_head(item, corrido)
             for otro, inicio, duracion, entrada in drag.get("partners", ()):
                 # Solo se recorta junto el compañero que empezaba en el mismo
                 # lugar: recortar la cabeza de un audio más largo que su video
                 # le comería material que nadie pidió quitar.
                 if abs(inicio - drag["start"]) > 1e-6:
                     continue
-                otro.start = inicio + corrido
-                otro.duration = max(minimum, duracion - corrido)
-                if entrada is not None:
-                    otro.in_point = max(0.0, entrada + corrido * max(otro.speed, 0.0))
+                restore_head(otro, drag["heads"][id(otro)])
+                trim_head(otro, min(corrido, duracion - minimum))
         else:
             item.duration = max(minimum, edge - item.start)
             fin_original = drag["start"] + drag["duration"]

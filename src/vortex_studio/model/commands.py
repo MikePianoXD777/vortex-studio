@@ -21,6 +21,7 @@ import copy
 import uuid
 from dataclasses import dataclass, field
 
+from vortex_studio.model import animate, timeremap
 from vortex_studio.model import keyframes as kf
 from vortex_studio.model.project import Clip, Sequence, accepts
 
@@ -51,6 +52,59 @@ def editable_group(sequence: Sequence, items, with_links: bool = True) -> list:
     return [i for i in grupo if editable(sequence, i)]
 
 
+def head_state(item) -> dict:
+    """Lo que cambia al recortar la cabeza, para poder volver a partir de ahí."""
+    return {
+        "start": item.start,
+        "duration": item.duration,
+        "in_point": getattr(item, "in_point", None),
+        "keys": copy.deepcopy(getattr(getattr(item, "transform", None), "keys", None)),
+        "anim": copy.deepcopy(getattr(item, "anim", None)),
+        "markers": copy.deepcopy(getattr(item, "markers", None)),
+    }
+
+
+def restore_head(item, state: dict) -> None:
+    item.start, item.duration = state["start"], state["duration"]
+    if state["in_point"] is not None:
+        item.in_point = state["in_point"]
+    if state["keys"] is not None:
+        item.transform.keys = copy.deepcopy(state["keys"])
+    if state["anim"] is not None:
+        item.anim = copy.deepcopy(state["anim"])
+    if state["markers"] is not None:
+        item.markers = copy.deepcopy(state["markers"])
+
+
+def trim_head(item, amount: float) -> None:
+    """Le quita `amount` segundos a la cabeza sin mover lo que se ve (negativo la alarga).
+
+    El inicio y el punto de entrada avanzan, y los keyframes y los marcadores
+    del elemento se recorren lo mismo hacia atrás: la animación sigue pegada
+    a la imagen, como en Premiere. Antes solo avanzaba el punto de entrada y
+    los keyframes se quedaban donde estaban, corridos respecto del material.
+    Con remapeo de tiempo eso ya no era un detalle: recortar la cabeza
+    cambiaba qué cuadros se veían en todo el clip.
+    """
+    if abs(amount) < 1e-12:
+        return
+    remapeo = timeremap.keys(item)
+    desplazo = 0.0
+    if isinstance(item, Clip):
+        entrada = item.source_time(item.start + amount)
+        desplazo = entrada - item.in_point
+        item.in_point = max(0.0, entrada)
+    item.start += amount
+    item.duration -= amount
+    animate.shift_all(item, -amount)
+    if remapeo:
+        item.anim[timeremap.TIME] = timeremap.rebase(remapeo, amount, desplazo)
+    if getattr(item, "markers", None):
+        for marcador in item.markers:
+            marcador.time = round(marcador.time - amount, 6)
+        item.markers = [m for m in item.markers if m.time >= -1e-9]
+
+
 def overwrite(track, item) -> None:
     """Lo que se suelta encima tapa a lo que ya estaba.
 
@@ -70,11 +124,8 @@ def overwrite(track, item) -> None:
                 # El nuevo cae en medio: el de abajo queda partido en dos,
                 # como al pegar en medio de un clip en Premiere.
                 cola = copy.deepcopy(other)
-                recorte = item.end - other.start
-                cola.start = item.end
-                cola.duration = other.end - item.end
+                trim_head(cola, item.end - other.start)
                 if hasattr(cola, "in_point"):
-                    cola.in_point = other.in_point + recorte * max(other.speed, 0.0)
                     cola.dissolve = 0.0
                 cola.fade_in = 0.0
                 other.fade_out = 0.0
@@ -83,11 +134,7 @@ def overwrite(track, item) -> None:
                 track.clips.append(cola)
             other.duration = item.start - other.start   # se le corta la cola
         else:
-            recorte = item.end - other.start             # se le corta la cabeza
-            other.start = item.end
-            other.duration -= recorte
-            if hasattr(other, "in_point"):
-                other.in_point += recorte * max(other.speed, 0.0)
+            trim_head(other, item.end - other.start)     # se le corta la cabeza
     track.clips.sort(key=lambda c: c.start)
 
 
@@ -157,6 +204,11 @@ def split_item(sequence: Sequence, item, t: float):
     # la transformación, por la misma razón.
     for ruta, puntos in list((getattr(item, "anim", None) or {}).items()):
         second.anim[ruta] = kf.shift(puntos, -left)
+    # Los de tiempo además cambian de valor: la segunda mitad empieza más
+    # adelante en el material. Ver `timeremap.rebase`.
+    if isinstance(item, Clip) and timeremap.is_remapped(item):
+        second.anim[timeremap.TIME] = timeremap.rebase(
+            item.anim[timeremap.TIME], left, second.in_point - item.in_point)
 
     # Cada marcador se queda en la mitad donde cae, con su tiempo relativo.
     if getattr(item, "markers", None):
@@ -310,7 +362,13 @@ class SetSpeed(Command):
     def apply(self, sequence: Sequence) -> bool:
         cambio = False
         for otro in editable_group(sequence, [self.clip]):
-            if isinstance(otro, Clip) and abs(otro.speed - self.speed) > 1e-9:
+            if not isinstance(otro, Clip):
+                continue
+            # Una velocidad fija reemplaza al remapeo: las dos cosas a la vez
+            # no significan nada. Se apaga empezando en el mismo cuadro.
+            if timeremap.disable(otro):
+                cambio = True
+            if abs(otro.speed - self.speed) > 1e-9:
                 otro.retime(self.speed)
                 cambio = True
         return cambio

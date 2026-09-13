@@ -78,7 +78,16 @@ class ColorProcessor:
         signature = (adjust.signature, llave.signature if llave else (),
                      frame.width, frame.height, frame.format.name)
         if signature != self._signature:
-            self._build(frame, adjust, llave)
+            try:
+                self._build(frame, adjust, llave)
+            except Exception:
+                if not adjust.has_lut:
+                    raise
+                # Un LUT dañado —o que se volvió ilegible después de cargarlo—
+                # no deja el clip en negro: se aplica todo lo demás, sin él.
+                sin_lut = adjust.copy()
+                sin_lut.lut = ""
+                self._build(frame, sin_lut, llave)
             self._signature = signature
 
         self._graph.push(frame)

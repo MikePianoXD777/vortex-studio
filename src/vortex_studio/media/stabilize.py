@@ -103,6 +103,8 @@ def analyze(path: str | Path,
     anterior = None
     x = y = 0.0
     with av.open(str(path)) as contenedor:
+        if not contenedor.streams.video:
+            raise ValueError("El archivo no tiene video que estabilizar.")
         flujo = contenedor.streams.video[0]
         flujo.thread_type = "AUTO"
         total = max(1, int((contenedor.duration or 0) / av.time_base * 1000))

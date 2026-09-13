@@ -96,6 +96,11 @@ def level_of(sequence, start: float, end: float) -> int:
                 return HEAVY
             if item.anim:
                 return HEAVY
+            # Cuadros intermedios en cámara lenta: dos decodificaciones por
+            # cuadro, o flujo óptico, que tarda más de un segundo cada uno.
+            if getattr(item, "interpolation", "Cuadro más cercano") != "Cuadro más cercano" \
+                    and 0 < item.speed < 1.0:
+                return HEAVY
             if not item.transform.is_neutral or item.speed != 1.0 or item.fade_in or item.fade_out:
                 nivel = max(nivel, LIGHT)
     return nivel

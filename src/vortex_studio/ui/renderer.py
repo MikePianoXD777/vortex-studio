@@ -24,7 +24,7 @@ from vortex_studio.media.pool import SourcePool
 from vortex_studio.model import animate
 from vortex_studio.model.media import lookup
 from vortex_studio.model.overlays import AdjustmentLayer
-from vortex_studio.model.project import Fill, NestedClip
+from vortex_studio.model.project import SAMPLE_NEAREST, Fill, NestedClip
 from vortex_studio.ui.compositor import Layer, compose, framing_of
 
 
@@ -171,7 +171,11 @@ class SequenceRenderer:
             vista = animate.view(clip, local_in(clip, t))
             momento = clip.source_time(inside(clip, t))
             llave = getattr(vista, "chroma", None)
-            if llave is None or not llave.is_on:
+            llave = llave if llave is not None and llave.is_on else None
+            muestreo = getattr(clip, "interpolation", SAMPLE_NEAREST)
+            if muestreo != SAMPLE_NEAREST:
+                return fuente.frame_at(momento, color, llave, sampling=muestreo)
+            if llave is None:
                 return fuente.frame_at(momento, color)
             return fuente.frame_at(momento, color, llave)
         except Exception:

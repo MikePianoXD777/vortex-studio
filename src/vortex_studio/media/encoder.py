@@ -83,6 +83,8 @@ def export_video(
     # H.264 necesita dimensiones pares; si son impares, el codificador falla.
     width -= width % 2
     height -= height % 2
+    if width < 2 or height < 2:
+        raise ValueError(f"El cuadro de salida es demasiado chico ({width}×{height}).")
 
     container = av.open(str(path), mode="w")
     closed = False

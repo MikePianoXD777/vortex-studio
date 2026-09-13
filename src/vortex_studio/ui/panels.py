@@ -74,7 +74,10 @@ from vortex_studio.model.color import (
     TINT,
     VIGNETTE,
 )
+from vortex_studio.model import timeremap
 from vortex_studio.model.mask import NONE as MASK_NONE
+from vortex_studio.model.project import SAMPLE_NEAREST, SAMPLINGS
+from vortex_studio.model.transform import CORNERS, TILT
 from vortex_studio.ui.widgets import (
     Collapsible,
     CurveView,
@@ -804,6 +807,13 @@ class ClipPanel(Page):
         self._audio_mode.setToolTip("Qué pasa con el sonido cuando el clip no va a 100 %")
         self._audio_mode.currentTextChanged.connect(self._audio_mode_changed)
 
+        self._interp = QComboBox()
+        self._interp.addItems(SAMPLINGS)
+        self._interp.setToolTip("En cámara lenta: repetir el cuadro, mezclar los dos vecinos "
+                                "o inventar el de en medio siguiendo el movimiento (lento: "
+                                "renderiza la zona con Enter)")
+        self._interp.currentTextChanged.connect(self._interp_changed)
+
         self._info = QLabel("")
         self._info.setWordWrap(True)
         self._info.setStyleSheet("color:#6f757e; font-size:10px;")
@@ -812,7 +822,7 @@ class ClipPanel(Page):
             self._name,
             section("Fundidos (segundos)"), self._fade_in, self._fade_out,
             section("Transición con el anterior"), self._transition, self._dissolve,
-            section("Tiempo"), self._speed, self._audio_mode,
+            section("Tiempo"), self._speed, self._audio_mode, self._interp,
             section("Audio"), self._gain,
             self._info,
             None,
@@ -835,6 +845,7 @@ class ClipPanel(Page):
         self._transition.setEnabled(es_clip and not es_audio)
         self._speed.setEnabled(es_clip)
         self._audio_mode.setEnabled(es_clip)
+        self._interp.setEnabled(es_clip and not es_audio)
         self._gain.setEnabled(es_clip and es_audio)
 
         if tiene:
@@ -848,6 +859,7 @@ class ClipPanel(Page):
                                                 in TRANSITIONS else TRANSITIONS[0])
                 self._audio_mode.setCurrentText(item.audio_mode if item.audio_mode
                                                 in AUDIO_MODES else AUDIO_MODES[0])
+                self._interp.setCurrentText(getattr(item, "interpolation", SAMPLE_NEAREST))
             self._describe()
         else:
             self._info.setText("")
@@ -861,7 +873,15 @@ class ClipPanel(Page):
             partes.append(f"{item.duration * item.speed:.2f} s de material")
         if getattr(item, "speed", 1.0) == 0:
             partes.append("cuadro congelado")
+        if timeremap.is_remapped(item):
+            partes.append("con remapeo de tiempo (Clip → Remapeo de tiempo)")
         self._info.setText("  ·  ".join(partes))
+
+    def _interp_changed(self, nombre: str) -> None:
+        if self._loading or self._item is None or not hasattr(self._item, "interpolation"):
+            return
+        self._item.interpolation = nombre
+        self.committed.emit(f"Cuadros intermedios: {nombre.lower()}")
 
     def _push(self) -> None:
         if self._item is None or self._loading:
@@ -937,8 +957,14 @@ class TransformPanel(Page):
     ETIQUETAS = {
         "x": "Horizontal", "y": "Vertical", "scale": "Tamaño",
         "rotation": "Giro", "opacity": "Opacidad",
+        "tilt_x": "Inclinar atrás", "tilt_y": "Girar de lado",
+        "pin_tl_x": "Sup. izq. X", "pin_tl_y": "Sup. izq. Y",
+        "pin_tr_x": "Sup. der. X", "pin_tr_y": "Sup. der. Y",
+        "pin_br_x": "Inf. der. X", "pin_br_y": "Inf. der. Y",
+        "pin_bl_x": "Inf. izq. X", "pin_bl_y": "Inf. izq. Y",
     }
-    ESCALAS = {"x": 100.0, "y": 100.0, "scale": 100.0, "rotation": 1.0, "opacity": 100.0}
+    ESCALAS = {"x": 100.0, "y": 100.0, "scale": 100.0, "rotation": 1.0, "opacity": 100.0,
+               "tilt_x": 1.0, "tilt_y": 1.0, **{p: 100.0 for p in CORNERS}}
 
     def __init__(self) -> None:
         super().__init__()
@@ -1018,6 +1044,18 @@ class TransformPanel(Page):
             self._labelled("Ancla", self._anchor_preset),
             *self._anchor.values())
 
+        # Perspectiva y corner pin: cerrado por omisión, como el encuadre.
+        # Sin rombos; se animan desde el editor de keyframes (Shift+K).
+        perspectiva = []
+        for prop in TILT + CORNERS:
+            fila = SliderRow(self.ETIQUETAS[prop], *RANGES[prop])
+            fila.changed.connect(lambda _=0, p=prop: self._push(p))
+            self._rows[prop] = fila
+            perspectiva.append(fila)
+        quitar_perspectiva = QPushButton("Quitar perspectiva")
+        quitar_perspectiva.clicked.connect(self._reset_perspective)
+        self._perspective_group = Collapsible("3D y esquinas", *perspectiva, quitar_perspectiva)
+
         centrar = QPushButton("Restablecer")
         centrar.clicked.connect(self._reset)
         limpiar = QPushButton("Quitar animación")
@@ -1032,6 +1070,7 @@ class TransformPanel(Page):
             self._name,
             section("Transformación"), *filas,
             self._framing_group,
+            self._perspective_group,
             self._info, botones,
             None,
         ))
@@ -1059,19 +1098,23 @@ class TransformPanel(Page):
                 fila.set_value(round(getattr(tr, campo) * 100))
             if tr.has_crop or tr.fit != FIT_MODES[0] or tr.anchor_x or tr.anchor_y:
                 self._framing_group.abrir()
+            if tr.has_perspective:
+                self._perspective_group.abrir()
 
-        for prop in PROPS:
+        for prop in self._rows:
             self._rows[prop].setEnabled(tiene)
-            self._keys[prop].setEnabled(tiene)
+            if prop in self._keys:
+                self._keys[prop].setEnabled(tiene)
             if not tiene:
                 continue
 
             valor = clip.transform.at(prop, local)
             self._rows[prop].set_value(int(round(valor * self.ESCALAS[prop])))
-            self._keys[prop].blockSignals(True)
-            self._keys[prop].setChecked(
-                clip.transform.key_near(prop, local) is not None)
-            self._keys[prop].blockSignals(False)
+            if prop in self._keys:
+                self._keys[prop].blockSignals(True)
+                self._keys[prop].setChecked(
+                    clip.transform.key_near(prop, local) is not None)
+                self._keys[prop].blockSignals(False)
 
         self._describe()
         self._loading = False
@@ -1081,7 +1124,7 @@ class TransformPanel(Page):
             self._info.setText("")
             return
 
-        animadas = [self.ETIQUETAS[p] for p in PROPS if self._clip.transform.animated(p)]
+        animadas = [self.ETIQUETAS[p] for p in self._rows if self._clip.transform.animated(p)]
         self._info.setText(
             f"Animando: {', '.join(animadas)}" if animadas
             else "Sin animación. Prende un rombo para empezar.")
@@ -1100,13 +1143,21 @@ class TransformPanel(Page):
             # keyframe de aquí: es lo que uno espera y evita que el cambio
             # se pierda al mover el playhead.
             transform.set_key(prop, self._local, valor)
-            self._keys[prop].blockSignals(True)
-            self._keys[prop].setChecked(True)
-            self._keys[prop].blockSignals(False)
+            if prop in self._keys:
+                self._keys[prop].blockSignals(True)
+                self._keys[prop].setChecked(True)
+                self._keys[prop].blockSignals(False)
         else:
             setattr(transform, prop, valor)
 
         self.changed.emit()
+
+    def _reset_perspective(self) -> None:
+        if self._clip is None or not hasattr(self._clip, "transform"):
+            return
+        self._clip.transform.reset_perspective()
+        self.set_target(self._clip, self._local)
+        self.committed.emit("Quitar perspectiva")
 
     @staticmethod
     def _labelled(texto: str, widget: QWidget) -> QHBoxLayout:

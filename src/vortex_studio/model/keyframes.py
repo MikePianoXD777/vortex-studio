@@ -19,6 +19,8 @@ jalón: el volumen animado se calcula muestra por muestra.
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 
 LINEAR = "Lineal"
@@ -214,3 +216,36 @@ def move_key(points, local: float, new_local: float, new_value: float,
 
 def shift(points, delta: float) -> list:
     return [[round(time_of(k) + delta, 4), *k[1:]] for k in points]
+
+
+def clean(points) -> list:
+    """Solo los keyframes que se pueden evaluar, ordenados.
+
+    Un proyecto editado a mano —o dañado— puede traer `[0]`, textos o
+    `NaN`. Cualquiera de esos tronaba al pintar, cuadro tras cuadro. Se
+    quedan los que traen tiempo y valor numéricos y finitos, con su
+    interpolación si es una que existe.
+    """
+    if not isinstance(points, (list, tuple)):
+        return []
+    salida = []
+    for k in points:
+        if not isinstance(k, (list, tuple)) or len(k) < 2:
+            continue
+        try:
+            t, v = float(k[0]), float(k[1])
+        except (TypeError, ValueError):
+            continue
+        if not (math.isfinite(t) and math.isfinite(v)):
+            continue
+        nuevo: list = [t, v]
+        if len(k) > 2 and k[2] in INTERPOLATIONS:
+            nuevo.append(k[2])
+            if k[2] == BEZIER and len(k) > 3 and isinstance(k[3], (list, tuple)) \
+                    and len(k[3]) == 4:
+                try:
+                    nuevo.append([float(x) for x in k[3]])
+                except (TypeError, ValueError):
+                    pass
+        salida.append(nuevo)
+    return _sorted(salida)

@@ -37,6 +37,13 @@ SHIFT_PITCH = "Cambiar tono"     # como una cinta: más agudo si va rápido
 MUTE_AUDIO = "Silenciar"
 AUDIO_MODES = (KEEP_PITCH, SHIFT_PITCH, MUTE_AUDIO)
 
+# Qué cuadro se ve cuando el clip va más lento que el material y el instante
+# cae entre dos cuadros del archivo. Los nombres de Premiere.
+SAMPLE_NEAREST = "Cuadro más cercano"   # se repite el cuadro: se ve a saltos
+SAMPLE_BLEND = "Mezcla de cuadros"      # los dos vecinos, mezclados
+SAMPLE_FLOW = "Flujo óptico"            # se inventa el de en medio siguiendo el movimiento
+SAMPLINGS = (SAMPLE_NEAREST, SAMPLE_BLEND, SAMPLE_FLOW)
+
 MARKER_COLORS = {
     "Amarillo": "#e8c15a",
     "Rojo": "#e0574a",
@@ -113,6 +120,7 @@ class Clip:
     chroma: ChromaKey = field(default_factory=ChromaKey)
     audio_fx: AudioFx = field(default_factory=AudioFx)
     stabilize: int = 0       # fuerza de 0 (apagada) a 100. Ver `media/stabilize.py`
+    interpolation: str = SAMPLE_NEAREST   # cuadros intermedios en cámara lenta
 
     def __post_init__(self) -> None:
         self.source = Path(self.source)
@@ -132,7 +140,14 @@ class Clip:
         Con velocidad distinta de 1, el archivo se recorre más rápido o más
         lento que la línea de tiempo: dos segundos de pista a 2× consumen
         cuatro segundos de material.
+
+        Con remapeo de tiempo manda la curva y no la velocidad. Ver
+        `model/timeremap.py`.
         """
+        puntos = self.anim.get("time") if self.anim else None
+        if puntos:
+            from vortex_studio.model.keyframes import LINEAR, evaluate
+            return self.in_point + max(0.0, evaluate(puntos, t - self.start, LINEAR))
         return self.in_point + (t - self.start) * self.speed
 
     def local(self, t: float) -> float:
@@ -296,11 +311,16 @@ class Sequence:
         return max((t.duration for t in self.tracks), default=0.0)
 
     @property
+    def safe_fps(self) -> float:
+        """El fps, o 30 si no sirve: nunca se divide entre cero por un proyecto dañado."""
+        return self.fps if self.fps and self.fps > 0 else 30.0
+
+    @property
     def frame_duration(self) -> float:
-        return 1.0 / self.fps
+        return 1.0 / self.safe_fps
 
     def snap_to_frame(self, t: float) -> float:
-        return round(t * self.fps) / self.fps
+        return round(t * self.safe_fps) / self.safe_fps
 
     def video_tracks(self) -> list[Track]:
         return [t for t in self.tracks if t.kind == "video"]
@@ -480,7 +500,7 @@ class Sequence:
         coincide, que es el caso común.
         """
         transform = clip.transform
-        if transform.has_crop:
+        if transform.has_crop or transform.has_perspective:
             return False
         if getattr(getattr(clip, "chroma", None), "is_on", False):
             return False
@@ -589,11 +609,17 @@ def _shifted_into(clip, anidada: "NestedClip"):
 
 
 def timecode(seconds: float, fps: float = 30.0) -> str:
-    """Formatea segundos como HH:MM:SS:FF."""
-    seconds = max(0.0, seconds)
+    """Formatea segundos como HH:MM:SS:FF.
+
+    Un fps en cero —o menor que 0.5, que redondea a cero— dividía entre cero
+    en la barra de estado apenas se abría un proyecto dañado.
+    """
+    fps = fps if fps and fps > 0 else 30.0
+    base = max(1, round(fps))
+    seconds = max(0.0, seconds) if seconds == seconds else 0.0
     total_frames = round(seconds * fps)
-    frames = int(total_frames % round(fps))
-    total_seconds = int(total_frames // round(fps))
+    frames = int(total_frames % base)
+    total_seconds = int(total_frames // base)
     return (
         f"{total_seconds // 3600:02d}:"
         f"{total_seconds // 60 % 60:02d}:"

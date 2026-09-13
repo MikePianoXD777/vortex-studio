@@ -9,11 +9,17 @@ arme la imagen.
 
 from __future__ import annotations
 
+import math
+from collections import OrderedDict
 from dataclasses import dataclass
+from fractions import Fraction
 from pathlib import Path
+
+import numpy as np
 
 from vortex_studio.media.color import ColorProcessor
 from vortex_studio.model.color import ColorAdjust
+from vortex_studio.model.project import SAMPLE_BLEND, SAMPLE_FLOW
 
 try:
     import av
@@ -40,6 +46,71 @@ class Frame:
     alpha: bool = False     # RGBA en vez de RGB: trae transparencia (llave de croma)
 
 
+def blend_frames(a: Frame, b: Frame, amount: float) -> Frame:
+    """`a` y `b` mezclados: 0 es todo `a`, 1 todo `b`. En NumPy, con pesos enteros."""
+    if (a.width, a.height, a.stride, a.alpha) != (b.width, b.height, b.stride, b.alpha):
+        return a if amount < 0.5 else b
+    peso = int(round(max(0.0, min(1.0, amount)) * 256))
+    x = np.frombuffer(a.data, dtype=np.uint8).astype(np.uint16)
+    y = np.frombuffer(b.data, dtype=np.uint8).astype(np.uint16)
+    mezcla = (x * (256 - peso) + y * peso + 128) >> 8
+    return Frame(mezcla.astype(np.uint8).tobytes(), a.width, a.height, a.stride, a.alpha)
+
+
+FLOW_STEPS = 16
+
+
+def flow_frame(a: Frame, b: Frame, amount: float) -> Frame:
+    """El cuadro de en medio siguiendo el movimiento, con `minterpolate`.
+
+    El filtro está hecho para subir los fps de un video entero, no para un
+    par suelto: con dos cuadros no suelta nada. Se le da `a`, y `b` tres
+    veces —relleno para que su ventana tenga con qué trabajar— a un cuadro
+    por segundo, se le pide `FLOW_STEPS` por segundo y se toma el más cercano
+    a `amount`. Medido sobre un cuadrito que se mueve, cae exactamente a la
+    mitad del camino; sobre textura, se equivoca la mitad que una mezcla.
+
+    Cuesta: más de un segundo por cuadro de 720p. Por eso la zona se marca
+    en rojo para renderizarla, como en Premiere.
+    """
+    def arreglo(frame: Frame) -> np.ndarray:
+        crudo = np.frombuffer(frame.data, dtype=np.uint8).reshape(frame.height, frame.stride)
+        return np.ascontiguousarray(crudo[:, :frame.width * 3].reshape(frame.height, frame.width, 3))
+
+    grafo = av.filter.Graph()
+    fuente = grafo.add("buffer", f"video_size={a.width}x{a.height}:pix_fmt=rgb24"
+                                 f":time_base=1/1:frame_rate=1/1:pixel_aspect=1/1")
+    anterior = fuente
+    for nodo in (grafo.add("format", "yuv444p"),
+                 grafo.add("minterpolate", f"fps={FLOW_STEPS}:mi_mode=mci:mc_mode=aobmc"
+                                           f":me_mode=bidir:vsbmc=1:scd=none"),
+                 grafo.add("format", "rgb24"),
+                 grafo.add("buffersink")):
+        anterior.link_to(nodo)
+        anterior = nodo
+    grafo.configure()
+
+    salidas = []
+    for indice, datos in enumerate((arreglo(a), arreglo(b), arreglo(b), arreglo(b))):
+        cuadro = av.VideoFrame.from_ndarray(datos, format="rgb24")
+        cuadro.pts, cuadro.time_base = indice, Fraction(1, 1)
+        grafo.push(cuadro)
+        while True:
+            try:
+                salidas.append(grafo.pull())
+            except (av.error.BlockingIOError, av.error.EOFError):
+                break
+        if any(s.pts is not None and float(s.pts * s.time_base) >= amount - 1e-9
+               for s in salidas):
+            break
+    if not salidas:
+        return blend_frames(a, b, amount)
+    mejor = min(salidas, key=lambda s: abs(float(s.pts * s.time_base) - amount))
+    rgb = mejor.reformat(format="rgb24")
+    plano = rgb.planes[0]
+    return Frame(bytes(plano), rgb.width, rgb.height, plano.line_size)
+
+
 class VideoSource:
     """Lee frames de un archivo de video por tiempo, no por orden.
 
@@ -61,18 +132,35 @@ class VideoSource:
         self.height = self._stream.codec_context.height
         self.fps = float(self._stream.average_rate or 30)
         self.duration = float(self._container.duration / av.time_base) if self._container.duration else 0.0
+        inicio = self._stream.start_time
+        self._origin = float(inicio * self._stream.time_base) if inicio is not None else 0.0
+        self._recent: OrderedDict[tuple, Frame] = OrderedDict()   # vecinos para mezclar
 
         self._last_time = -1.0
+        self._tail: float | None = None     # cuándo cae el último cuadro, si ya se buscó
         self._cached: Frame | None = None
         self._color = ColorProcessor()
         self._applied: tuple | None = None
 
     def frame_at(self, t: float, adjust: ColorAdjust | None = None,
-                 key=None) -> Frame | None:
-        """Devuelve el frame que se ve en el segundo `t`, ya corregido."""
+                 key=None, sampling: str | None = None) -> Frame | None:
+        """Devuelve el frame que se ve en el segundo `t`, ya corregido.
+
+        Con `sampling` en mezcla o flujo óptico, un instante que cae entre
+        dos cuadros del archivo sale de los dos. Ver `_between`.
+        """
         t = max(0.0, t)
+        if sampling in (SAMPLE_BLEND, SAMPLE_FLOW) and self.fps > 0:
+            entre = self._between(t, adjust, key, sampling)
+            if entre is not None:
+                return entre
         self._key = key
         settings = self._settings(adjust) + (key.signature if key is not None else (),)
+
+        # Más allá del último cuadro se sostiene el último, sin volver a buscarlo.
+        if (self._tail is not None and self._cached is not None and t >= self._tail - 1e-6
+                and abs(self._last_time - self._tail) < 1e-9):
+            return self._cached if settings == self._applied else self._recolor(adjust)
 
         # Si el cuadro es el mismo y el color no cambió, no hay que decodificar
         # nada: esto es lo que hace que mover un deslizador de color se sienta
@@ -85,6 +173,19 @@ class VideoSource:
         if self._cached is None or t < self._last_time or t - self._last_time > 1.0:
             self._seek(t)
 
+        try:
+            hallado = self._decode_until(t, adjust, key, settings)
+        except av.error.EOFError:
+            # Con hilos el decodificador lee por adelantado: en un archivo
+            # corto, o cerca del final, ya se vació, y pedirle otro cuadro
+            # hacia adelante sin buscar truena con fin de archivo. Se vuelve a
+            # buscar y se intenta una vez más.
+            self._seek(t)
+            hallado = self._decode_until(t, adjust, key, settings)
+        return hallado if hallado is not None else self._hold_last(adjust, key, settings)
+
+    def _decode_until(self, t: float, adjust, key, settings: tuple) -> Frame | None:
+        """Decodifica en orden hasta el primer cuadro que se ve en `t`."""
         for frame in self._container.decode(self._stream):
             when = float(frame.pts * self._stream.time_base) if frame.pts is not None else t
             if when + 1e-6 >= t:
@@ -94,8 +195,70 @@ class VideoSource:
                 self._cached = self._to_rgb(self._color.apply(frame, adjust, key)
                                             if adjust or key else frame)
                 return self._cached
+        return None
 
-        return self._cached  # se acabó el archivo: nos quedamos con el último
+    def _hold_last(self, adjust, key, settings: tuple) -> Frame | None:
+        """El último cuadro del archivo, para lo que se pida después del final.
+
+        Un clip estirado más allá de su material —o con un punto de entrada
+        pasado de largo— se quedaba en negro: el seek caía después del
+        último cuadro, no salía ninguno, y el servidor daba el cuadro por
+        perdido. Ahora se sostiene el último, como un cuadro congelado.
+        """
+        self._container.seek(int(max(0.0, self.duration - 2.0) / self._stream.time_base),
+                             stream=self._stream, backward=True, any_frame=False)
+        ultimo = None
+        for frame in self._container.decode(self._stream):
+            ultimo = frame
+        if ultimo is None:
+            return self._cached
+        when = float(ultimo.pts * self._stream.time_base) if ultimo.pts is not None else 0.0
+        self._tail = self._last_time = when
+        self._raw = ultimo
+        self._applied = settings
+        self._cached = self._to_rgb(self._color.apply(ultimo, adjust, key)
+                                    if adjust or key else ultimo)
+        return self._cached
+
+    def _between(self, t: float, adjust, key, sampling: str) -> Frame | None:
+        """El cuadro de un instante entre dos cuadros del archivo, o None si cae en uno.
+
+        En cámara lenta a 0.25× cada cuadro del archivo se repite cuatro
+        veces y la imagen avanza a saltos. Aquí se toman los dos vecinos y se
+        mezclan, o se inventa el de en medio con flujo óptico.
+
+        Los dos vecinos se recuerdan: el siguiente instante casi siempre cae
+        entre los mismos dos, y sin recordarlos cada cuadro volvería a buscar
+        hacia atrás en el archivo.
+        """
+        posicion = (t - self._origin) * self.fps
+        n = math.floor(posicion + 1e-6)
+        fraccion = posicion - n
+        if n < 0 or fraccion < 0.02 or fraccion > 0.98:
+            return None
+        antes = self._grid(n, adjust, key)
+        despues = self._grid(n + 1, adjust, key)
+        if antes is None or despues is None:
+            return antes or despues
+        if sampling == SAMPLE_FLOW and not antes.alpha and not despues.alpha:
+            try:
+                return flow_frame(antes, despues, fraccion)
+            except Exception:
+                pass            # un grafo que no se pudo armar: mejor mezcla que negro
+        return blend_frames(antes, despues, fraccion)
+
+    def _grid(self, n: int, adjust, key) -> Frame | None:
+        firma = self._settings(adjust) + (key.signature if key is not None else (),)
+        clave = (n, firma)
+        listo = self._recent.get(clave)
+        if listo is not None:
+            return listo
+        cuadro = self.frame_at(self._origin + n / self.fps, adjust, key)
+        if cuadro is not None:
+            self._recent[clave] = cuadro
+            while len(self._recent) > 4:
+                self._recent.popitem(last=False)
+        return cuadro
 
     def _recolor(self, adjust: ColorAdjust | None) -> Frame | None:
         """Vuelve a filtrar el último cuadro decodificado, sin volver a leerlo."""

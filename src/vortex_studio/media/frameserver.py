@@ -59,15 +59,22 @@ class FrameJob:
     # compositor necesita, y la ruta del trabajo lleva la firma del proyecto
     # para que editar la hija invalide el búfer solo.
     nested: object = field(default=None, compare=False, hash=False)
+    # Cuadros intermedios en cámara lenta: vacío es el cuadro más cercano.
+    sampling: str = ""
 
     @classmethod
     def make(cls, key: int, path, time: float, adjust=None, chroma=None,
-             nested=None) -> "FrameJob":
+             nested=None, sampling=None) -> "FrameJob":
+        from vortex_studio.model.project import SAMPLE_NEAREST
+
         copia = adjust.copy() if adjust is not None else None
         llave = chroma.copy() if chroma is not None and chroma.is_on else None
+        muestreo = sampling if sampling and sampling != SAMPLE_NEAREST else ""
         firma = ((copia.signature if copia is not None else ())
-                 + ((llave.signature,) if llave is not None else ()))
-        return cls(key, Path(path), round(float(time), 4), copia, firma, llave, nested)
+                 + ((llave.signature,) if llave is not None else ())
+                 + ((("muestreo", muestreo),) if muestreo else ()))
+        return cls(key, Path(path), round(float(time), 4), copia, firma, llave, nested,
+                   muestreo)
 
     @property
     def cache_key(self) -> tuple:
@@ -227,10 +234,13 @@ class FrameServer:
                     # sigue sirviendo.
                     if job.nested is not None:
                         frame = self._nested(job) if self._nested is not None else None
-                    elif job.chroma is None:
+                    elif job.chroma is None and not job.sampling:
                         frame = fuente.frame_at(job.time, job.adjust)
-                    else:
+                    elif not job.sampling:
                         frame = fuente.frame_at(job.time, job.adjust, job.chroma)
+                    else:
+                        frame = fuente.frame_at(job.time, job.adjust, job.chroma,
+                                                sampling=job.sampling)
                 except Exception:
                     frame = None
 

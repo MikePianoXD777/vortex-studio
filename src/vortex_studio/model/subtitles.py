@@ -90,7 +90,18 @@ def to_vtt(cues: list[Cue]) -> str:
 
 
 def read_file(path: str | Path) -> list[Cue]:
-    return parse(Path(path).read_text(encoding="utf-8-sig", errors="replace"))
+    """Lee UTF-8 y, si no es, Windows-1252.
+
+    Muchos SRT viejos —los que salen de subtítulos descargados o de
+    programas de Windows— vienen en Windows-1252. Leídos como UTF-8 con
+    reemplazo, "Canción" quedaba "Canci�n" sin ningún aviso.
+    """
+    crudo = Path(path).read_bytes()
+    try:
+        texto = crudo.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        texto = crudo.decode("cp1252", errors="replace")
+    return parse(texto)
 
 
 def write_file(path: str | Path, cues: list[Cue]) -> Path:

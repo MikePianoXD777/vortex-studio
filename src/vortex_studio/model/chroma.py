@@ -43,8 +43,21 @@ class ChromaKey:
 
     @property
     def rgb(self) -> tuple[int, int, int]:
-        texto = self.color.lstrip("#")
-        return tuple(int(texto[i:i + 2], 16) for i in (0, 2, 4))
+        """El color como tres enteros.
+
+        Un color mal escrito —de un proyecto editado a mano— cae al verde de
+        siempre. Antes tronaba dentro del filtro, el decodificador daba el
+        cuadro por perdido y el clip se quedaba en negro sin decir por qué.
+        """
+        texto = str(self.color).strip().lstrip("#")
+        if len(texto) == 3:
+            texto = "".join(c * 2 for c in texto)
+        try:
+            if len(texto) != 6:
+                raise ValueError(texto)
+            return tuple(int(texto[i:i + 2], 16) for i in (0, 2, 4))
+        except ValueError:
+            return (0x00, 0xB1, 0x40)
 
     @property
     def spill_type(self) -> str:

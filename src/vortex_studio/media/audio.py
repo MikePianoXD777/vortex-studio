@@ -219,7 +219,11 @@ class AudioRenderer:
 
         velocidad = float(getattr(clip, "speed", 1.0))
         modo = getattr(clip, "audio_mode", KEEP_PITCH)
-        if velocidad <= 0 or modo == MUTE_AUDIO:
+        # Con remapeo de tiempo la velocidad cambia dentro del clip, y un
+        # audio que acelera y frena a pedazos no se entiende: como en
+        # Premiere, el remapeo es solo de la imagen y ese tramo va mudo.
+        remapeado = bool((getattr(clip, "anim", None) or {}).get("time"))
+        if velocidad <= 0 or modo == MUTE_AUDIO or remapeado:
             yield from self._silence(seconds)
             return
 

@@ -17,6 +17,10 @@ cuadro de la secuencia (ajustar, rellenar o estirar), cuánto se le recorta
 por cada orilla, y el punto de anclaje alrededor del cual se escala y se
 gira. Van juntos porque son la misma pregunta —dónde y cómo cae la imagen—
 y porque "pegar atributos de transformación" tiene que llevárselos todos.
+
+Y desde la 0.6, la **perspectiva**: inclinar la capa hacia atrás o de lado,
+como una tarjeta que gira en 3D, y mover cada esquina por separado (corner
+pin) para pegar un video en una pantalla o una pared.
 """
 
 from __future__ import annotations
@@ -27,7 +31,20 @@ from vortex_studio.model import keyframes as kf
 
 PROPS = ("x", "y", "scale", "rotation", "opacity")
 
-NEUTRAL = {"x": 0.0, "y": 0.0, "scale": 1.0, "rotation": 0.0, "opacity": 1.0}
+# Inclinación en 3D, en grados: alrededor del eje horizontal (x, se va hacia
+# atrás) y del vertical (y, gira de lado).
+TILT = ("tilt_x", "tilt_y")
+
+# Corner pin: cuánto se mueve cada esquina, en fracciones del cuadro.
+# Arriba izquierda, arriba derecha, abajo derecha, abajo izquierda.
+CORNERS = ("pin_tl_x", "pin_tl_y", "pin_tr_x", "pin_tr_y",
+           "pin_br_x", "pin_br_y", "pin_bl_x", "pin_bl_y")
+
+# Todo lo que se puede animar con keyframes y lo que pinta el compositor.
+ANIMATABLE = PROPS + TILT + CORNERS
+
+NEUTRAL = {"x": 0.0, "y": 0.0, "scale": 1.0, "rotation": 0.0, "opacity": 1.0,
+           **{p: 0.0 for p in TILT + CORNERS}}
 
 # Rangos para la interfaz: (mínimo, máximo, neutro), en centésimas o grados.
 RANGES = {
@@ -36,7 +53,12 @@ RANGES = {
     "scale": (1, 500, 100),
     "rotation": (-180, 180, 0),
     "opacity": (0, 100, 100),
+    # Más de 80° la capa queda de canto y la perspectiva se dispara.
+    "tilt_x": (-80, 80, 0),
+    "tilt_y": (-80, 80, 0),
+    **{p: (-100, 100, 0) for p in CORNERS},
 }
+TILT_MAX = 80.0
 
 # Cómo cae el material en el cuadro cuando no tiene su misma proporción.
 FIT = "Ajustar"        # cabe entero; lo que sobra del cuadro queda negro
@@ -89,6 +111,18 @@ class Transform:
 
     fit: str = FIT
 
+    # Perspectiva y corner pin. Ver `TILT` y `CORNERS`.
+    tilt_x: float = 0.0
+    tilt_y: float = 0.0
+    pin_tl_x: float = 0.0
+    pin_tl_y: float = 0.0
+    pin_tr_x: float = 0.0
+    pin_tr_y: float = 0.0
+    pin_br_x: float = 0.0
+    pin_br_y: float = 0.0
+    pin_bl_x: float = 0.0
+    pin_bl_y: float = 0.0
+
     # --- lectura ----------------------------------------------------------
 
     def at(self, prop: str, local: float) -> float:
@@ -103,20 +137,25 @@ class Transform:
         return kf.evaluate(puntos, local, kf.EASE if self.ease else kf.LINEAR)
 
     def values_at(self, local: float) -> dict[str, float]:
-        return {p: self.at(p, local) for p in PROPS}
+        return {p: self.at(p, local) for p in ANIMATABLE}
 
     @property
     def is_neutral(self) -> bool:
         """Si nada está tocado, el compositor puede saltarse el trabajo."""
-        if any(self.keys.get(p) for p in PROPS):
+        if any(self.keys.get(p) for p in ANIMATABLE):
             return False
         if self.has_crop:
             return False
-        return all(abs(getattr(self, p) - NEUTRAL[p]) < 1e-9 for p in PROPS)
+        return all(abs(getattr(self, p) - NEUTRAL[p]) < 1e-9 for p in ANIMATABLE)
 
     @property
     def has_crop(self) -> bool:
         return any(getattr(self, lado) > 1e-9 for lado in CROP_SIDES)
+
+    @property
+    def has_perspective(self) -> bool:
+        """¿Inclinada o con alguna esquina movida, fija o animada?"""
+        return any(abs(getattr(self, p)) > 1e-9 or self.keys.get(p) for p in TILT + CORNERS)
 
     @property
     def crop(self) -> tuple[float, float, float, float]:
@@ -170,6 +209,12 @@ class Transform:
         self.anchor_x = self.anchor_y = 0.0
         for lado in CROP_SIDES:
             setattr(self, lado, 0.0)
+
+    def reset_perspective(self) -> None:
+        """Quita la inclinación y el corner pin, con sus keyframes."""
+        for p in TILT + CORNERS:
+            self.keys.pop(p, None)
+            setattr(self, p, 0.0)
 
     def all_keys(self) -> list[float]:
         """Todos los instantes con keyframe, para dibujarlos en el timeline."""

@@ -29,6 +29,8 @@ from dataclasses import dataclass
 
 from vortex_studio.model import keyframes as kf
 
+TIME = "time"       # la ruta del remapeo de tiempo; ver `model/timeremap.py`
+
 
 @dataclass(frozen=True)
 class Param:
@@ -78,6 +80,18 @@ PARAMS: dict[str, Param] = {p.path: p for p in (
     _p("chroma.smoothness", "Llave: suavidad", "Efectos", 0.0, 100.0),
     _p("chroma.spill", "Llave: derrame", "Efectos", 0.0, 100.0),
     _p("gain", "Volumen", "Audio", 0.0, 4.0),
+    _p("transform.tilt_x", "Inclinar hacia atrás", "3D y distorsión", -80.0, 80.0),
+    _p("transform.tilt_y", "Girar de lado", "3D y distorsión", -80.0, 80.0),
+    _p("transform.pin_tl_x", "Esquina sup. izq. X", "3D y distorsión", -1.0, 1.0),
+    _p("transform.pin_tl_y", "Esquina sup. izq. Y", "3D y distorsión", -1.0, 1.0),
+    _p("transform.pin_tr_x", "Esquina sup. der. X", "3D y distorsión", -1.0, 1.0),
+    _p("transform.pin_tr_y", "Esquina sup. der. Y", "3D y distorsión", -1.0, 1.0),
+    _p("transform.pin_br_x", "Esquina inf. der. X", "3D y distorsión", -1.0, 1.0),
+    _p("transform.pin_br_y", "Esquina inf. der. Y", "3D y distorsión", -1.0, 1.0),
+    _p("transform.pin_bl_x", "Esquina inf. izq. X", "3D y distorsión", -1.0, 1.0),
+    _p("transform.pin_bl_y", "Esquina inf. izq. Y", "3D y distorsión", -1.0, 1.0),
+    # Remapeo de tiempo: el segundo del material que se ve. Ver `timeremap.py`.
+    _p("time", "Tiempo del material (s)", "Tiempo", 0.0, 3600.0),
     _p("x", "Horizontal", "Imagen", 0.0, 1.0, ("imagen", "texto")),
     _p("y", "Vertical", "Imagen", 0.0, 1.0, ("imagen", "texto")),
     _p("scale", "Tamaño", "Imagen", 0.02, 2.0, ("imagen",)),
@@ -110,6 +124,8 @@ def params_for(item) -> list[Param]:
         cabeza = param.path.split(".")[0]
         if "." in param.path and not hasattr(item, cabeza):
             continue
+        if param.path == TIME and not hasattr(item, "in_point"):
+            continue            # solo un clip de material tiene tiempo que remapear
         if not _has(item, param.path):
             continue
         salida.append(param)
@@ -133,11 +149,15 @@ def _owner(item, path: str):
 
 
 def base_value(item, path: str) -> float:
+    if path == TIME:
+        return 0.0          # el tiempo no tiene valor fijo: sin keyframes lo da la velocidad
     dueno, campo = _owner(item, path)
     return float(getattr(dueno, campo))
 
 
 def set_base(item, path: str, value: float) -> None:
+    if path == TIME:
+        return
     dueno, campo = _owner(item, path)
     actual = getattr(dueno, campo)
     setattr(dueno, campo, int(round(value)) if isinstance(actual, int)
@@ -146,6 +166,8 @@ def set_base(item, path: str, value: float) -> None:
 
 
 def _default_interp(item, path: str) -> str:
+    if path == TIME:
+        return kf.LINEAR        # un tramo de tiempo lineal es velocidad constante
     if path.startswith("transform."):
         return kf.EASE if getattr(item.transform, "ease", True) else kf.LINEAR
     return kf.EASE
@@ -191,6 +213,9 @@ def animated_paths(item) -> list[str]:
 def value_at(item, path: str, local: float) -> float:
     puntos = keys_for(item, path)
     if not puntos:
+        if path == TIME:
+            from vortex_studio.model.timeremap import material_at
+            return material_at(item, local)
         return base_value(item, path)
     return kf.evaluate(puntos, local, _default_interp(item, path))
 
@@ -224,7 +249,8 @@ def view(item, local: float):
 
     La transformación no se copia: ya se evalúa sola con `values_at`.
     """
-    rutas = [r for r in (getattr(item, "anim", None) or {}) if item.anim[r]]
+    # El tiempo no se pinta: lo usa `Clip.source_time` directo.
+    rutas = [r for r in (getattr(item, "anim", None) or {}) if item.anim[r] and r != TIME]
     if not rutas:
         return item
     copia = copy.copy(item)
@@ -250,7 +276,7 @@ def absorb(item, local: float, tolerance: float = 1e-6) -> list[str]:
     """Convierte en keyframe lo que el usuario movió de un valor animado."""
     cambiadas = []
     for ruta in animated_paths(item):
-        if ruta.startswith("transform."):
+        if ruta.startswith("transform.") or ruta == TIME:
             continue
         base = base_value(item, ruta)
         if abs(base - value_at(item, ruta, local)) > max(tolerance, 1e-6):

@@ -4,15 +4,26 @@ El mismo código sirve para dos cosas: escribir el archivo .vortex y tomar
 las instantáneas del historial de deshacer. Son el mismo problema —
 convertir la secuencia a datos planos y de regreso— y tener una sola
 implementación evita que el archivo guarde algo que deshacer no restaura.
+
+Al abrir, el archivo se trata como algo que pudo editarse a mano o dañarse:
+lo que no se entiende se ignora o se corrige a un valor que sirve, y lo que
+de plano no es un proyecto se rechaza con un `ProjectError` que se le puede
+mostrar al usuario tal cual. Antes un campo de más o un fps en cero tumbaba
+la carga —o peor, la dejaba pasar y tronaba después, al pintar— con un
+`TypeError` o un `ZeroDivisionError` que no decían nada.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import json
+import math
+import os
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from vortex_studio.model import keyframes as kf
 from vortex_studio.model.audio_fx import AudioFx
 from vortex_studio.model.chroma import ChromaKey
 from vortex_studio.model.color import ColorAdjust
@@ -20,7 +31,17 @@ from vortex_studio.model.curves import Curves
 from vortex_studio.model.mask import Mask
 from vortex_studio.model.media import MediaInfo, library_key
 from vortex_studio.model.overlays import AdjustmentLayer, ImageOverlay, Title
-from vortex_studio.model.project import Clip, Marker, NestedClip, Project, Sequence, Track
+from vortex_studio.model.project import (
+    SAMPLE_NEAREST,
+    SAMPLINGS,
+    SPEED_MAX,
+    Clip,
+    Marker,
+    NestedClip,
+    Project,
+    Sequence,
+    Track,
+)
 from vortex_studio.model.transform import Transform
 
 # 2: máscaras, modos de fusión, curva de color, viñeta y animación de texto.
@@ -29,11 +50,108 @@ from vortex_studio.model.transform import Transform
 #    enlaces, marcadores con nota en clips, tipografía de títulos y los
 #    interruptores de pista.
 # 5: keyframes con interpolación y de cualquier parámetro, y lo del nivel 3.
+# 6: lo del nivel 4 —remapeo de tiempo, cuadros intermedios, perspectiva y
+#    corner pin, y lo que sigue—.
 # Se sube el número para que una versión vieja diga "esto es más nuevo que
 # yo" en vez de abrir el proyecto a medias y perder esos ajustes al guardar.
-FORMAT_VERSION = 5
+FORMAT_VERSION = 6
 EXTENSION = ".vortex"
 
+KINDS = ("clip", "anidada", "imagen", "texto", "ajuste")
+TRACK_KINDS = ("video", "audio", "texto")
+MIN_DURATION = 1.0 / 30.0       # lo mínimo que se le deja a un elemento dañado
+
+
+class ProjectError(ValueError):
+    """El archivo no se puede abrir como proyecto. El mensaje es para el usuario."""
+
+
+# --- limpieza de lo que viene del archivo -------------------------------------
+
+def _fields(cls, data) -> dict:
+    """Solo los campos que la clase conoce.
+
+    Un campo de más —de un proyecto editado a mano, o de una versión de
+    desarrollo— tumbaba la carga entera con un `TypeError`. Se ignora: lo
+    que sí se entiende se abre.
+    """
+    if not isinstance(data, dict):
+        return {}
+    nombres = {f.name for f in dataclasses.fields(cls) if f.init}
+    return {k: v for k, v in data.items() if k in nombres}
+
+
+def _number(valor, omision: float, minimo: float | None = None,
+            maximo: float | None = None) -> float:
+    """Un número finito dentro de sus topes, o el de omisión si no lo es."""
+    if isinstance(valor, bool):
+        return omision
+    try:
+        numero = float(valor)
+    except (TypeError, ValueError):
+        return omision
+    if not math.isfinite(numero):
+        return omision
+    if minimo is not None:
+        numero = max(minimo, numero)
+    if maximo is not None:
+        numero = min(maximo, numero)
+    return numero
+
+
+def _keys(raw) -> dict:
+    """Keyframes por propiedad, sin los que no se pueden evaluar."""
+    if not isinstance(raw, dict):
+        return {}
+    salida = {}
+    for prop, puntos in raw.items():
+        limpios = kf.clean(puntos)
+        if limpios:
+            salida[str(prop)] = limpios
+    return salida
+
+
+def _markers(raw) -> list[Marker]:
+    salida = []
+    for m in raw if isinstance(raw, list) else []:
+        datos = _fields(Marker, m)
+        tiempo = _number(datos.get("time"), float("nan"))
+        if math.isnan(tiempo):
+            continue
+        datos["time"] = max(0.0, tiempo)
+        salida.append(Marker(**datos))
+    salida.sort(key=lambda m: m.time)
+    return salida
+
+
+def _sane(item) -> None:
+    """Deja los números de un elemento en valores con los que se puede pintar.
+
+    Una duración negativa hacía que el timeline dibujara hacia atrás; una
+    velocidad negativa pedía cuadros de antes del segundo cero. No se tira
+    el elemento: se le deja lo mínimo para que se vea y el usuario lo corrija.
+    """
+    item.start = _number(item.start, 0.0, 0.0)
+    duracion = _number(item.duration, 0.0)
+    item.duration = duracion if duracion > 0 else MIN_DURATION
+    for campo in ("fade_in", "fade_out"):
+        if hasattr(item, campo):
+            setattr(item, campo, _number(getattr(item, campo), 0.0, 0.0))
+    if isinstance(item, Clip):
+        item.in_point = _number(item.in_point, 0.0, 0.0)
+        item.speed = min(SPEED_MAX, abs(_number(item.speed, 1.0)))
+        item.gain = _number(item.gain, 1.0, 0.0)
+        item.dissolve = _number(item.dissolve, 0.0, 0.0)
+        item.markers = list(item.markers) if isinstance(item.markers, list) else []
+        if item.interpolation not in SAMPLINGS:
+            item.interpolation = SAMPLE_NEAREST
+    if hasattr(item, "transform"):
+        item.transform.keys = _keys(item.transform.keys)
+    if hasattr(item, "anim"):
+        item.anim = _keys(item.anim)
+
+
+# --- rutas ---------------------------------------------------------------------
 
 def _write_path(path: Path, base: Path | None) -> str:
     """Cómo se guarda la ruta de un archivo dentro del proyecto.
@@ -58,6 +176,8 @@ def _read_path(texto: str, base: Path | None) -> Path:
         return (base / path).resolve()
     return path
 
+
+# --- elementos -----------------------------------------------------------------
 
 def item_to_dict(item: Any, base: Path | None = None) -> dict:
     data = asdict(item)
@@ -94,21 +214,27 @@ def _color(raw: dict | None, base: Path | None = None) -> ColorAdjust | None:
     pero hasta varios pasos después, que es lo que lo vuelve difícil de
     encontrar.
     """
-    if not raw:
+    if not raw or not isinstance(raw, dict):
         return None
     raw = dict(raw)
     curva = raw.pop("curves", None)
     if raw.get("lut"):
-        raw["lut"] = str(_read_path(raw["lut"], base))
-    adjust = ColorAdjust(**raw)
+        raw["lut"] = str(_read_path(str(raw["lut"]), base))
+    adjust = ColorAdjust(**_fields(ColorAdjust, raw))
     if curva:
-        adjust.curves = Curves(**curva)
+        adjust.curves = Curves(**_fields(Curves, curva))
     return adjust
 
 
 def item_from_dict(data: dict, base: Path | None = None) -> Any:
+    if not isinstance(data, dict):
+        raise ProjectError("Un elemento de una pista está dañado: no trae datos.")
     data = dict(data)
-    kind = data.pop("tipo")
+    kind = data.pop("tipo", None)
+    if kind not in KINDS:
+        raise ProjectError(f"Tipo desconocido en el proyecto: {kind}")
+    data.setdefault("start", 0.0)
+    data.setdefault("duration", MIN_DURATION)
 
     # `transform` y `mask` se sacan para todos porque solo los tienen los
     # que los tienen. `color` NO: en un `Title` ese campo es el color de la
@@ -124,37 +250,38 @@ def item_from_dict(data: dict, base: Path | None = None) -> Any:
         audio_fx = data.pop("audio_fx", None)
         if kind == "anidada":
             data["source"] = Path("")
-            item = NestedClip(**data)
+            item = NestedClip(**_fields(NestedClip, data))
         else:
-            data["source"] = _read_path(data["source"], base)
-            item = Clip(**data)
+            data["source"] = _read_path(str(data.get("source") or ""), base)
+            item = Clip(**_fields(Clip, data))
         if color:
             item.color = color
-        if chroma:
-            item.chroma = ChromaKey(**chroma)
-        if audio_fx:
-            item.audio_fx = AudioFx(**audio_fx)
+        if isinstance(chroma, dict):
+            item.chroma = ChromaKey(**_fields(ChromaKey, chroma))
+        if isinstance(audio_fx, dict):
+            item.audio_fx = AudioFx(**_fields(AudioFx, audio_fx))
     elif kind == "imagen":
-        data["source"] = _read_path(data["source"], base)
-        item = ImageOverlay(**data)
+        data["source"] = _read_path(str(data.get("source") or ""), base)
+        item = ImageOverlay(**_fields(ImageOverlay, data))
     elif kind == "texto":
-        item = Title(**data)
-    elif kind == "ajuste":
+        item = Title(**_fields(Title, data))
+    else:
         color = _color(data.pop("color", None), base)
-        item = AdjustmentLayer(**data)
+        item = AdjustmentLayer(**_fields(AdjustmentLayer, data))
         if color:
             item.color = color
-    else:
-        raise ValueError(f"Tipo desconocido en el proyecto: {kind}")
 
-    if transform and hasattr(item, "transform"):
-        item.transform = Transform(**transform)
-    if mask and hasattr(item, "mask"):
-        item.mask = Mask(**mask)
+    if isinstance(transform, dict) and hasattr(item, "transform"):
+        item.transform = Transform(**_fields(Transform, transform))
+    if isinstance(mask, dict) and hasattr(item, "mask"):
+        item.mask = Mask(**_fields(Mask, mask))
     if markers and hasattr(item, "markers"):
-        item.markers = [Marker(**m) for m in markers]
+        item.markers = _markers(markers)
+    _sane(item)
     return item
 
+
+# --- secuencias ------------------------------------------------------------------
 
 def sequence_to_dict(sequence: Sequence, base: Path | None = None) -> dict:
     return {
@@ -182,29 +309,46 @@ def sequence_to_dict(sequence: Sequence, base: Path | None = None) -> dict:
 
 
 def sequence_from_dict(data: dict, base: Path | None = None) -> Sequence:
-    sequence = Sequence(
-        name=data.get("name", "Secuencia 1"),
-        fps=data.get("fps", 30.0),
-        width=data.get("width", 1920),
-        height=data.get("height", 1080),
-    )
+    if not isinstance(data, dict):
+        raise ProjectError("Una secuencia del proyecto está dañada.")
+
+    # Un fps en cero, nulo o absurdo dividía entre cero en cuanto se pedía
+    # un código de tiempo; un tamaño en cero dejaba el lienzo nulo.
+    fps = _number(data.get("fps"), 30.0)
+    if not 1.0 <= fps <= 1000.0:
+        fps = 30.0
+    ancho = int(_number(data.get("width"), 1920))
+    alto = int(_number(data.get("height"), 1080))
+    if not 16 <= ancho <= 16384:
+        ancho = 1920
+    if not 16 <= alto <= 16384:
+        alto = 1080
+
+    sequence = Sequence(name=str(data.get("name") or "Secuencia 1"), fps=fps,
+                        width=ancho, height=alto)
     if data.get("id"):
-        sequence.id = data["id"]
-    sequence.tracks = [
-        Track(
-            name=track["name"],
-            kind=track.get("kind", "video"),
-            clips=[item_from_dict(c, base) for c in track.get("clips", [])],
-            enabled=track.get("enabled", True),
-            locked=track.get("locked", False),
-            muted=track.get("muted", False),
-            solo=track.get("solo", False),
-            role=track.get("role", "Normal"),
-        )
-        for track in data.get("tracks", [])
-    ]
-    sequence.markers = [Marker(**m) for m in data.get("markers", [])]
-    sequence.duck_depth = float(data.get("duck_depth", 12.0))
+        sequence.id = str(data["id"])
+
+    pistas = []
+    for indice, track in enumerate(data.get("tracks") or []):
+        if not isinstance(track, dict):
+            continue
+        kind = track.get("kind", "video")
+        pistas.append(Track(
+            name=str(track.get("name") or f"Pista {indice + 1}"),
+            kind=kind if kind in TRACK_KINDS else "video",
+            clips=[item_from_dict(c, base) for c in track.get("clips") or []],
+            enabled=bool(track.get("enabled", True)),
+            locked=bool(track.get("locked", False)),
+            muted=bool(track.get("muted", False)),
+            solo=bool(track.get("solo", False)),
+            role=str(track.get("role", "Normal")),
+        ))
+    for pista in pistas:
+        pista.clips.sort(key=lambda c: c.start)
+    sequence.tracks = pistas
+    sequence.markers = _markers(data.get("markers"))
+    sequence.duck_depth = _number(data.get("duck_depth"), 12.0, 0.0, 60.0)
     return sequence
 
 
@@ -251,7 +395,13 @@ def _de_4_a_5(data: dict) -> dict:
     return data
 
 
-MIGRATIONS = {1: _de_1_a_2, 2: _de_2_a_3, 3: _de_3_a_4, 4: _de_4_a_5}
+def _de_5_a_6(data: dict) -> dict:
+    """Nivel 4. Campos nuevos con valor por omisión: el remapeo de tiempo son
+    keyframes de la ruta `time`, que un proyecto viejo simplemente no trae."""
+    return data
+
+
+MIGRATIONS = {1: _de_1_a_2, 2: _de_2_a_3, 3: _de_3_a_4, 4: _de_4_a_5, 5: _de_5_a_6}
 
 
 def migrate(data: dict) -> dict:
@@ -260,11 +410,16 @@ def migrate(data: dict) -> dict:
     Un proyecto sin número de formato es anterior a que existiera el número,
     así que cuenta como el 1.
     """
+    if not isinstance(data, dict):
+        raise ProjectError("El archivo no es un proyecto de Vortex Studio.")
     data = dict(data)
-    version = max(1, int(data.get("formato", 1) or 1))
+    try:
+        version = max(1, int(data.get("formato", 1) or 1))
+    except (TypeError, ValueError):
+        raise ProjectError("El número de formato del proyecto está dañado.") from None
 
     if version > FORMAT_VERSION:
-        raise ValueError(
+        raise ProjectError(
             f"El proyecto es de una versión más nueva (formato {version}). "
             f"Esta versión de Vortex Studio entiende hasta la {FORMAT_VERSION}."
         )
@@ -292,11 +447,17 @@ def media_to_list(library: dict[str, MediaInfo], base: Path | None = None) -> li
 
 
 def media_from_list(rows: list, base: Path | None = None) -> dict[str, MediaInfo]:
+    """El caché de sondeos. Una fila dañada se tira: se vuelve a sondear sola."""
     library: dict[str, MediaInfo] = {}
-    for fila in rows or []:
-        fila = dict(fila)
-        fila["path"] = _read_path(fila["path"], base)
-        info = MediaInfo(**fila)
+    for fila in rows if isinstance(rows, list) else []:
+        if not isinstance(fila, dict) or not fila.get("path"):
+            continue
+        datos = _fields(MediaInfo, fila)
+        datos["path"] = _read_path(str(fila["path"]), base)
+        try:
+            info = MediaInfo(**datos)
+        except TypeError:
+            continue
         library[library_key(info.path)] = info
     return library
 
@@ -314,26 +475,49 @@ def project_to_dict(project: Project, base: Path | None = None) -> dict:
 def project_from_dict(data: dict, base: Path | None = None) -> Project:
     data = migrate(data)
 
-    project = Project(name=data.get("name", "Sin título"))
-    sequences = [sequence_from_dict(s, base) for s in data.get("sequences", [])]
+    project = Project(name=str(data.get("name") or "Sin título"))
+    crudas = data.get("sequences")
+    sequences = [sequence_from_dict(s, base) for s in crudas if isinstance(s, dict)] \
+        if isinstance(crudas, list) else []
     project.sequences = sequences or [Sequence.default()]
     project.media = media_from_list(data.get("media", []), base)
-    project.active_id = data.get("activa", "")
+    project.active_id = str(data.get("activa") or "")
     return project
 
 
 def save_project(project: Project, path: str | Path) -> Path:
+    """Escribe el proyecto a un temporal y lo pone en su lugar de un jalón.
+
+    Antes se escribía directo encima: si el disco se llenaba o se iba la luz
+    a media escritura, el .vortex quedaba cortado y ya no abría — justo el
+    archivo que el usuario acababa de pedir que se guardara.
+
+    Un archivo de solo lectura se respeta: renombrar encima lo sobrescribiría
+    igual, así que se revisa antes.
+    """
     path = Path(path).with_suffix(EXTENSION)
+    if path.exists() and not os.access(path, os.W_OK):
+        raise PermissionError(f"«{path.name}» es de solo lectura.")
     # `encoding="utf-8"` explícito: en Windows el valor por omisión suele ser
     # cp1252 y los acentos de los nombres se escribirían mal.
-    path.write_text(
-        json.dumps(project_to_dict(project, path.parent), indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
+    texto = json.dumps(project_to_dict(project, path.parent), indent=2, ensure_ascii=False)
+    temporal = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        temporal.write_text(texto, encoding="utf-8")
+        os.replace(temporal, path)
+    finally:
+        temporal.unlink(missing_ok=True)
     return path
 
 
 def load_project(path: str | Path) -> Project:
     path = Path(path)
-    datos = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        datos = json.loads(path.read_text(encoding="utf-8"))
+    except UnicodeDecodeError:
+        raise ProjectError(f"«{path.name}» no es un proyecto de Vortex Studio: "
+                           f"no es texto.") from None
+    except json.JSONDecodeError as error:
+        raise ProjectError(f"«{path.name}» está dañado: se corta en la línea "
+                           f"{error.lineno}.") from None
     return project_from_dict(datos, path.parent)

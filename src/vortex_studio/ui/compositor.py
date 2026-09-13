@@ -18,13 +18,23 @@ from __future__ import annotations
 from typing import NamedTuple
 
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QFont, QFontMetricsF, QImage, QPainter, QPainterPath, QPen
+from PySide6.QtGui import (
+    QColor,
+    QFont,
+    QFontMetricsF,
+    QImage,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QPolygonF,
+    QTransform,
+)
 
 from vortex_studio.media import Frame
 from vortex_studio.model import ImageOverlay, Mask, Title
 from vortex_studio.model.animation import AnimState, anim_state, visible_text
 from vortex_studio.model.blend import NORMAL, is_normal
-from vortex_studio.model.transform import FILL, FIT, STRETCH
+from vortex_studio.model.transform import CORNERS, FILL, FIT, STRETCH, TILT_MAX
 
 OUTLINE = QColor(0, 0, 0, 235)
 CAPTION_BOX = QColor(0, 0, 0, 150)
@@ -117,7 +127,10 @@ def mask_image(width: int, height: int, mask: Mask) -> QImage:
     if listo is not None:
         return listo
 
-    radio = max(0.0, mask.feather) * height
+    # Con tope: un suavizado de 1000 —de un proyecto a mano— pedía un lienzo
+    # de cientos de miles de pixeles por lado, Qt no lo podía crear y la capa
+    # entera desaparecía.
+    radio = max(0.0, min(0.5, mask.feather)) * height
     margen = int(radio * 2) + 2
 
     lienzo = QImage(width + margen * 2, height + margen * 2,
@@ -211,10 +224,48 @@ def _place(painter: QPainter, target: QRectF, valores: dict | None,
     pivote_y = target.center().y() + target.height() * anchor[1]
     painter.translate(pivote_x + target.width() * valores.get("x", 0.0),
                       pivote_y + target.height() * valores.get("y", 0.0))
+
+    inclina_x = max(-TILT_MAX, min(TILT_MAX, valores.get("tilt_x", 0.0)))
+    inclina_y = max(-TILT_MAX, min(TILT_MAX, valores.get("tilt_y", 0.0)))
+    if abs(inclina_x) > 1e-6 or abs(inclina_y) > 1e-6:
+        # La distancia de la cámara va en proporción al cuadro y no en pixeles
+        # fijos: con 1024 pixeles —lo de Qt por omisión— el preview chico se
+        # veía casi plano y el 4K exportado con la perspectiva exagerada.
+        distancia = max(target.width(), target.height()) * 1.5
+        perspectiva = QTransform()
+        perspectiva.rotate(inclina_y, Qt.YAxis, distancia)
+        perspectiva.rotate(inclina_x, Qt.XAxis, distancia)
+        painter.setTransform(perspectiva, True)
+
     painter.rotate(valores.get("rotation", 0.0))
     escala = max(0.01, valores.get("scale", 1.0))
     painter.scale(escala, escala)
     painter.translate(-pivote_x, -pivote_y)
+
+    # El corner pin se aplica primero a la imagen, en el cuadro sin mover:
+    # las esquinas se ponen donde uno quiere y luego todo lo demás la mueve.
+    esquinas = [valores.get(p, 0.0) for p in CORNERS]
+    if any(abs(v) > 1e-9 for v in esquinas):
+        pin = corner_pin(target, esquinas)
+        if pin is not None:
+            painter.setTransform(pin, True)
+
+
+def corner_pin(target: QRectF, esquinas: list[float]) -> QTransform | None:
+    """La transformación proyectiva que lleva las cuatro esquinas del cuadro a su lugar.
+
+    `esquinas` son ocho números —x, y de arriba izquierda, arriba derecha,
+    abajo derecha y abajo izquierda— en fracciones del cuadro. None si las
+    esquinas se cruzan y no hay transformación posible.
+    """
+    ancho, alto = target.width(), target.height()
+    origen = [target.topLeft(), target.topRight(), target.bottomRight(), target.bottomLeft()]
+    destino = [QPointF(p.x() + esquinas[2 * i] * ancho, p.y() + esquinas[2 * i + 1] * alto)
+               for i, p in enumerate(origen)]
+    salida = QTransform()
+    if not QTransform.quadToQuad(QPolygonF(origen), QPolygonF(destino), salida):
+        return None
+    return salida
 
 
 def fit_rect(target: QRectF, width: int, height: int, mode: str = FIT) -> QRectF:
@@ -438,7 +489,9 @@ def _draw_title_body(painter: QPainter, target: QRectF, title: Title,
                      estado: AnimState) -> None:
 
     font = QFont(title.font) if title.font else QFont()
-    font.setPixelSize(max(8, int(target.height() * title.size * estado.scale)))
+    # Con tope de un cuadro de alto: una letra de 50 cuadros —de un proyecto a
+    # mano— no se ve y sí se tarda en trazar.
+    font.setPixelSize(max(8, int(target.height() * min(1.0, title.size) * estado.scale)))
     font.setBold(title.bold)
     font.setItalic(title.italic)
 
