@@ -13,6 +13,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from vortex_studio.model.chroma import ChromaKey
 from vortex_studio.model.color import ColorAdjust
 from vortex_studio.model.curves import Curves
 from vortex_studio.model.mask import Mask
@@ -26,9 +27,10 @@ from vortex_studio.model.transform import Transform
 # 4: encuadre y anclaje, transiciones a color, modo de audio por velocidad,
 #    enlaces, marcadores con nota en clips, tipografía de títulos y los
 #    interruptores de pista.
+# 5: keyframes con interpolación y de cualquier parámetro, y lo del nivel 3.
 # Se sube el número para que una versión vieja diga "esto es más nuevo que
 # yo" en vez de abrir el proyecto a medias y perder esos ajustes al guardar.
-FORMAT_VERSION = 4
+FORMAT_VERSION = 5
 EXTENSION = ".vortex"
 
 
@@ -61,6 +63,10 @@ def item_to_dict(item: Any, base: Path | None = None) -> dict:
     if isinstance(item, Clip):
         data["tipo"] = "clip"
         data["source"] = _write_path(item.source, base)
+        if item.color.lut:
+            # El LUT viaja con el proyecto igual que el material: relativo si
+            # está junto al proyecto.
+            data["color"]["lut"] = _write_path(Path(item.color.lut), base)
     elif isinstance(item, ImageOverlay):
         data["tipo"] = "imagen"
         data["source"] = _write_path(item.source, base)
@@ -71,7 +77,7 @@ def item_to_dict(item: Any, base: Path | None = None) -> dict:
     return data
 
 
-def _color(raw: dict | None) -> ColorAdjust | None:
+def _color(raw: dict | None, base: Path | None = None) -> ColorAdjust | None:
     """Reconstruye el color, con su curva adentro.
 
     `asdict` aplana los dataclasses anidados a diccionarios, así que al
@@ -84,6 +90,8 @@ def _color(raw: dict | None) -> ColorAdjust | None:
         return None
     raw = dict(raw)
     curva = raw.pop("curves", None)
+    if raw.get("lut"):
+        raw["lut"] = str(_read_path(raw["lut"], base))
     adjust = ColorAdjust(**raw)
     if curva:
         adjust.curves = Curves(**curva)
@@ -103,11 +111,14 @@ def item_from_dict(data: dict, base: Path | None = None) -> Any:
     markers = data.pop("markers", None)
 
     if kind == "clip":
-        color = _color(data.pop("color", None))
+        color = _color(data.pop("color", None), base)
+        chroma = data.pop("chroma", None)
         data["source"] = _read_path(data["source"], base)
         item = Clip(**data)
         if color:
             item.color = color
+        if chroma:
+            item.chroma = ChromaKey(**chroma)
     elif kind == "imagen":
         data["source"] = _read_path(data["source"], base)
         item = ImageOverlay(**data)
@@ -206,7 +217,14 @@ def _de_3_a_4(data: dict) -> dict:
     return data
 
 
-MIGRATIONS = {1: _de_1_a_2, 2: _de_2_a_3, 3: _de_3_a_4}
+def _de_4_a_5(data: dict) -> dict:
+    """Nivel 3. Los keyframes viejos `[t, v]` siguen valiendo tal cual: sin
+    interpolación escrita, cada uno usa la de omisión. Lo demás son campos
+    nuevos con valor por omisión."""
+    return data
+
+
+MIGRATIONS = {1: _de_1_a_2, 2: _de_2_a_3, 3: _de_3_a_4, 4: _de_4_a_5}
 
 
 def migrate(data: dict) -> dict:

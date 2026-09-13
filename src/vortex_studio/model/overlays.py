@@ -56,6 +56,8 @@ class TimedItem:
 
     # Marcadores del elemento, en tiempo relativo a su inicio.
     markers: list = field(default_factory=list)
+    # Keyframes por ruta de parámetro. Ver `model/animate.py`.
+    anim: dict = field(default_factory=dict)
 
     @property
     def end(self) -> float:

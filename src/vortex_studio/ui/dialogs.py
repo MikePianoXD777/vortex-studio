@@ -122,7 +122,7 @@ class PasteAttributesDialog(QDialog):
     def applies(source, nombre: str) -> bool:
         if nombre == "Transformación":
             return hasattr(source, "transform")
-        if nombre in ("Color", "Velocidad", "Volumen"):
+        if nombre in ("Color", "Velocidad", "Volumen", "Efectos"):
             return isinstance(source, Clip)
         if nombre == "Máscara y fusión":
             return hasattr(source, "mask")

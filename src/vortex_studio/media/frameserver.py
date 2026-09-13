@@ -54,12 +54,15 @@ class FrameJob:
     time: float
     adjust: object = field(default=None, compare=False, hash=False)
     signature: tuple = ()
+    chroma: object = field(default=None, compare=False, hash=False)
 
     @classmethod
-    def make(cls, key: int, path, time: float, adjust=None) -> "FrameJob":
+    def make(cls, key: int, path, time: float, adjust=None, chroma=None) -> "FrameJob":
         copia = adjust.copy() if adjust is not None else None
-        firma = copia.signature if copia is not None else ()
-        return cls(key, Path(path), round(float(time), 4), copia, firma)
+        llave = chroma.copy() if chroma is not None and chroma.is_on else None
+        firma = ((copia.signature if copia is not None else ())
+                 + ((llave.signature,) if llave is not None else ()))
+        return cls(key, Path(path), round(float(time), 4), copia, firma, llave)
 
     @property
     def cache_key(self) -> tuple:
@@ -212,7 +215,13 @@ class FrameServer:
                 frame = None
                 try:
                     fuente = self._pool.get(job.key, job.path)
-                    frame = fuente.frame_at(job.time, job.adjust)
+                    # La llave solo se pasa si hay: así cualquier fuente con la
+                    # firma de siempre —incluidas las falsas de las pruebas—
+                    # sigue sirviendo.
+                    if job.chroma is None:
+                        frame = fuente.frame_at(job.time, job.adjust)
+                    else:
+                        frame = fuente.frame_at(job.time, job.adjust, job.chroma)
                 except Exception:
                     frame = None
 

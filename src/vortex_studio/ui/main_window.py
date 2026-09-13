@@ -78,7 +78,17 @@ from vortex_studio.ui.audio_player import AudioPlayer
 from vortex_studio.ui.compositor import Layer, clear_mask_cache, compose
 from vortex_studio.ui.dialogs import MarkerDialog, PasteAttributesDialog
 from vortex_studio.ui.panels import PropertiesPanel
-from vortex_studio.ui.renderer import SequenceRenderer, fill_layer, inside, layer_for
+from vortex_studio.ui.renderer import (
+    SequenceRenderer,
+    fill_layer,
+    inside,
+    layer_for,
+    local_in,
+    overlays_at,
+    titles_at,
+)
+from vortex_studio.ui.keyframe_editor import KeyframeEditor
+from vortex_studio.model import animate
 from vortex_studio.ui.preview import PreviewWidget
 from vortex_studio.ui.shortcuts import DEFAULTS, ShortcutsDialog, load_shortcuts
 from vortex_studio.model.commands import RippleDelete, Slip, split_item
@@ -232,12 +242,14 @@ class MainWindow(QMainWindow):
         self.clip_panel = self.panel.clip
         self.transform_panel = self.panel.transform
         self.mask_panel = self.panel.mask
+        self.effects_panel = self.panel.effects
 
         # Lo importado, a la izquierda como en Premiere; la cola de render
         # se asoma sola cuando hay algo exportándose.
         self.media_bin = MediaBin()
         self.render_queue = RenderQueue(self)
         self.queue_panel = RenderQueuePanel(self.render_queue)
+        self.keyframe_editor = KeyframeEditor()
 
         # Proxies: interruptor global, recordado entre sesiones.
         self.proxies = ProxyManager(self)
@@ -308,6 +320,8 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.RightDockWidgetArea, self.panel)
         self.addDockWidget(Qt.LeftDockWidgetArea, self.media_bin)
         self.addDockWidget(Qt.RightDockWidgetArea, self.queue_panel)
+        self.addDockWidget(Qt.BottomDockWidgetArea, self.keyframe_editor)
+        self.keyframe_editor.hide()
         self.queue_panel.hide()
         self.resizeDocks([self.panel, self.media_bin], [330, 250], Qt.Horizontal)
 
@@ -404,6 +418,8 @@ class MainWindow(QMainWindow):
         self._action(clip_menu, "Poner &keyframe de todo", "clip.keyframe",
                      self.key_all_transform)
         self._action(clip_menu, "Quitar a&nimación", None, self.clear_transform_keys)
+        self._action(clip_menu, "&Editor de keyframes", "clip.keyframes",
+                     lambda: self.open_keyframe_editor())
 
         capa = self.menuBar().addMenu("Ca&pa")
         fusion = capa.addMenu("Modo de &fusión")
@@ -506,6 +522,7 @@ class MainWindow(QMainWindow):
         ver.addAction(self.panel.toggleViewAction())
         ver.addAction(self.media_bin.toggleViewAction())
         ver.addAction(self.queue_panel.toggleViewAction())
+        ver.addAction(self.keyframe_editor.toggleViewAction())
 
         self._classify_actions()
         self._update_history_actions()
@@ -598,6 +615,8 @@ class MainWindow(QMainWindow):
         self.media_bin.insert_requested.connect(
             lambda path: self.place_media(path, at=self.timeline.playhead))
         self.render_queue.finished.connect(self._render_finished)
+        self.keyframe_editor.changed.connect(self._keyframes_edited)
+        self.keyframe_editor.committed.connect(self._keyframes_committed)
         self.proxies.ready.connect(self._proxy_ready)
         self.proxies.progress.connect(self._proxy_progress)
         self.proxies.failed.connect(
@@ -610,6 +629,8 @@ class MainWindow(QMainWindow):
         self.transform_panel.changed.connect(lambda: self._schedule("Transformar"))
         self.transform_panel.committed.connect(self._commit)
         self.mask_panel.changed.connect(lambda: self._schedule("Máscara"))
+        self.effects_panel.changed.connect(lambda: self._schedule("Efectos"))
+        self.effects_panel.committed.connect(self._effects_committed)
         self.mask_panel.committed.connect(self._commit)
         self.text_panel.changed.connect(self._text_changed)
         self.text_panel.add_requested.connect(self.add_title)
@@ -790,6 +811,7 @@ class MainWindow(QMainWindow):
 
     def _schedule(self, label: str) -> None:
         """Apunta un cambio para registrarlo cuando el usuario deje de teclear."""
+        self._absorb_animation()
         self._pending = label
         self._commit_timer.start()
         self._dirty = True
@@ -1340,8 +1362,10 @@ class MainWindow(QMainWindow):
             if isinstance(clip, Fill):
                 plan.append((clip, None, peso))
                 continue
+            vista = animate.view(clip, local_in(clip, t))
             trabajo = FrameJob.make(id(clip), self._preview_path(clip),
-                                    clip.source_time(inside(clip, t)), clip.color)
+                                    clip.source_time(inside(clip, t)), vista.color,
+                                    vista.chroma)
             plan.append((clip, trabajo, peso))
         return plan
 
@@ -1965,7 +1989,9 @@ class MainWindow(QMainWindow):
                                             item.local(self.timeline.playhead))
             self.color_panel.set_target(item.color, item.name)
             self.mask_panel.set_target(None if es_audio else item)
+            self.effects_panel.set_target(None if es_audio else item)
             self.panel.set_enabled(self.transform_panel, not es_audio)
+            self.panel.set_enabled(self.effects_panel, not es_audio)
 
             # Solo se cambia de pestaña si la de ahora no aplica al clip. Si
             # el usuario ya estaba en Color o en Transformar, se respeta:
@@ -1973,7 +1999,8 @@ class MainWindow(QMainWindow):
             # de las cosas que más estorban de un editor.
             aplica = [self.clip_panel]
             if not es_audio:
-                aplica += [self.transform_panel, self.color_panel, self.mask_panel]
+                aplica += [self.transform_panel, self.color_panel, self.mask_panel,
+                           self.effects_panel]
             if not self.panel.current_is(*aplica):
                 self.panel.show_page(self.clip_panel if es_audio
                                      else self.transform_panel)
@@ -2053,6 +2080,11 @@ class MainWindow(QMainWindow):
         Sin esto habría que seleccionar el clip a mano antes de corregirlo,
         y el orden natural es al revés: te paras donde se ve mal y ajustas.
         """
+        # Lo animado se muestra con su valor de este instante. Ver `bake`.
+        for track in self.sequence.tracks:
+            for item in track.items_at(t):
+                animate.bake(item, local_in(item, t))
+
         clip = self.sequence.top_clip_at(t)
         self.color_panel.set_target(clip.color if clip else None,
                                     clip.name if clip else "")
@@ -2093,6 +2125,50 @@ class MainWindow(QMainWindow):
         self.panel.set_enabled(self.transform_panel, objetivo is not None and not es_audio)
         self.panel.set_enabled(self.color_panel, clip is not None)
         self.panel.set_enabled(self.mask_panel, capa is not None)
+        efectos = None if es_audio or not isinstance(objetivo, Clip) else objetivo
+        self.effects_panel.set_target(efectos)
+        self.panel.set_enabled(self.effects_panel, efectos is not None)
+
+        destino = seleccion if seleccion is not None else clip
+        self.keyframe_editor.set_target(
+            destino, local_in(destino, t) if destino is not None else 0.0)
+
+    def _effects_committed(self, label: str) -> None:
+        self._commit(label)
+        self._sync_panels(self.timeline.playhead)
+
+    def _animation_targets(self) -> list:
+        t = self.timeline.playhead
+        candidatos = [self.sequence.top_clip_at(t), self.clip_panel._item,
+                      self.mask_panel.target, self.image_panel._overlay,
+                      self.text_panel._title, self.timeline.selected]
+        salida = []
+        for item in candidatos:
+            if item is not None and not any(item is x for x in salida):
+                salida.append(item)
+        return salida
+
+    def _absorb_animation(self) -> None:
+        """Lo que se movió en un panel sobre un valor animado se vuelve keyframe."""
+        t = self.timeline.playhead
+        for item in self._animation_targets():
+            animate.absorb(item, local_in(item, t))
+
+    def _keyframes_edited(self) -> None:
+        self._dirty = True
+        self._update_title()
+        self._refresh()
+
+    def _keyframes_committed(self, label: str) -> None:
+        self._commit(label)
+        self._sync_panels(self.timeline.playhead)
+
+    def open_keyframe_editor(self, path: str | None = None) -> None:
+        self.keyframe_editor.show()
+        self.keyframe_editor.raise_()
+        self._sync_panels(self.timeline.playhead)
+        if path:
+            self.keyframe_editor.select_param(path)
 
     def _scrubbed(self, t: float) -> None:
         """Arrastrar el playhead reubica el origen del reloj sin cortar el play."""
@@ -2110,11 +2186,8 @@ class MainWindow(QMainWindow):
     def _render(self, t: float) -> None:
         self.preview.set_time(t)
         self.preview.set_layers(self._layers_at(t))
-        self.preview.set_overlays([
-            (overlay, self._image_for(overlay.source))
-            for overlay in self.sequence.overlays_at(t)
-        ])
-        self.preview.set_titles(self.sequence.titles_at(t))
+        self.preview.set_overlays(overlays_at(self.sequence, t, self._image_for))
+        self.preview.set_titles(titles_at(self.sequence, t))
 
     def _refresh(self) -> None:
         """Vuelve a componer el cuadro actual sin mover el playhead."""

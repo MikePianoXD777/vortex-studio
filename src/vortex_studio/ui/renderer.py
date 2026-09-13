@@ -21,6 +21,7 @@ from PySide6.QtGui import QImage
 
 from vortex_studio.media import HAS_PYAV, probe_media
 from vortex_studio.media.pool import SourcePool
+from vortex_studio.model import animate
 from vortex_studio.model.media import lookup
 from vortex_studio.model.project import Fill
 from vortex_studio.ui.compositor import Layer, compose, framing_of
@@ -35,16 +36,32 @@ def inside(clip, t: float) -> float:
     return min(max(t, clip.start), clip.end - 1e-6)
 
 
+def local_in(item, t: float) -> float:
+    """Segundos desde el inicio del elemento, dentro de su tramo."""
+    return max(0.0, min(t, item.start + item.duration) - item.start)
+
+
 def layer_for(clip, frame, t: float, weight: float) -> Layer:
+    vista = animate.view(clip, local_in(clip, t))
     return Layer(
         frame,
         weight * clip.fade_at(inside(clip, t)),
         clip.transform.values_at(clip.local(t)),
         clip.blend,
-        clip.mask,
+        vista.mask,
         None,
         framing_of(clip.transform),
     )
+
+
+def overlays_at(sequence, t: float, image_for) -> list:
+    """Imágenes del instante, ya con sus valores animados."""
+    return [(animate.view(o, local_in(o, t)), image_for(o.source))
+            for o in sequence.overlays_at(t)]
+
+
+def titles_at(sequence, t: float) -> list:
+    return [animate.view(ti, local_in(ti, t)) for ti in sequence.titles_at(t)]
 
 
 def fill_layer(fill: Fill, weight: float) -> Layer:
@@ -85,7 +102,13 @@ class SequenceRenderer:
             return None
         try:
             fuente = self.sources.get(id(clip), clip.source)
-            return fuente.frame_at(clip.source_time(inside(clip, t)), clip.color)
+            color = animate.view(clip, local_in(clip, t)).color
+            vista = animate.view(clip, local_in(clip, t))
+            momento = clip.source_time(inside(clip, t))
+            llave = getattr(vista, "chroma", None)
+            if llave is None or not llave.is_on:
+                return fuente.frame_at(momento, color)
+            return fuente.frame_at(momento, color, llave)
         except Exception:
             return None
 
@@ -102,8 +125,8 @@ class SequenceRenderer:
         return compose(
             width, height,
             self.layers(t),
-            [(o, self.image_for(o.source)) for o in self.sequence.overlays_at(t)],
-            self.sequence.titles_at(t),
+            overlays_at(self.sequence, t, self.image_for),
+            titles_at(self.sequence, t),
             t,
         )
 

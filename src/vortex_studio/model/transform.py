@@ -23,6 +23,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from vortex_studio.model import keyframes as kf
+
 PROPS = ("x", "y", "scale", "rotation", "opacity")
 
 NEUTRAL = {"x": 0.0, "y": 0.0, "scale": 1.0, "rotation": 0.0, "opacity": 1.0}
@@ -90,23 +92,15 @@ class Transform:
     # --- lectura ----------------------------------------------------------
 
     def at(self, prop: str, local: float) -> float:
-        """El valor de esa propiedad a `local` segundos del inicio del clip."""
+        """El valor de esa propiedad a `local` segundos del inicio del clip.
+
+        Cada keyframe puede traer su interpolación (ver `model/keyframes.py`);
+        el que no trae usa la de `ease`: suave o lineal.
+        """
         puntos = self.keys.get(prop)
         if not puntos:
             return getattr(self, prop)
-
-        if local <= puntos[0][0]:
-            return puntos[0][1]
-        if local >= puntos[-1][0]:
-            return puntos[-1][1]
-
-        for (t0, v0), (t1, v1) in zip(puntos, puntos[1:]):
-            if t0 <= local <= t1:
-                if t1 - t0 < 1e-9:
-                    return v1
-                p = (local - t0) / (t1 - t0)
-                return v0 + (v1 - v0) * (_smooth(p) if self.ease else p)
-        return puntos[-1][1]
+        return kf.evaluate(puntos, local, kf.EASE if self.ease else kf.LINEAR)
 
     def values_at(self, local: float) -> dict[str, float]:
         return {p: self.at(p, local) for p in PROPS}
@@ -134,16 +128,14 @@ class Transform:
 
     # --- edición ----------------------------------------------------------
 
-    def set_key(self, prop: str, local: float, value: float) -> None:
+    def set_key(self, prop: str, local: float, value: float,
+                interp: str | None = None) -> None:
         """Pone o reemplaza un keyframe. Dos en el mismo instante no tiene sentido."""
-        puntos = [k for k in self.keys.get(prop, []) if abs(k[0] - local) > 1e-4]
-        puntos.append([round(local, 4), value])
-        puntos.sort(key=lambda k: k[0])
-        self.keys[prop] = puntos
+        self.keys[prop] = kf.set_key(self.keys.get(prop, []), local, value, interp)
 
     def remove_key(self, prop: str, local: float, tolerance: float = 0.05) -> bool:
         puntos = self.keys.get(prop, [])
-        quedan = [k for k in puntos if abs(k[0] - local) > tolerance]
+        quedan = kf.remove_key(puntos, local, tolerance)
         if len(quedan) == len(puntos):
             return False
 
@@ -153,19 +145,18 @@ class Transform:
             # Sin keyframes, la propiedad vuelve a ser un número fijo: se
             # congela en el último valor que tenía para que no pegue un salto.
             self.keys.pop(prop, None)
-            setattr(self, prop, puntos[0][1])
+            setattr(self, prop, kf.value_of(puntos[0]))
         return True
 
     def key_near(self, prop: str, local: float, tolerance: float = 0.05):
-        return next((k for k in self.keys.get(prop, []) if abs(k[0] - local) <= tolerance),
-                    None)
+        return kf.key_near(self.keys.get(prop, []), local, tolerance)
 
     def clear_keys(self, prop: str | None = None) -> None:
         objetivos = [prop] if prop else list(self.keys)
         for p in objetivos:
             puntos = self.keys.pop(p, None)
             if puntos:
-                setattr(self, p, puntos[0][1])
+                setattr(self, p, kf.value_of(puntos[0]))
 
     def reset(self) -> None:
         """Vuelve a llenar el cuadro: sin animación, sin recorte, ancla al centro.
@@ -182,4 +173,4 @@ class Transform:
 
     def all_keys(self) -> list[float]:
         """Todos los instantes con keyframe, para dibujarlos en el timeline."""
-        return sorted({k[0] for puntos in self.keys.values() for k in puntos})
+        return sorted({kf.time_of(k) for puntos in self.keys.values() for k in puntos})

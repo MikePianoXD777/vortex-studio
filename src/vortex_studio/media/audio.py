@@ -14,6 +14,7 @@ from typing import Iterator
 import numpy as np
 
 from vortex_studio.media.waveform import compute as compute_waveform
+from vortex_studio.model.keyframes import evaluate_many
 from vortex_studio.model.project import KEEP_PITCH, MUTE_AUDIO, SHIFT_PITCH
 
 try:
@@ -157,7 +158,14 @@ class AudioRenderer:
         """
         n = frame.samples
         tiempos = cuando + np.arange(n, dtype=np.float64) / self.rate
-        nivel = max(0.0, float(getattr(clip, "gain", 1.0))) * fade_envelope(clip, tiempos)
+        puntos = (getattr(clip, "anim", None) or {}).get("gain")
+        if puntos:
+            # Volumen con keyframes: evaluado muestra por muestra, igual que
+            # los fundidos, para que una subida no se oiga en escalones.
+            ganancia = np.maximum(0.0, evaluate_many(puntos, tiempos - clip.start))
+        else:
+            ganancia = max(0.0, float(getattr(clip, "gain", 1.0)))
+        nivel = ganancia * fade_envelope(clip, tiempos)
 
         if np.all(np.abs(nivel - 1.0) < 1e-4):
             return frame            # nada que hacer: ni se copia el bloque

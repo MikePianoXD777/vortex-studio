@@ -27,6 +27,7 @@ from PySide6.QtWidgets import QSizePolicy, QToolTip, QWidget
 from pathlib import Path
 
 from vortex_studio.model import Clip, ImageOverlay, Sequence, Title, accepts, timecode
+from vortex_studio.model import animate
 from vortex_studio.model.commands import link_offset, overwrite
 from vortex_studio.model.commands import slip as slip_clip
 from vortex_studio.model.project import DIP_BLACK, DIP_WHITE
@@ -553,14 +554,14 @@ class TimelineWidget(QWidget):
         Van dentro del clip y no en una pista aparte: así se ve de un vistazo
         qué clips están animados sin tener que desplegar nada.
         """
-        transform = getattr(clip, "transform", None)
-        if transform is None or not transform.keys:
+        tiempos = animate.all_key_times(clip)
+        if not tiempos:
             return
 
         y = rect.bottom() - 4
         painter.setPen(Qt.NoPen)
         painter.setBrush(MARKER)
-        for local in transform.all_keys():
+        for local in tiempos:
             x = self.x_for(clip.start + local)
             if x < max(HEADER_WIDTH, rect.left()) or x > min(self.width(), rect.right()):
                 continue

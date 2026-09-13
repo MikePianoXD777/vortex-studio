@@ -94,6 +94,7 @@ DEFAULTS: dict[str, tuple[str, str]] = {
     "clip.fundido_negro": ("Fundido a negro", "Ctrl+Shift+B"),
     "clip.congelar": ("Congelar cuadro", "Ctrl+Shift+F"),
     "clip.keyframe": ("Poner keyframe de todo", "Ctrl+Shift+K"),
+    "clip.keyframes": ("Editor de keyframes", "Shift+K"),
 
     "capa.pip": ("Cuadro dentro de cuadro", "Ctrl+Shift+P"),
 

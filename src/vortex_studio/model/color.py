@@ -17,6 +17,13 @@ GAMMA = (10, 300, 100)
 TEMPERATURE = (-100, 100, 0)
 VIGNETTE = (0, 100, 0)
 CURVE_POINT = (-100, 100, 0)
+EXPOSURE = (-300, 300, 0)      # centésimas de paso: 100 = el doble de luz
+TINT = (-100, 100, 0)          # negativo verde, positivo magenta
+LIFT = (-100, 100, 0)          # sombras, por canal
+GAMMA_CH = (20, 300, 100)      # medios, por canal
+GAIN = (0, 200, 100)           # luces, por canal
+LUT_INTENSITY = (0, 100, 100)
+CHANNELS = ("r", "g", "b")
 
 # Ángulo máximo que se le pasa al filtro `vignette`. Medido a ojo sobre un
 # plano parejo de 16:9: más allá de esto las esquinas se van a negro y el
@@ -36,6 +43,25 @@ class ColorAdjust:
     vignette: int = 0       # 0 a 100, oscurece las esquinas
     curves: Curves = field(default_factory=Curves)
 
+    # Nivel 3: exposición y tinte, y las tres ruedas de DaVinci en su forma
+    # de deslizadores —lift para las sombras, gamma para los medios y gain
+    # para las luces—, un trío por canal.
+    exposure: int = 0       # -300 a 300: centésimas de paso de diafragma
+    tint: int = 0           # -100 verde, 100 magenta
+    lift_r: int = 0
+    lift_g: int = 0
+    lift_b: int = 0
+    gamma_r: int = 100
+    gamma_g: int = 100
+    gamma_b: int = 100
+    gain_r: int = 100
+    gain_g: int = 100
+    gain_b: int = 100
+
+    # LUT .cube: la ruta y cuánto se mezcla con la imagen sin LUT.
+    lut: str = ""
+    lut_intensity: int = 100
+
     @property
     def signature(self) -> tuple:
         """Todo lo que cambia la imagen, en una tupla que se puede comparar.
@@ -48,21 +74,53 @@ class ColorAdjust:
         preview avanzaba un cuadro con cada movimiento del deslizador.
         """
         return (self.brightness, self.contrast, self.saturation, self.gamma,
-                self.temperature, self.vignette, tuple(self.curves.points()))
+                self.temperature, self.vignette, tuple(self.curves.points()),
+                self.exposure, self.tint, self.lgg, self.lut, self.lut_intensity)
+
+    @property
+    def lgg(self) -> tuple:
+        return tuple(getattr(self, f"{g}_{c}") for g in ("lift", "gamma", "gain")
+                     for c in CHANNELS)
+
+    @property
+    def lgg_is_neutral(self) -> bool:
+        return self.lgg == (0, 0, 0, 100, 100, 100, 100, 100, 100)
+
+    @property
+    def has_lut(self) -> bool:
+        return bool(self.lut) and self.lut_intensity > 0
+
+    def channel_lgg(self, canal: str) -> tuple[float, float, float]:
+        """(lift, gamma, gain) de un canal, en las unidades de la fórmula."""
+        return (getattr(self, f"lift_{canal}") / 400.0,
+                max(0.2, getattr(self, f"gamma_{canal}") / 100.0),
+                getattr(self, f"gain_{canal}") / 100.0)
+
+    @property
+    def exposure_factor(self) -> float:
+        return 2.0 ** (self.exposure / 100.0)
 
     @property
     def is_neutral(self) -> bool:
         """Si nada está tocado, no vale la pena montar el filtro."""
         return ((self.brightness, self.contrast, self.saturation,
-                 self.gamma, self.temperature, self.vignette)
-                == (0, 100, 100, 100, 0, 0)
-                and self.curves.is_neutral)
+                 self.gamma, self.temperature, self.vignette,
+                 self.exposure, self.tint)
+                == (0, 100, 100, 100, 0, 0, 0, 0)
+                and self.curves.is_neutral and self.lgg_is_neutral
+                and not self.has_lut)
 
     def reset(self) -> None:
         self.brightness, self.contrast, self.saturation = 0, 100, 100
         self.gamma, self.temperature = 100, 0
         self.vignette = 0
         self.curves.reset()
+        self.exposure = self.tint = 0
+        for c in CHANNELS:
+            setattr(self, f"lift_{c}", 0)
+            setattr(self, f"gamma_{c}", 100)
+            setattr(self, f"gain_{c}", 100)
+        self.lut, self.lut_intensity = "", 100
 
     # --- conversión a los factores que espera FFmpeg ----------------------
 
@@ -99,9 +157,18 @@ class ColorAdjust:
         return max(0, min(100, self.vignette)) / 100.0 * VIGNETTE_ANGLE
 
     def copy(self) -> ColorAdjust:
-        return ColorAdjust(self.brightness, self.contrast, self.saturation,
-                           self.gamma, self.temperature, self.vignette,
-                           self.curves.copy())
+        copia = ColorAdjust(self.brightness, self.contrast, self.saturation,
+                            self.gamma, self.temperature, self.vignette,
+                            self.curves.copy())
+        copia.apply_extras(self)
+        return copia
+
+    def apply_extras(self, otro: "ColorAdjust") -> None:
+        self.exposure, self.tint = otro.exposure, otro.tint
+        for g in ("lift", "gamma", "gain"):
+            for c in CHANNELS:
+                setattr(self, f"{g}_{c}", getattr(otro, f"{g}_{c}"))
+        self.lut, self.lut_intensity = otro.lut, otro.lut_intensity
 
     def apply(self, otro: "ColorAdjust") -> None:
         self.brightness, self.contrast = otro.brightness, otro.contrast
@@ -109,6 +176,7 @@ class ColorAdjust:
         self.temperature = otro.temperature
         self.vignette = otro.vignette
         self.curves.apply(otro.curves)
+        self.apply_extras(otro)
 
 
 # Looks de un clic. Son combinaciones de los mismos controles, no filtros

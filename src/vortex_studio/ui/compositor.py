@@ -89,8 +89,8 @@ def framing_of(transform) -> dict:
 
 def frame_to_image(frame: Frame) -> QImage:
     """Envuelve los bytes del cuadro sin copiarlos."""
-    return QImage(frame.data, frame.width, frame.height,
-                  frame.stride, QImage.Format_RGB888)
+    formato = QImage.Format_RGBA8888 if getattr(frame, "alpha", False) else QImage.Format_RGB888
+    return QImage(frame.data, frame.width, frame.height, frame.stride, formato)
 
 
 # --- máscaras -------------------------------------------------------------

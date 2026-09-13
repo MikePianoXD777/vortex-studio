@@ -37,6 +37,7 @@ class Frame:
     width: int
     height: int
     stride: int
+    alpha: bool = False     # RGBA en vez de RGB: trae transparencia (llave de croma)
 
 
 class VideoSource:
@@ -66,10 +67,12 @@ class VideoSource:
         self._color = ColorProcessor()
         self._applied: tuple | None = None
 
-    def frame_at(self, t: float, adjust: ColorAdjust | None = None) -> Frame | None:
+    def frame_at(self, t: float, adjust: ColorAdjust | None = None,
+                 key=None) -> Frame | None:
         """Devuelve el frame que se ve en el segundo `t`, ya corregido."""
         t = max(0.0, t)
-        settings = self._settings(adjust)
+        self._key = key
+        settings = self._settings(adjust) + (key.signature if key is not None else (),)
 
         # Si el cuadro es el mismo y el color no cambió, no hay que decodificar
         # nada: esto es lo que hace que mover un deslizador de color se sienta
@@ -88,7 +91,8 @@ class VideoSource:
                 self._last_time = when
                 self._raw = frame
                 self._applied = settings
-                self._cached = self._to_rgb(self._color.apply(frame, adjust) if adjust else frame)
+                self._cached = self._to_rgb(self._color.apply(frame, adjust, key)
+                                            if adjust or key else frame)
                 return self._cached
 
         return self._cached  # se acabó el archivo: nos quedamos con el último
@@ -98,8 +102,10 @@ class VideoSource:
         raw = getattr(self, "_raw", None)
         if raw is None:
             return self._cached
-        self._applied = self._settings(adjust)
-        self._cached = self._to_rgb(self._color.apply(raw, adjust) if adjust else raw)
+        llave = getattr(self, "_key", None)
+        self._applied = self._settings(adjust) + (llave.signature if llave is not None else (),)
+        self._cached = self._to_rgb(self._color.apply(raw, adjust, llave)
+                                    if adjust or llave else raw)
         return self._cached
 
     @staticmethod
@@ -118,7 +124,10 @@ class VideoSource:
 
     @staticmethod
     def _to_rgb(frame) -> Frame:
-        """Convierte a RGB leyendo el plano directo, sin pasar por numpy."""
+        """Convierte a RGB —o RGBA si trae alfa— leyendo el plano directo."""
+        if frame.format.name == "rgba":
+            plane = frame.planes[0]
+            return Frame(bytes(plane), frame.width, frame.height, plane.line_size, True)
         rgb = frame.reformat(format="rgb24")
         plane = rgb.planes[0]
         return Frame(bytes(plane), rgb.width, rgb.height, plane.line_size)

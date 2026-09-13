@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from vortex_studio.model.blend import NORMAL, is_normal
+from vortex_studio.model.chroma import ChromaKey
 from vortex_studio.model.color import ColorAdjust
 from vortex_studio.model.mask import Mask
 from vortex_studio.model.media import MediaInfo
@@ -104,6 +105,10 @@ class Clip:
     # el video y su audio. Vacío = suelto.
     link: str = ""
     markers: list = field(default_factory=list)
+    # Keyframes de todo lo que no es transformación: ruta -> keyframes.
+    # Ver `model/animate.py`.
+    anim: dict = field(default_factory=dict)
+    chroma: ChromaKey = field(default_factory=ChromaKey)
 
     def __post_init__(self) -> None:
         self.source = Path(self.source)
@@ -418,6 +423,8 @@ class Sequence:
         """
         transform = clip.transform
         if transform.has_crop:
+            return False
+        if getattr(getattr(clip, "chroma", None), "is_on", False):
             return False
         if transform.fit == FIT and aspect_of is not None and self.height > 0:
             aspecto = aspect_of(clip)

@@ -21,6 +21,7 @@ import copy
 import uuid
 from dataclasses import dataclass, field
 
+from vortex_studio.model import keyframes as kf
 from vortex_studio.model.project import Clip, Sequence, accepts
 
 
@@ -110,7 +111,7 @@ def _split_keys(transform, left: float):
     primera = copy.deepcopy(transform)
     segunda = copy.deepcopy(transform)
     for prop, puntos in transform.keys.items():
-        segunda.keys[prop] = [[round(t - left, 4), v] for t, v in puntos]
+        segunda.keys[prop] = kf.shift(puntos, -left)
     return primera, segunda
 
 
@@ -151,6 +152,11 @@ def split_item(sequence: Sequence, item, t: float):
     if hasattr(item, "anim_in"):
         second.anim_in = "Ninguna"
         item.anim_out = "Ninguna"
+
+    # Los keyframes de color, máscara, volumen… se recorren igual que los de
+    # la transformación, por la misma razón.
+    for ruta, puntos in list((getattr(item, "anim", None) or {}).items()):
+        second.anim[ruta] = kf.shift(puntos, -left)
 
     # Cada marcador se queda en la mitad donde cae, con su tiempo relativo.
     if getattr(item, "markers", None):
@@ -434,7 +440,7 @@ class Paste(Command):
                     None)
 
 
-ATTRIBUTES = ("Transformación", "Color", "Máscara y fusión", "Velocidad",
+ATTRIBUTES = ("Transformación", "Color", "Máscara y fusión", "Efectos", "Velocidad",
               "Volumen", "Fundidos")
 
 
@@ -457,6 +463,11 @@ def paste_attributes(source, target, groups) -> bool:
         cambio = True
     if "Color" in groups and puede("color") and isinstance(target, Clip):
         target.color = source.color.copy()
+        cambio = True
+    if "Efectos" in groups and isinstance(source, Clip) and isinstance(target, Clip):
+        target.chroma = source.chroma.copy()
+        if hasattr(source, "stabilize"):
+            target.stabilize = source.stabilize
         cambio = True
     if "Máscara y fusión" in groups and puede("mask"):
         target.mask = copy.deepcopy(source.mask)

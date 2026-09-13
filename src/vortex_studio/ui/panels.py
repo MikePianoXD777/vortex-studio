@@ -13,6 +13,8 @@ misma idea aplicada adentro de cada página.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
@@ -57,12 +59,19 @@ from vortex_studio.model import (
 from vortex_studio.model.animation import DEFAULT_TIME
 from vortex_studio.model.color import (
     BRIGHTNESS,
+    CHANNELS,
     CONTRAST,
     CURVE_POINT,
+    EXPOSURE,
+    GAIN,
     GAMMA,
+    GAMMA_CH,
+    LIFT,
     LOOKS,
+    LUT_INTENSITY,
     SATURATION,
     TEMPERATURE,
+    TINT,
     VIGNETTE,
 )
 from vortex_studio.model.mask import NONE as MASK_NONE
@@ -141,6 +150,24 @@ class ColorPanel(Page):
         self._gamma = SliderRow("Gamma", *GAMMA)
         self._temperature = SliderRow("Temperatura", *TEMPERATURE)
         self._vignette = SliderRow("Viñeta", *VIGNETTE)
+        self._exposure = SliderRow("Exposición", *EXPOSURE)
+        self._tint = SliderRow("Tinte", *TINT)
+
+        # Lift / gamma / gain: las ruedas de DaVinci como deslizadores. Un
+        # grupo cerrado: son de corrección fina, no de todos los días.
+        rangos = {"lift": LIFT, "gamma": GAMMA_CH, "gain": GAIN}
+        nombres = {"r": "rojo", "g": "verde", "b": "azul"}
+        self._lgg = {f"{g}_{c}": SliderRow(f"{g.capitalize()} {nombres[c]}", *rangos[g])
+                     for g in ("lift", "gamma", "gain") for c in CHANNELS}
+
+        self._lut_name = QLabel("Sin LUT")
+        self._lut_name.setWordWrap(True)
+        self._lut_name.setStyleSheet("color:#9aa1aa; font-size:11px;")
+        self._lut_load = QPushButton("Cargar .cube…")
+        self._lut_load.clicked.connect(self._pick_lut)
+        self._lut_clear = QPushButton("Quitar LUT")
+        self._lut_clear.clicked.connect(lambda: self.set_lut(""))
+        self._lut_intensity = SliderRow("Intensidad", *LUT_INTENSITY)
 
         self._look = QComboBox()
         self._look.addItems(LOOKS.keys())
@@ -172,14 +199,21 @@ class ColorPanel(Page):
         self._curve_group = Collapsible(
             "Curva", self._graph, self._curve_look,
             *self._curve_rows.values())
+        self._lgg_group = Collapsible("Lift · Gamma · Gain", *self._lgg.values())
+        botones_lut = QHBoxLayout()
+        botones_lut.addWidget(self._lut_load)
+        botones_lut.addWidget(self._lut_clear)
+        self._lut_group = Collapsible("LUT", self._lut_name, botones_lut, self._lut_intensity)
 
         self._set_content(column(
             self._target,
             section("Look"), self._look,
             section("Ajustes"),
-            self._brightness, self._contrast, self._saturation,
-            self._gamma, self._temperature,
+            self._exposure, self._brightness, self._contrast, self._saturation,
+            self._gamma, self._temperature, self._tint,
             self._curve_group,
+            self._lgg_group,
+            self._lut_group,
             section("Viñeta"), self._vignette,
             reset,
             None,
@@ -189,7 +223,8 @@ class ColorPanel(Page):
     def _rows(self) -> list[SliderRow]:
         return [self._brightness, self._contrast, self._saturation,
                 self._gamma, self._temperature, self._vignette,
-                *self._curve_rows.values()]
+                *self._curve_rows.values(), self._exposure, self._tint,
+                *self._lgg.values(), self._lut_intensity]
 
     def set_target(self, adjust: ColorAdjust | None, name: str) -> None:
         """Apunta el panel a un clip. Sin clip, los controles se apagan."""
@@ -201,6 +236,8 @@ class ColorPanel(Page):
         self._look.setEnabled(adjust is not None)
 
         self._curve_look.setEnabled(adjust is not None)
+        self._lut_load.setEnabled(adjust is not None)
+        self._lut_clear.setEnabled(adjust is not None and bool(adjust and adjust.lut))
 
         if adjust is not None:
             self._brightness.set_value(adjust.brightness)
@@ -211,6 +248,16 @@ class ColorPanel(Page):
             self._vignette.set_value(adjust.vignette)
             for prop, row in self._curve_rows.items():
                 row.set_value(getattr(adjust.curves, prop))
+            self._exposure.set_value(int(round(adjust.exposure)))
+            self._tint.set_value(int(round(adjust.tint)))
+            for campo, row in self._lgg.items():
+                row.set_value(int(round(getattr(adjust, campo))))
+            self._lut_intensity.set_value(int(round(adjust.lut_intensity)))
+            self._lut_name.setText(Path(adjust.lut).name if adjust.lut else "Sin LUT")
+            if not adjust.lgg_is_neutral:
+                self._lgg_group.abrir()
+            if adjust.lut:
+                self._lut_group.abrir()
             # El grupo se abre solo si el clip ya traía curva: así un look
             # de cine no deja escondido lo que le está haciendo a la imagen.
             if not adjust.curves.is_neutral:
@@ -229,8 +276,39 @@ class ColorPanel(Page):
         self._adjust.vignette = self._vignette.value()
         for prop, row in self._curve_rows.items():
             setattr(self._adjust.curves, prop, row.value())
+        self._adjust.exposure = self._exposure.value()
+        self._adjust.tint = self._tint.value()
+        for campo, row in self._lgg.items():
+            setattr(self._adjust, campo, row.value())
+        self._adjust.lut_intensity = self._lut_intensity.value()
         self._graph.set_curves(self._adjust.curves)
         self.changed.emit()
+
+    def _pick_lut(self) -> None:
+        from PySide6.QtWidgets import QFileDialog
+
+        ruta, _ = QFileDialog.getOpenFileName(self, "Cargar LUT", "", "LUT (*.cube)")
+        if ruta:
+            self.set_lut(ruta)
+
+    def set_lut(self, ruta: str) -> str:
+        """Pone o quita el LUT. Devuelve el error, o cadena vacía si quedó."""
+        if self._adjust is None:
+            return "sin clip"
+        if ruta:
+            from vortex_studio.model.lut import read_cube
+            try:
+                read_cube(ruta)
+            except (OSError, ValueError) as error:
+                self._lut_name.setText(f"No se pudo leer: {error}")
+                return str(error)
+        self._adjust.lut = str(ruta)
+        self._lut_name.setText(Path(ruta).name if ruta else "Sin LUT")
+        self._lut_clear.setEnabled(bool(ruta))
+        if ruta:
+            self._lut_group.abrir()
+        self.changed.emit()
+        return ""
 
     def _apply_curve_look(self, nombre: str) -> None:
         if self._adjust is None or nombre not in CURVE_LOOKS:
@@ -1249,6 +1327,116 @@ class MaskPanel(Page):
         self.committed.emit("Quitar máscara")
 
 
+class EffectsPanel(Page):
+    TITULO = "Efectos"
+
+    """Llave de croma y estabilización del clip seleccionado.
+
+    Van juntas porque las dos arreglan la toma antes de editarla: quitar el
+    fondo verde y quitar el temblor. Cada una en su grupo, apagada hasta que
+    se prende.
+    """
+
+    changed = Signal()
+    committed = Signal(str)
+
+    def __init__(self) -> None:
+        super().__init__()
+        from vortex_studio.model.chroma import PRESETS, SIMILARITY, SMOOTHNESS, SPILL
+
+        self._clip = None
+        self._loading = False
+
+        self._name = QLabel("Nada seleccionado")
+        self._name.setStyleSheet("color:#7d838c; font-size:10px;")
+
+        self.key_enabled = QCheckBox("Quitar el fondo (llave de croma)")
+        self.key_enabled.toggled.connect(self._key_toggled)
+        self.key_preset = QComboBox()
+        self.key_preset.addItems(list(PRESETS))
+        self.key_preset.setToolTip("El color de la pantalla")
+        self.key_preset.activated.connect(self._preset_chosen)
+        self.key_color = QPushButton("Color de la llave")
+        self.key_color.clicked.connect(self._pick_key_color)
+        self.similarity = SliderRow("Similitud", *SIMILARITY)
+        self.smoothness = SliderRow("Suavidad", *SMOOTHNESS)
+        self.spill = SliderRow("Derrame", *SPILL)
+        for row in (self.similarity, self.smoothness, self.spill):
+            row.changed.connect(self._push)
+        self._key_hint = QLabel("Similitud: cuánto fondo se va. Derrame: quita el "
+                                "reflejo verde de la piel y la ropa.")
+        self._key_hint.setWordWrap(True)
+        self._key_hint.setStyleSheet("color:#6f757e; font-size:10px;")
+
+        self._stabilize_box = QWidget()
+        self._stabilize_layout = QVBoxLayout(self._stabilize_box)
+        self._stabilize_layout.setContentsMargins(0, 0, 0, 0)
+
+        self._set_content(column(
+            self._name,
+            section("Llave de croma"),
+            self.key_enabled, self.key_preset, self.key_color,
+            self.similarity, self.smoothness, self.spill, self._key_hint,
+            self._stabilize_box,
+            None,
+        ))
+        self.set_target(None)
+
+    def set_target(self, clip) -> None:
+        self._clip = clip
+        self._loading = True
+        tiene = clip is not None and hasattr(clip, "chroma")
+        self._name.setText(f"Clip: {clip.name}" if tiene else "Nada seleccionado")
+        self.key_enabled.setEnabled(tiene)
+        if tiene:
+            self.key_enabled.setChecked(clip.chroma.enabled)
+            self.similarity.set_value(int(round(clip.chroma.similarity)))
+            self.smoothness.set_value(int(round(clip.chroma.smoothness)))
+            self.spill.set_value(int(round(clip.chroma.spill)))
+            TextPanel._paint(self.key_color, clip.chroma.color)
+        self._loading = False
+        self._describe()
+
+    def _describe(self) -> None:
+        viva = self._clip is not None and hasattr(self._clip, "chroma") and self._clip.chroma.enabled
+        for widget in (self.key_preset, self.key_color, self.similarity, self.smoothness,
+                       self.spill):
+            widget.setEnabled(viva)
+
+    def _key_toggled(self, prendida: bool) -> None:
+        if self._loading or self._clip is None:
+            return
+        self._clip.chroma.enabled = prendida
+        self._describe()
+        self.committed.emit("Llave de croma" if prendida else "Quitar llave de croma")
+
+    def _preset_chosen(self, indice: int) -> None:
+        from vortex_studio.model.chroma import PRESETS
+        self.set_key_color(PRESETS[self.key_preset.itemText(indice)])
+
+    def _pick_key_color(self) -> None:
+        if self._clip is None:
+            return
+        color = QColorDialog.getColor(QColor(self._clip.chroma.color), self, "Color de la llave")
+        if color.isValid():
+            self.set_key_color(color.name())
+
+    def set_key_color(self, color: str) -> None:
+        if self._clip is None:
+            return
+        self._clip.chroma.color = color
+        TextPanel._paint(self.key_color, color)
+        self.committed.emit("Color de la llave")
+
+    def _push(self, *_):
+        if self._loading or self._clip is None:
+            return
+        self._clip.chroma.similarity = self.similarity.value()
+        self._clip.chroma.smoothness = self.smoothness.value()
+        self._clip.chroma.spill = self.spill.value()
+        self.changed.emit()
+
+
 TAB_STYLE = """
 QTabWidget::pane { border: none; background: #1b1d21; }
 QTabBar { background: #16181c; qproperty-drawBase: 0; }
@@ -1291,6 +1479,7 @@ class PropertiesPanel(QDockWidget):
         self.color = ColorPanel()
         self.mask = MaskPanel()
         self.clip = ClipPanel()
+        self.effects = EffectsPanel()
         self.text = TextPanel()
         self.image = ImagePanel()
 
@@ -1299,9 +1488,9 @@ class PropertiesPanel(QDockWidget):
         self._tabs.setDocumentMode(True)
         self._tabs.setUsesScrollButtons(False)
 
-        iconos = {"Transformar": "⤢", "Color": "◐", "Máscara": "⬭",
+        iconos = {"Transformar": "⤢", "Color": "◐", "Máscara": "⬭", "Efectos": "✦",
                   "Clip": "▮", "Texto": "T", "Imagen": "▣"}
-        for pagina in (self.transform, self.color, self.mask, self.clip,
+        for pagina in (self.transform, self.color, self.mask, self.effects, self.clip,
                        self.text, self.image):
             self._tabs.addTab(pagina, f"{iconos.get(pagina.TITULO, '')}  {pagina.TITULO}")
 
