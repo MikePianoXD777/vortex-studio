@@ -12,6 +12,37 @@ puede romper compatibilidad.
 
 Nada todavía.
 
+## [0.1.0b2] — 2026-09-13
+
+**Parche de los ejecutables.** Se buscaron bugs en los binarios de la
+`0.1.0b1` usándolos ya empacados, y apareció uno que impedía abrir el editor
+en Linux con X11. Pasa 1146 pruebas automáticas y el banco completo
+corrió tres veces seguidas antes de publicar.
+
+### Arreglado
+
+- **Linux: el editor no abría en sesiones X11** —Ubuntu 22.04 con tarjeta
+  NVIDIA, Linux Mint, XFCE o cualquier escritorio sin Wayland— cuando al
+  sistema le faltaban `libxcb-cursor0` y otras bibliotecas de X11 que pide
+  Qt 6. Tronaba con "could not load the Qt platform plugin xcb" antes de
+  mostrar nada. Ahora esas bibliotecas vienen dentro del paquete. En Wayland
+  no pasaba.
+
+### Agregado
+
+- **`vortex-studio --self-check`**, una revisión a fondo del editor empacado.
+  Crea su propio material y lo usa como lo haría alguien: importa, reproduce,
+  busca escenas y silencios, pone subtítulos, exporta, renderiza en paralelo,
+  escribe EDL, XML y AAF, convierte HDR y OCIO, estabiliza, guarda y abre.
+  Dice cómo le fue en cada paso. Todo lo que escribe va a una carpeta
+  temporal.
+- La compilación de cada versión corre esa revisión en Windows y en Linux
+  antes de publicar. En Linux, además, quita del sistema las bibliotecas de
+  X11 y abre el editor en un X virtual, para comprobar que de verdad viajan
+  en el paquete.
+- Los binarios se pueden compilar de prueba en GitHub Actions sin tocar
+  ninguna release.
+
 ## [0.1.0b1] — 2026-09-13
 
 **La beta: diseño nuevo y ejecutables.** Vortex Studio sale de la pre-alfa.

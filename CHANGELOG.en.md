@@ -11,6 +11,37 @@ While we're on `0.x`, any minor version may break compatibility.
 
 Nothing yet.
 
+## [0.1.0b2] — 2026-09-13
+
+**An executables patch.** The `0.1.0b1` binaries were tested for bugs as
+packaged builds, and one turned up that kept the editor from opening on Linux
+under X11. It passes 1146 automated tests, and the full suite ran three
+times in a row before publishing.
+
+### Fixed
+
+- **Linux: the editor didn't open in X11 sessions** —Ubuntu 22.04 with an
+  NVIDIA card, Linux Mint, XFCE or any desktop without Wayland— when the
+  system lacked `libxcb-cursor0` and other X11 libraries Qt 6 needs. It
+  crashed with "could not load the Qt platform plugin xcb" before showing
+  anything. Those libraries now ship inside the package. Wayland wasn't
+  affected.
+
+### Added
+
+- **`vortex-studio --self-check`**, a thorough check of the packaged editor.
+  It makes its own footage and uses it the way a person would: imports, plays
+  back, finds scenes and silences, adds subtitles, exports, renders in
+  parallel, writes EDL, XML and AAF, converts HDR and OCIO, stabilizes, saves
+  and reopens. It reports how each step went. Everything it writes goes to a
+  temporary folder.
+- Every release build runs that check on Windows and Linux before
+  publishing. On Linux it also removes the X11 libraries from the system and
+  opens the editor on a virtual X server, to prove they really ship in the
+  package.
+- The binaries can be test-built on GitHub Actions without touching any
+  release.
+
 ## [0.1.0b1] — 2026-09-13
 
 **The beta: a new design and executables.** Vortex Studio leaves pre-alpha.

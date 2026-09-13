@@ -7,16 +7,16 @@ A non-linear video editor. Part of Vortex Suite.
 The features of DaVinci Resolve, CapCut, Premiere Pro and After Effects, but
 easy to use. The capability, yes; the complexity, no.
 
-> ### 🧪 Beta — `0.1.0b1`
+> ### 🧪 Beta — `0.1.0b2`
 >
-> **It's usable now, but it's a beta.** It passes 1121 automated tests
+> **It's usable now, but it's a beta.** It passes 1146 automated tests
 > and left pre-alpha with a new design and executables, but it still needs
 > real footage to find what the tests don't see.
 >
 > What to expect:
 >
 > - Things breaking in ways we haven't seen: save often
-> - Numbering started over: `0.1.0b1` is newer than `0.6.0a1` and opens all
+> - Numbering started over: `0.1.0b2` is newer than `0.6.0a1` and opens all
 >   of its projects
 > - Optical flow takes over a second per frame: render its zone with `Enter`
 >   before playing it back
@@ -34,9 +34,9 @@ Every version's executables are in
 
 **Windows** (64-bit):
 
-- `VortexStudio-0.1.0b1-windows-x64-instalador.exe` installs it and adds it to
+- `VortexStudio-0.1.0b2-windows-x64-instalador.exe` installs it and adds it to
   the Start menu. No admin rights needed.
-- `VortexStudio-0.1.0b1-windows-x64-portable.zip` is the portable version:
+- `VortexStudio-0.1.0b2-windows-x64-portable.zip` is the portable version:
   unzip it and open `vortex-studio.exe`.
 
 The executables aren't signed, so Windows may warn through SmartScreen:
@@ -46,8 +46,8 @@ The executables aren't signed, so Windows may warn through SmartScreen:
 later; with PulseAudio or PipeWire, which every desktop ships):
 
 ```bash
-tar xzf VortexStudio-0.1.0b1-linux-x86_64.tar.gz
-cd VortexStudio-0.1.0b1-linux-x86_64
+tar xzf VortexStudio-0.1.0b2-linux-x86_64.tar.gz
+cd VortexStudio-0.1.0b2-linux-x86_64
 ./instalar.sh
 ```
 
@@ -236,7 +236,8 @@ without opening windows, so it works over SSH or on a headless machine.
 | `test_nivel4_ventana.py` | Level 4 from the window |
 | `test_pestanas_pildora.py` | The pill tabs in the properties panel |
 | `test_diseno_beta.py` | Top bar, transport, tools, media, switches and panels of the new design |
-| `test_binarios.py` | Icon, smoke test, Linux and Windows installers and the automated build |
+| `test_binarios.py` | Icon, smoke test, Linux and Windows installers, X11 libraries and the automated build |
+| `test_revision_a_fondo.py` | The thorough check of the packaged editor (`--self-check`) |
 | `test_portabilidad.py` | That it behaves the same on Linux and Windows |
 
 ## Shortcuts
