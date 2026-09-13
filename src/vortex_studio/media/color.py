@@ -81,13 +81,18 @@ class ColorProcessor:
             try:
                 self._build(frame, adjust, llave)
             except Exception:
-                if not adjust.has_lut:
+                if not (adjust.has_lut or adjust.effects):
                     raise
                 # Un LUT dañado —o que se volvió ilegible después de cargarlo—
-                # no deja el clip en negro: se aplica todo lo demás, sin él.
+                # no deja el clip en negro: se aplica todo lo demás, sin él. Si
+                # aun así no se arma, el culpable es un efecto y se quitan.
                 sin_lut = adjust.copy()
                 sin_lut.lut = ""
-                self._build(frame, sin_lut, llave)
+                try:
+                    self._build(frame, sin_lut, llave)
+                except Exception:
+                    sin_lut.effects = []
+                    self._build(frame, sin_lut, llave)
             self._signature = signature
 
         self._graph.push(frame)
@@ -106,6 +111,17 @@ class ColorProcessor:
                 inicio.link_to(nodo)
                 inicio = nodo
             return inicio
+
+        # El espacio de entrada va antes que todo, hasta que la llave: el
+        # material HDR se ve lavado, y todo lo demás —el verde de la llave
+        # incluido— se ajusta mirando la imagen ya convertida.
+        if adjust.input_space:
+            from vortex_studio.media.colorspace import input_lut
+
+            tabla = input_lut(adjust)
+            if tabla is not None:
+                source = cadena(source, [graph.add("format", "rgb24"),
+                                         graph.add("lut3d", file=str(tabla), interp="tetrahedral")])
 
         # La llave va primero, sobre el material tal como viene: el verde de
         # la pantalla es el de la toma, no el que queda después de corregir.
@@ -220,6 +236,21 @@ class ColorProcessor:
             viñeta = graph.add("vignette", f"a={adjust.vignette_angle:.4f}:mode=forward")
             previous.link_to(viñeta)
             previous = viñeta
+
+        # Los efectos de plugins al final, en el orden en que se pusieron:
+        # encima de la imagen ya corregida, como una capa de efectos.
+        from vortex_studio.model import plugins
+
+        for efecto in adjust.effects:
+            if not efecto.get("enabled", True):
+                continue
+            plugin = plugins.get(efecto.get("plugin", ""))
+            if plugin is None:
+                continue            # un plugin que ya no está instalado se salta
+            argumentos = plugin.arguments(efecto.get("values"))
+            nodo = graph.add(plugin.filter, argumentos) if argumentos else graph.add(plugin.filter)
+            previous.link_to(nodo)
+            previous = nodo
         return previous
 
     def invalidate(self) -> None:

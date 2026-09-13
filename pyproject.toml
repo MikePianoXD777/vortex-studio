@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vortex-studio"
-version = "0.5.0a1"
+version = "0.6.0a1"
 description = "Editor de video no lineal — Vortex Suite"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -27,6 +27,9 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pyinstaller>=6"]
+# OCIO para espacios de color y pyaaf2 para exportar AAF. Sin ellas el editor
+# arranca igual y esas dos opciones no aparecen.
+pro = ["opencolorio>=2.3", "pyaaf2>=1.7"]
 
 [project.scripts]
 vortex-studio = "vortex_studio.app:main"

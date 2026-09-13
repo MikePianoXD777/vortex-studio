@@ -11,6 +11,105 @@ While we're on `0.x`, any minor version may break compatibility.
 
 Nothing yet.
 
+## [0.6.0a1] — 2026-09-13
+
+**Level 4 of the roadmap: the professional editor features.** Time
+remapping, in-between frames with optical flow, 3D perspective and corner
+pin, motion tracking, silence removal and scene cuts, multicam, effects as
+plugins, versions with three-way merge, parallel rendering, HDR and OCIO
+footage, and export to EDL, XML and AAF. Before all that, edge cases were
+hunted on purpose and real bugs turned up; those are fixed too. Still
+pre-alpha: it passes 1000 automated tests — 258 more than
+0.5.0a1 —, every feature with at least three tests of its own, and the full
+suite ran three times in a row before release.
+
+The level-4 items that need artificial intelligence — transcription,
+text-based editing and speech subtitles — wait until an LLM is integrated.
+
+**The file format moved to version 6.** Projects from 0.1 through 0.5 open
+fine. Not the other way around.
+
+**Still no executables.** Binaries come when pre-alpha ends.
+
+### Edge cases fixed
+
+- A project with an extra field, a zero or null fps, malformed keyframes or
+  impossible numbers now opens: what isn't understood is ignored or
+  corrected, and anything that isn't a project at all is rejected with a
+  message saying what's wrong (and on which line the JSON breaks).
+- **Saving is atomic**: it writes to a temporary file and swaps it in one go.
+  A full disk mid-write used to leave the project truncated. A read-only
+  project is no longer overwritten.
+- A broken LUT or a mistyped key color no longer turns the clip black.
+- A clip longer than its file holds the last frame instead of going black,
+  and short files no longer crash with end-of-file when read forward.
+- Windows-1252 SRT files keep their accents.
+- Inserting video, audio, images or text, and the fade, transition, freeze
+  and keyframe menus, **respect locked tracks**.
+- Opening a project reports which files are missing.
+- Trimming a clip's head **shifts its keyframes**: the animation stays glued
+  to the picture, as in Premiere.
+
+### Time
+
+- **Time remapping** (Clip → Time remapping): from the playhead on, the clip
+  runs at 0.25×, 0.5×, normal, 2× or 4×, in reverse or frozen. They're time
+  keyframes, so they show up and can be tweaked in the keyframe editor.
+  Linked audio goes silent while remapped.
+- **In-between frames in slow motion**: repeat the frame, blend the two
+  neighbours, or **optical flow** with `minterpolate`, which invents the
+  middle one by following the motion. Optical flow takes over a second per
+  720p frame, so its zone is flagged red for rendering.
+
+### Picture
+
+- **3D perspective**: tilt the layer back or sideways, animatable.
+- **Corner pin**: move each corner on its own to stick a video onto a screen.
+  Both live in Transform → 3D and corners.
+- **Motion tracking** (Clip → Detect and track): put a mask over the object
+  and the mask, or a title, follows it. The result is keyframes: the frame
+  where it lost track can be fixed by hand.
+- **Effects as plugins**: sharpen, blur, grain, pixelate, chromatic
+  aberration, vibrance, lens distortion, mirror, negative and edges, in the
+  Effects tab. Anyone can add one by dropping a `.json` into the config
+  `plugins` folder; only per-frame, file-free filters are allowed, with
+  validated options.
+- **HDR and OCIO footage**: Rec.2020 PQ or HLG video is detected on import
+  and converted to Rec.709 with tone mapping. With `opencolorio` installed,
+  any OCIO color space can be the input. The conversion is baked into a 3D
+  LUT, because `zscale` doesn't ship with PyAV.
+
+### Editing
+
+- **Remove silences** from a clip in one click, with linked audio and video,
+  closing the gaps.
+- **Scene changes**: split the clip at each cut, or add a marker. A fast pan
+  doesn't count as a cut.
+- **Multicam** (Sequence → Create multicam): several cameras synced by their
+  audio or their timecode, cut live between them with `1` to `4`. The cuts
+  are hold keyframes.
+
+### Working with others
+
+- **Saved versions** next to the project, to go back to how it was.
+- **Merge with another copy**: if two people edited copies of the same
+  version, they're merged three-way per item. When both changed the same
+  thing, yours wins and it's reported.
+- **Lock**: if someone else has the project open in a shared folder, you're
+  warned when opening it.
+- **Export the edit** to Final Cut 7 XML (Premiere and Resolve import it),
+  CMX 3600 EDL and AAF for Avid, the last one through `pyaaf2`.
+
+### Export
+
+- **Parallel rendering**: the video is split into segments exported at the
+  same time on several cores and joined without re-encoding.
+
+### Optional dependencies
+
+- `opencolorio` and `pyaaf2`: `pip install -e ".[pro]"`. Without them the
+  editor starts the same; OCIO and AAF just don't show up.
+
 ## [0.5.0a1] — 2026-09-12
 
 **Level 3 of the roadmap, complete: serious production.** Keyframes on any

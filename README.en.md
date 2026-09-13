@@ -7,17 +7,19 @@ A non-linear video editor. Part of Vortex Suite.
 The features of DaVinci Resolve, CapCut, Premiere Pro and After Effects, but
 easy to use. The capability, yes; the complexity, no.
 
-> ### ⚠️ Pre-alpha — `0.5.0a1`
+> ### ⚠️ Pre-alpha — `0.6.0a1`
 >
-> **This is not ready for real work.** It passes 742 automated tests, but
+> **This is not ready for real work.** It passes 1000 automated tests, but
 > nobody has actually used it on their own footage yet. That is not the same
 > as being tested.
 >
 > What to expect:
 >
 > - Things breaking in ways we haven't seen
-> - The `.vortex` file format moved to version 5: projects from 0.1 through
->   0.4 open fine, but not the other way around
+> - The `.vortex` file format moved to version 6: projects from 0.1 through
+>   0.5 open fine, but not the other way around
+> - Optical flow takes over a second per frame: render its zone with `Enter`
+>   before playing it back
 > - The render cache and stabilization analyses take disk space in the
 >   system cache; they can be deleted without losing anything
 > - During video transitions, audio still hard-cuts
@@ -67,6 +69,10 @@ variant.
 You need **ffmpeg on the PATH** only to run the tests; the application
 doesn't, because PyAV ships its own FFmpeg.
 
+Optional: `opencolorio` (OCIO color spaces) and `pyaaf2` (AAF export).
+Install them with `pip install -e ".[pro]"`; without them the editor starts
+the same and those two options don't show up.
+
 ## Scripts
 
 ```bash
@@ -114,6 +120,14 @@ environment if it doesn't exist.
 - EQ, compressor, LUFS normalization and ducking
 - Nested sequences, SRT and VTT subtitles, custom presets, export by markers
   and a zone render cache
+- Time remapping, frame blending and optical flow
+- 3D perspective and corner pin
+- Motion tracking, silence removal and scene cuts
+- Multicam synced by audio or timecode
+- Effects as plugins
+- Versions, three-way merge and project lock
+- HDR and OCIO footage
+- Parallel rendering and exporting the edit to XML, EDL and AAF
 - Sound while editing, with track mixing and waveforms on the audio tracks
 - Markers with notes and colors, on the sequence and inside clips
 - Vertical, square and cinema formats
@@ -186,6 +200,19 @@ without opening windows, so it works over SSH or on a headless machine.
 | `test_presets_propios.py` | Custom presets and export by markers |
 | `test_zonas_render.py` | Render zones and their signature |
 | `test_cache_render.py` | Zone render cache |
+| `test_casos_raros.py` | Broken projects, missing files, locked tracks, impossible values |
+| `test_remapeo_tiempo.py` | Time remapping and trimming the head without unglueing animation |
+| `test_cuadros_intermedios.py` | Frame blending and optical flow |
+| `test_perspectiva.py` | 3D perspective and corner pin |
+| `test_seguimiento.py` | Motion tracking with masks and titles |
+| `test_silencios_escenas.py` | Silence removal and scene detection |
+| `test_multicamara.py` | Multicam by audio and by timecode |
+| `test_plugins.py` | Effects as plugins and their validation |
+| `test_versiones_fusion.py` | Versions, lock and three-way merge |
+| `test_intercambio.py` | EDL, Final Cut XML and AAF |
+| `test_hdr_ocio.py` | HDR footage and OCIO color spaces |
+| `test_render_paralelo.py` | Parallel segment rendering |
+| `test_nivel4_ventana.py` | Level 4 from the window |
 | `test_portabilidad.py` | That it behaves the same on Linux and Windows |
 
 ## Shortcuts
@@ -238,6 +265,7 @@ These are the defaults:
 | `Shift+K` | Keyframe editor |
 | `Enter` | Render the zone (between marks, or everything) |
 | `Ctrl+Shift+N` | Nest the selection into a sequence |
+| `1` `2` `3` `4` | Cut to that camera in a multicam |
 | `Shift+↓` `Shift+↑` | Next / previous marker |
 | `F` | Fullscreen |
 
@@ -435,6 +463,50 @@ light (yellow) or already rendered (green). `Enter` renders the red ones and
 the preview plays them back from the file. Change anything in a zone and it
 turns red again by itself.
 
+## Pro
+
+**Time remapping.** Clip → Time remapping: from the playhead on, the clip
+goes slower, faster, in reverse or frozen, and what came before doesn't
+change. They're time keyframes, so the keyframe editor shows the curve and
+the ramp can be eased. In slow motion, the Clip tab picks the in-between
+frames: repeat, blend or **optical flow**.
+
+**3D and corners.** In Transform, tilt the layer back or sideways and move
+each corner, to stick a video onto a screen or a wall.
+
+**Tracking.** Put a mask over the object and use Clip → Detect and track:
+the mask follows it, or the title at the playhead does. You get keyframes,
+one per frame; if it lost track somewhere, the status bar says so.
+
+**Silences and scenes.** Clip → Detect and track also removes the clip's
+silences — with its linked audio, closing gaps — and splits a clip at each
+scene change or marks them.
+
+**Multicam.** Sequence → Create multicam: pick the cameras of the same take
+and they sync by audio or by timecode. Hit play and cut live with `1` to
+`4`; the first camera's audio is heard.
+
+**Effects.** The Effects tab adds effects from a list and stacks them in
+order. They're plugins: a `.json` in the config `plugins` folder
+(`~/.config/vortex-studio/plugins/` on Linux) with the filter and its
+controls adds a new one without touching the code.
+
+**HDR and OCIO.** HDR video is converted to Rec.709 on import; Color → Source
+color space changes it, and with `opencolorio` installed every OCIO color
+space shows up there.
+
+**Versions and merging.** File → Save version keeps a named copy next to the
+project. If someone else edited a copy that came from that version, File →
+Merge with another copy joins both jobs. If someone else has the project open
+in a shared folder, you're warned.
+
+**Taking the edit elsewhere.** File → Export edit writes XML (Premiere,
+Resolve, Final Cut), EDL or AAF (Avid). The cuts travel, not the color or the
+titles.
+
+**Parallel rendering.** In the export dialog: splits the video into segments,
+exports them at once and joins them without re-encoding.
+
 ## Sound
 
 You hear it while editing, with volume and mute on the transport bar. The
@@ -548,7 +620,12 @@ literal warning.
 - The vignette is the most expensive adjustment there is: around 12 ms per
   frame at 1080p.
 - One mask shape per layer.
-- No motion tracking (level 4).
+- Tracking follows position, not rotation or scale, and the mask doesn't
+  deform with the object.
+- The level-4 items that need AI — transcription, text-based editing,
+  speech subtitles — arrive once an LLM is integrated.
+- Merging works per item; two clips left overlapping are reported but not
+  rearranged.
 - Switching sequences resets undo, and undo doesn't remove the sequence a
   "Nest" created.
 - Stabilization corrects shifts, not camera rotation or zoom.

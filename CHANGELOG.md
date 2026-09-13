@@ -12,6 +12,107 @@ puede romper compatibilidad.
 
 Nada todavía.
 
+## [0.6.0a1] — 2026-09-13
+
+**El nivel 4 del roadmap: lo de editor profesional.** Remapeo de tiempo,
+cuadros intermedios con flujo óptico, perspectiva 3D y corner pin,
+seguimiento de movimiento, quitar silencios y cortar por escenas,
+multicámara, efectos como plugins, versiones con fusión a tres vías, render
+en paralelo, material HDR y OCIO, y exportar a EDL, XML y AAF. Antes de todo
+eso se buscaron casos raros a propósito y salieron bugs reales, que también
+quedaron arreglados. Sigue en pre-alfa: pasa 1000 pruebas automáticas
+—258 más que la 0.5.0a1—, cada función con al menos tres pruebas
+propias, y el banco completo corrió tres veces seguidas antes de publicar.
+
+Lo del nivel 4 que necesita inteligencia artificial —transcripción, edición
+por texto y subtítulos por voz— se queda para cuando se integre un LLM.
+
+**El formato del archivo subió a la versión 6.** Los proyectos de la 0.1 a
+la 0.5 abren sin problema. Al revés no.
+
+**Sigue sin ejecutables.** Los binarios llegan al terminar la pre-alfa.
+
+### Casos raros arreglados
+
+- Un proyecto con un campo de más, un fps en cero o nulo, keyframes mal
+  formados o números imposibles ya abre: lo que no se entiende se ignora o
+  se corrige, y lo que de plano no es un proyecto se rechaza con un mensaje
+  que dice qué pasa (y en qué línea se corta el JSON).
+- **Guardar es atómico**: se escribe a un temporal y se reemplaza de un
+  jalón. Antes un disco lleno a media escritura dejaba el proyecto cortado.
+  Un proyecto de solo lectura ya no se sobrescribe.
+- Un LUT dañado o un color de llave mal escrito ya no dejan el clip en
+  negro.
+- Un clip más largo que su archivo sostiene el último cuadro en vez de irse
+  a negro, y los archivos cortos ya no truenan por fin de archivo al leerlos
+  hacia adelante.
+- Los SRT en Windows-1252 conservan sus acentos.
+- Insertar video, audio, imagen o texto, y los menús de fundido, transición,
+  congelar y keyframes, **respetan las pistas bloqueadas**.
+- Al abrir un proyecto se avisa qué archivos faltan.
+- Recortar la cabeza de un clip **recorre sus keyframes**: la animación sigue
+  pegada a la imagen, como en Premiere.
+
+### Tiempo
+
+- **Remapeo de tiempo** (Clip → Remapeo de tiempo): desde el playhead, el clip
+  va a 0.25×, 0.5×, normal, 2× o 4×, en reversa o congelado. Son keyframes de
+  tiempo, así que se ven y se ajustan en el editor de keyframes. El audio
+  enlazado queda mudo mientras tenga remapeo.
+- **Cuadros intermedios en cámara lenta**: repetir el cuadro, mezclar los dos
+  vecinos, o **flujo óptico** con `minterpolate`, que inventa el de en medio
+  siguiendo el movimiento. El flujo óptico tarda más de un segundo por cuadro
+  de 720p, así que su zona se marca en rojo para renderizarla.
+
+### Imagen
+
+- **Perspectiva 3D**: inclinar la capa hacia atrás o de lado, animable.
+- **Corner pin**: mover cada esquina por separado para pegar un video en una
+  pantalla. Los dos van en Transformar → 3D y esquinas.
+- **Seguimiento de movimiento** (Clip → Detectar y seguir): se pone una
+  máscara sobre el objeto y la máscara, o un texto, lo sigue. El resultado son
+  keyframes: el cuadro donde se perdió se corrige a mano.
+- **Efectos como plugins**: nitidez, desenfoque, grano, pixelado, aberración
+  cromática, vibrancia, distorsión de lente, espejo, negativo y bordes, en la
+  pestaña Efectos. Cualquiera puede agregar uno dejando un `.json` en la
+  carpeta `plugins` de la configuración; solo se permiten filtros que
+  trabajan cuadro por cuadro y sin archivos, con opciones validadas.
+- **Material HDR y OCIO**: un video Rec.2020 PQ o HLG se detecta al importar y
+  se convierte a Rec.709 con tonemapping. Con `opencolorio` instalado, cualquier
+  espacio de color de OCIO sirve de entrada. La conversión se hornea a un LUT
+  3D, porque `zscale` no viene en PyAV.
+
+### Edición
+
+- **Quitar silencios** del clip de un clic, con el audio y el video
+  enlazados, cerrando los huecos.
+- **Cambios de escena**: dividir el clip en cada corte, o poner un marcador.
+  Un paneo rápido no cuenta como corte.
+- **Multicámara** (Secuencia → Crear multicámara): varias cámaras
+  sincronizadas por su audio o por su código de tiempo, y se corta entre
+  ellas en vivo con `1` a `4`. Los cortes son keyframes sostenidos.
+
+### Trabajar con otros
+
+- **Versiones guardadas** junto al proyecto, para volver a como estaba.
+- **Fusionar con otra copia**: si dos personas editaron copias de la misma
+  versión, se juntan a tres vías por elemento. Si los dos cambiaron lo mismo,
+  se queda lo tuyo y se reporta.
+- **Candado**: si alguien más tiene abierto el proyecto en una carpeta
+  compartida, se avisa al abrirlo.
+- **Exportar la edición** a XML de Final Cut 7 (lo importan Premiere y
+  Resolve), EDL CMX 3600 y AAF para Avid, este último con `pyaaf2`.
+
+### Exportación
+
+- **Render en paralelo**: el video se parte en segmentos que se exportan a la
+  vez en varios núcleos y se unen sin volver a codificar.
+
+### Dependencias opcionales
+
+- `opencolorio` y `pyaaf2`: `pip install -e ".[pro]"`. Sin ellas el editor
+  arranca igual; OCIO y AAF simplemente no aparecen.
+
 ## [0.5.0a1] — 2026-09-12
 
 **El nivel 3 del roadmap, completo: producción seria.** Keyframes en

@@ -348,6 +348,7 @@ def probe_media(path: str | Path):
             info.width = video.codec_context.width
             info.height = video.codec_context.height
             info.fps = float(video.average_rate or 0) or 30.0
+            info.color_transfer = _transfer_name(video)
             info.kind = IMAGE if codec in STILL_CODECS and (video.frames or 0) <= 1 else VIDEO
         else:
             info.kind = AUDIO
@@ -358,6 +359,24 @@ def probe_media(path: str | Path):
             info.sample_rate = audio.codec_context.sample_rate or 0
 
     return info
+
+
+_TRANSFERS = {16: "smpte2084", 18: "arib-std-b67"}
+
+
+def _transfer_name(stream) -> str:
+    """La curva de transferencia que declara el video, en el nombre de FFmpeg."""
+    try:
+        valor = stream.codec_context.color_trc
+    except Exception:
+        return ""
+    nombre = getattr(valor, "name", None)
+    if nombre:
+        return str(nombre).lower().replace("_", "-")
+    try:
+        return _TRANSFERS.get(int(valor), "")
+    except (TypeError, ValueError):
+        return ""
 
 
 def _is_cover_art(stream) -> bool:

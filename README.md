@@ -7,17 +7,19 @@ Editor de video no lineal. Parte de Vortex Suite.
 Las funciones de DaVinci Resolve, CapCut, Premiere Pro y After Effects, pero
 fáciles de usar. La capacidad sí; la complejidad no.
 
-> ### ⚠️ Pre-alfa — `0.5.0a1`
+> ### ⚠️ Pre-alfa — `0.6.0a1`
 >
-> **Esto no está listo para trabajo real.** Pasa 742 pruebas automáticas,
+> **Esto no está listo para trabajo real.** Pasa 1000 pruebas automáticas,
 > pero nadie lo ha usado todavía con material propio de verdad. Eso no es lo
 > mismo que estar probado.
 >
 > Lo que puedes esperar:
 >
 > - Cosas que fallan de formas que no hemos visto
-> - El formato del archivo `.vortex` subió a la versión 5: los proyectos de
->   la 0.1 a la 0.4 abren bien, pero al revés no
+> - El formato del archivo `.vortex` subió a la versión 6: los proyectos de
+>   la 0.1 a la 0.5 abren bien, pero al revés no
+> - El flujo óptico tarda más de un segundo por cuadro: renderiza su zona
+>   con `Enter` antes de reproducir
 > - La caché de render y los análisis de estabilización ocupan disco en la
 >   caché del sistema; se pueden borrar sin perder nada
 > - En las transiciones de video, el audio sigue cortando seco
@@ -66,6 +68,10 @@ las pruebas. Las tareas traen su variante de Windows.
 Hace falta **ffmpeg en el PATH** solo para correr las pruebas; la aplicación
 no lo necesita porque PyAV trae su propio FFmpeg. NumPy se instala solo con
 las demás dependencias.
+
+Opcionales: `opencolorio` (espacios de color de OCIO) y `pyaaf2` (exportar
+AAF). Se instalan con `pip install -e ".[pro]"`; sin ellas el editor
+arranca igual y esas dos opciones no aparecen.
 
 ## Scripts
 
@@ -143,6 +149,19 @@ abrir ventanas, así que funciona por SSH o en una máquina sin pantalla.
 | `test_presets_propios.py` | Presets propios y exportar por marcadores |
 | `test_zonas_render.py` | Zonas de render y su firma |
 | `test_cache_render.py` | Caché de render por zonas |
+| `test_casos_raros.py` | Proyectos dañados, archivos que faltan, pistas bloqueadas, valores imposibles |
+| `test_remapeo_tiempo.py` | Remapeo de tiempo y recortar la cabeza sin despegar la animación |
+| `test_cuadros_intermedios.py` | Mezcla de cuadros y flujo óptico |
+| `test_perspectiva.py` | Perspectiva 3D y corner pin |
+| `test_seguimiento.py` | Seguimiento de movimiento con máscara y texto |
+| `test_silencios_escenas.py` | Quitar silencios y detectar escenas |
+| `test_multicamara.py` | Multicámara por audio y por código de tiempo |
+| `test_plugins.py` | Efectos como plugins y su validación |
+| `test_versiones_fusion.py` | Versiones, candado y fusión a tres vías |
+| `test_intercambio.py` | EDL, XML de Final Cut y AAF |
+| `test_hdr_ocio.py` | Material HDR y espacios de OCIO |
+| `test_render_paralelo.py` | Render por segmentos en paralelo |
+| `test_nivel4_ventana.py` | Lo del nivel 4 desde la ventana |
 | `test_portabilidad.py` | Que funcione igual en Linux y Windows |
 
 ## Atajos
@@ -195,6 +214,7 @@ Estos son los de fábrica:
 | `Shift+K` | Editor de keyframes |
 | `Enter` | Renderizar la zona (entre marcas, o todo) |
 | `Ctrl+Shift+N` | Anidar la selección en una secuencia |
+| `1` `2` `3` `4` | Cortar a esa cámara en una multicámara |
 | `Shift+↓` `Shift+↑` | Marcador siguiente / anterior |
 | `F` | Pantalla completa |
 
@@ -396,6 +416,50 @@ la cola.
 rojas y el preview las reproduce desde el archivo. Si cambias algo de una
 zona, vuelve a rojo sola.
 
+## Pro
+
+**Remapeo de tiempo.** Clip → Remapeo de tiempo: desde el playhead el clip
+va más lento, más rápido, en reversa o congelado, y lo de antes no cambia.
+Son keyframes de tiempo, así que en el editor de keyframes se ve la curva y
+se puede suavizar la rampa. En cámara lenta, la pestaña Clip elige los
+cuadros intermedios: repetir, mezclar o **flujo óptico**.
+
+**3D y esquinas.** En Transformar, inclinar la capa hacia atrás o de lado y
+mover cada esquina, para pegar un video en una pantalla o una pared.
+
+**Seguimiento.** Pon una máscara sobre el objeto y Clip → Detectar y seguir:
+la máscara lo sigue, o el texto que esté en el playhead. Quedan keyframes,
+uno por cuadro; si se perdió en algún lado, la barra de estado lo dice.
+
+**Silencios y escenas.** Clip → Detectar y seguir también quita los
+silencios del clip —con su audio enlazado, cerrando huecos— y parte un clip
+en cada cambio de escena o le pone marcadores.
+
+**Multicámara.** Secuencia → Crear multicámara: elige las cámaras de la
+misma toma y se sincronizan por el audio o por el código de tiempo. Da play
+y corta en vivo con `1` a `4`; se oye el audio de la primera cámara.
+
+**Efectos.** La pestaña Efectos agrega efectos de una lista y los apila en
+orden. Son plugins: un `.json` en la carpeta `plugins` de la configuración
+(`~/.config/vortex-studio/plugins/` en Linux) con el filtro y sus controles
+agrega uno nuevo sin tocar el código.
+
+**HDR y OCIO.** Un video HDR se convierte solo a Rec.709 al importarlo; en
+Color → Espacio de color del material se cambia, y con `opencolorio`
+instalado ahí aparecen todos los espacios de OCIO.
+
+**Versiones y fusión.** Archivo → Guardar versión deja una copia con nombre
+junto al proyecto. Si alguien más editó una copia que salió de esa versión,
+Archivo → Fusionar con otra copia junta los dos trabajos. Si alguien más
+tiene abierto el proyecto en una carpeta compartida, se avisa.
+
+**Llevar la edición a otro programa.** Archivo → Exportar edición escribe XML
+(Premiere, Resolve, Final Cut), EDL o AAF (Avid). Viajan los cortes, no el
+color ni los textos.
+
+**Render en paralelo.** En el diálogo de exportar: parte el video en
+segmentos, los exporta a la vez y los une sin volver a codificar.
+
 ## Sonido
 
 Se oye mientras editas, con volumen y silencio en la barra de transporte. El
@@ -520,6 +584,14 @@ editor. Hay una prueba que lo vigila.
 - Ecualizador, compresor, normalización LUFS y ducking
 - Secuencias anidadas, subtítulos SRT y VTT, presets propios, exportar por
   marcadores y caché de render por zonas
+- Remapeo de tiempo, mezcla de cuadros y flujo óptico
+- Perspectiva 3D y corner pin
+- Seguimiento de movimiento, quitar silencios y cortar por escenas
+- Multicámara por audio o por código de tiempo
+- Efectos como plugins
+- Versiones, fusión a tres vías y candado
+- Material HDR y OCIO
+- Render en paralelo y exportar la edición a XML, EDL y AAF
 - Sonido al editar, con mezcla de pistas y onda en las pistas de audio
 - Marcadores con nota y color, en la secuencia y dentro de los clips
 - Formatos vertical, cuadrado y cine
@@ -549,7 +621,12 @@ una advertencia literal.
   a blanco.
 - La viñeta es el ajuste más caro que hay: unos 12 ms por cuadro en 1080p.
 - La máscara es de una sola forma por capa.
-- No hay seguimiento de movimiento (nivel 4).
+- El seguimiento sigue posición, no giro ni escala, y la máscara no se
+  deforma con el objeto.
+- Lo del nivel 4 que necesita IA —transcribir, editar por texto, subtítulos
+  por voz— llega cuando se integre un LLM.
+- La fusión junta por elemento; dos clips que quedan encimados se reportan
+  pero no se acomodan solos.
 - Cambiar de secuencia reinicia el deshacer, y deshacer no quita la
   secuencia que creó un "Anidar".
 - La estabilización corrige desplazamiento, no giro ni zoom de la cámara.

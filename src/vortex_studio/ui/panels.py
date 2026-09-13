@@ -75,6 +75,7 @@ from vortex_studio.model.color import (
     VIGNETTE,
 )
 from vortex_studio.model import timeremap
+from vortex_studio.model.color import INPUT_SPACES, SPACE_NONE, SPACE_OCIO
 from vortex_studio.model.mask import NONE as MASK_NONE
 from vortex_studio.model.project import SAMPLE_NEAREST, SAMPLINGS
 from vortex_studio.model.transform import CORNERS, TILT
@@ -177,6 +178,24 @@ class ColorPanel(Page):
         self._look.setToolTip("Combinaciones listas; luego puedes seguir ajustando")
         self._look.currentTextChanged.connect(self._apply_look)
 
+        # De qué espacio viene el material: HDR, o cualquiera de OCIO. La
+        # opción de OCIO solo aparece si `opencolorio` está instalado.
+        from vortex_studio.media.colorspace import has_ocio
+
+        self.space = QComboBox()
+        for espacio in INPUT_SPACES:
+            if espacio == SPACE_OCIO and not has_ocio():
+                continue
+            self.space.addItem("Rec.709 (normal)" if espacio == SPACE_NONE
+                               else "OCIO…" if espacio == SPACE_OCIO else espacio, espacio)
+        self.space.setToolTip("Si el video se ve lavado y gris, probablemente es HDR")
+        self.space.currentIndexChanged.connect(self._space_changed)
+        self.ocio_space = QComboBox()
+        self.ocio_space.setToolTip("El espacio de color del material según OCIO")
+        self.ocio_space.currentTextChanged.connect(self._ocio_changed)
+        self._space_group = Collapsible("Espacio de color del material", self.space,
+                                        self.ocio_space)
+
         # La curva: cinco deslizadores y la gráfica que dice qué están
         # haciendo. Sin gráfica, "sombras" y "luces" son dos números que no
         # le dicen nada a nadie; con ella no hace falta arrastrar puntos.
@@ -211,6 +230,7 @@ class ColorPanel(Page):
         self._set_content(column(
             self._target,
             section("Look"), self._look,
+            self._space_group,
             section("Ajustes"),
             self._exposure, self._brightness, self._contrast, self._saturation,
             self._gamma, self._temperature, self._tint,
@@ -239,6 +259,8 @@ class ColorPanel(Page):
         self._look.setEnabled(adjust is not None)
 
         self._curve_look.setEnabled(adjust is not None)
+        self.space.setEnabled(adjust is not None)
+        self._show_space()
         self._lut_load.setEnabled(adjust is not None)
         self._lut_clear.setEnabled(adjust is not None and bool(adjust and adjust.lut))
 
@@ -285,6 +307,52 @@ class ColorPanel(Page):
             setattr(self._adjust, campo, row.value())
         self._adjust.lut_intensity = self._lut_intensity.value()
         self._graph.set_curves(self._adjust.curves)
+        self.changed.emit()
+
+    def _show_space(self) -> None:
+        """Pone los controles de espacio de entrada como los tiene el ajuste, sin avisar cambios."""
+        from vortex_studio.media.colorspace import ocio_spaces
+
+        adjust = self._adjust
+        espacio = adjust.input_space if adjust is not None else SPACE_NONE
+        for combo in (self.space, self.ocio_space):
+            combo.blockSignals(True)
+        indice = self.space.findData(espacio)
+        self.space.setCurrentIndex(indice if indice >= 0 else 0)
+        es_ocio = adjust is not None and espacio == SPACE_OCIO
+        self.ocio_space.clear()
+        if es_ocio:
+            self.ocio_space.addItems(ocio_spaces(adjust.ocio_config))
+            self.ocio_space.setCurrentText(adjust.ocio_space)
+        self.ocio_space.setEnabled(es_ocio)
+        for combo in (self.space, self.ocio_space):
+            combo.blockSignals(False)
+        if adjust is not None and espacio:
+            self._space_group.abrir()
+
+    def set_input_space(self, espacio: str, ocio_space: str = "") -> None:
+        if self._adjust is None or espacio not in INPUT_SPACES:
+            return
+        self._adjust.input_space = espacio
+        if espacio == SPACE_OCIO:
+            from vortex_studio.media.colorspace import ocio_spaces
+
+            disponibles = ocio_spaces(self._adjust.ocio_config)
+            elegido = ocio_space or self._adjust.ocio_space
+            if elegido not in disponibles:
+                elegido = "ACEScct" if "ACEScct" in disponibles else (disponibles[0]
+                                                                     if disponibles else "")
+            self._adjust.ocio_space = elegido
+        self._show_space()
+        self.changed.emit()
+
+    def _space_changed(self, indice: int) -> None:
+        self.set_input_space(self.space.itemData(indice))
+
+    def _ocio_changed(self, nombre: str) -> None:
+        if self._adjust is None or not nombre:
+            return
+        self._adjust.ocio_space = nombre
         self.changed.emit()
 
     def _pick_lut(self) -> None:
@@ -1568,6 +1636,36 @@ class EffectsPanel(Page):
         self.stabilize_status.setWordWrap(True)
         self.stabilize_status.setStyleSheet("color:#6f757e; font-size:10px;")
 
+        # Efectos de plugins: se agregan de un menú, se ven en una lista en
+        # el orden en que se aplican, y los controles son los del efecto
+        # elegido. Ver `model/plugins.py`.
+        self.plugin_menu = QComboBox()
+        self.plugin_menu.setToolTip("Los efectos incluidos y los que dejes como .json en la "
+                                    "carpeta plugins de la configuración")
+        self.plugin_add = QPushButton("Agregar")
+        self.plugin_add.clicked.connect(lambda: self.add_effect(self.plugin_menu.currentData()))
+        self.effects_list = QListWidget()
+        self.effects_list.setMaximumHeight(110)
+        self.effects_list.currentRowChanged.connect(self._effect_selected)
+        self.effect_on = QCheckBox("Prendido")
+        self.effect_on.toggled.connect(self._effect_toggled)
+        self.effect_remove = QPushButton("Quitar efecto")
+        self.effect_remove.clicked.connect(self.remove_effect)
+        self._effect_params = QWidget()
+        self._effect_params_layout = QVBoxLayout(self._effect_params)
+        self._effect_params_layout.setContentsMargins(0, 0, 0, 0)
+        self.effect_rows: dict[str, SliderRow] = {}
+        self.plugin_warnings: list[str] = []
+        self.reload_plugins()
+
+        agregar = QHBoxLayout()
+        agregar.addWidget(self.plugin_menu, 1)
+        agregar.addWidget(self.plugin_add)
+        controles = QHBoxLayout()
+        controles.addWidget(self.effect_on)
+        controles.addStretch(1)
+        controles.addWidget(self.effect_remove)
+
         self._set_content(column(
             self._name,
             section("Llave de croma"),
@@ -1575,12 +1673,117 @@ class EffectsPanel(Page):
             self.similarity, self.smoothness, self.spill, self._key_hint,
             section("Estabilización"),
             self.stabilize, self.strength, self.stabilize_status,
+            section("Efectos"),
+            agregar, self.effects_list, controles, self._effect_params,
             None,
         ))
         self.set_target(None)
 
+    # --- efectos de plugins ---------------------------------------------------------
+
+    def reload_plugins(self) -> list[str]:
+        from vortex_studio.model import plugins
+
+        catalogo, avisos = plugins.catalog()
+        plugins._cache = catalogo
+        self.plugin_warnings = avisos
+        self.plugin_menu.clear()
+        for plugin in sorted(catalogo.values(), key=lambda p: p.name):
+            self.plugin_menu.addItem(plugin.name, plugin.id)
+        return avisos
+
+    def _effects(self) -> list:
+        return self._clip.color.effects if self._clip is not None else []
+
+    def _refresh_effects(self, fila: int = -1) -> None:
+        from vortex_studio.model import plugins
+
+        self.effects_list.blockSignals(True)
+        self.effects_list.clear()
+        for efecto in self._effects():
+            plugin = plugins.get(efecto.get("plugin", ""))
+            nombre = plugin.name if plugin else f"{efecto.get('plugin')} (no instalado)"
+            self.effects_list.addItem(nombre if efecto.get("enabled", True) else f"{nombre} · apagado")
+        total = self.effects_list.count()
+        self.effects_list.setCurrentRow(fila if 0 <= fila < total else total - 1)
+        self.effects_list.blockSignals(False)
+        tiene = self._clip is not None
+        self.plugin_menu.setEnabled(tiene)
+        self.plugin_add.setEnabled(tiene)
+        self._effect_selected(self.effects_list.currentRow())
+
+    def add_effect(self, plugin_id) -> bool:
+        from vortex_studio.model import plugins
+
+        plugin = plugins.get(str(plugin_id or ""))
+        if self._clip is None or plugin is None:
+            return False
+        self._clip.color.effects.append({"plugin": plugin.id, "values": plugin.defaults(),
+                                         "enabled": True})
+        self._refresh_effects(len(self._clip.color.effects) - 1)
+        self.committed.emit(f"Efecto: {plugin.name}")
+        return True
+
+    def remove_effect(self) -> bool:
+        fila = self.effects_list.currentRow()
+        if self._clip is None or not 0 <= fila < len(self._effects()):
+            return False
+        self._clip.color.effects.pop(fila)
+        self._refresh_effects(fila)
+        self.committed.emit("Quitar efecto")
+        return True
+
+    def _effect_selected(self, fila: int) -> None:
+        from vortex_studio.model import plugins
+
+        while self._effect_params_layout.count():
+            widget = self._effect_params_layout.takeAt(0).widget()
+            if widget is not None:
+                widget.deleteLater()
+        self.effect_rows = {}
+        efectos = self._effects()
+        valido = 0 <= fila < len(efectos)
+        self.effect_on.setEnabled(valido)
+        self.effect_remove.setEnabled(valido)
+        if not valido:
+            return
+        efecto = efectos[fila]
+        self.effect_on.blockSignals(True)
+        self.effect_on.setChecked(efecto.get("enabled", True))
+        self.effect_on.blockSignals(False)
+        plugin = plugins.get(efecto.get("plugin", ""))
+        for param in plugin.params if plugin else ():
+            escala = 1 if param.integer else 100
+            fila_param = SliderRow(param.label, int(round(param.minimum * escala)),
+                                   int(round(param.maximum * escala)),
+                                   int(round(param.default * escala)))
+            fila_param.set_value(int(round(param.clamp(efecto["values"].get(param.id,
+                                                                            param.default))
+                                           * escala)))
+            fila_param.changed.connect(
+                lambda valor, p=param, e=escala: self._effect_value(p, valor / e))
+            self._effect_params_layout.addWidget(fila_param)
+            self.effect_rows[param.id] = fila_param
+
+    def _effect_value(self, param, valor: float) -> None:
+        fila = self.effects_list.currentRow()
+        if self._loading or self._clip is None or not 0 <= fila < len(self._effects()):
+            return
+        self._effects()[fila].setdefault("values", {})[param.id] = param.clamp(valor)
+        self.changed.emit()
+
+    def _effect_toggled(self, prendido: bool) -> None:
+        fila = self.effects_list.currentRow()
+        if self._clip is None or not 0 <= fila < len(self._effects()):
+            return
+        self._effects()[fila]["enabled"] = prendido
+        self._refresh_effects(fila)
+        self.committed.emit("Prender efecto" if prendido else "Apagar efecto")
+
     def set_target(self, clip) -> None:
+        fila = self.effects_list.currentRow() if clip is self._clip else -1
         self._clip = clip
+        self._refresh_effects(fila)
         self._loading = True
         tiene = clip is not None and hasattr(clip, "chroma")
         self._name.setText(f"Clip: {clip.name}" if tiene else "Nada seleccionado")

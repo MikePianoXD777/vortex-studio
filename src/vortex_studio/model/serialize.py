@@ -19,6 +19,7 @@ import dataclasses
 import json
 import math
 import os
+import uuid
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -26,7 +27,8 @@ from typing import Any
 from vortex_studio.model import keyframes as kf
 from vortex_studio.model.audio_fx import AudioFx
 from vortex_studio.model.chroma import ChromaKey
-from vortex_studio.model.color import ColorAdjust
+from vortex_studio.model.color import INPUT_SPACES, ColorAdjust
+from vortex_studio.model.plugins import clean_effects
 from vortex_studio.model.curves import Curves
 from vortex_studio.model.mask import Mask
 from vortex_studio.model.multicam import MulticamClip
@@ -227,6 +229,9 @@ def _color(raw: dict | None, base: Path | None = None) -> ColorAdjust | None:
     adjust = ColorAdjust(**_fields(ColorAdjust, raw))
     if curva:
         adjust.curves = Curves(**_fields(Curves, curva))
+    adjust.effects = clean_effects(adjust.effects)
+    if adjust.input_space not in INPUT_SPACES:
+        adjust.input_space = ""
     return adjust
 
 
@@ -291,7 +296,26 @@ def item_from_dict(data: dict, base: Path | None = None) -> Any:
 
 # --- secuencias ------------------------------------------------------------------
 
+def _unique_uids(sequence: Sequence) -> None:
+    """Que no haya dos elementos con el mismo `uid`.
+
+    Dividir, pisar a la mitad o duplicar copian el elemento entero, `uid`
+    incluido. En vez de acordarse de renovarlo en cada lugar que copia, se
+    revisa aquí, que es por donde pasa todo lo que se guarda o se deshace: el
+    primero en la pista —la mitad izquierda— se queda con el suyo.
+    """
+    vistos: set[str] = set()
+    for track in sequence.tracks:
+        for item in track.clips:
+            if not hasattr(item, "uid"):
+                continue
+            if not item.uid or item.uid in vistos:
+                item.uid = uuid.uuid4().hex[:12]
+            vistos.add(item.uid)
+
+
 def sequence_to_dict(sequence: Sequence, base: Path | None = None) -> dict:
+    _unique_uids(sequence)
     return {
         "id": sequence.id,
         "name": sequence.name,
@@ -477,6 +501,7 @@ def project_to_dict(project: Project, base: Path | None = None) -> dict:
         "sequences": [sequence_to_dict(s, base) for s in project.sequences],
         "activa": project.active.id,
         "media": media_to_list(project.media, base),
+        "version_base": project.version_base,
     }
 
 
@@ -490,6 +515,7 @@ def project_from_dict(data: dict, base: Path | None = None) -> Project:
     project.sequences = sequences or [Sequence.default()]
     project.media = media_from_list(data.get("media", []), base)
     project.active_id = str(data.get("activa") or "")
+    project.version_base = str(data.get("version_base") or "")
     return project
 
 

@@ -11,6 +11,7 @@ mismo lugar si la secuencia cambia a 4K.
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -59,6 +60,8 @@ class TimedItem:
     markers: list = field(default_factory=list)
     # Keyframes por ruta de parámetro. Ver `model/animate.py`.
     anim: dict = field(default_factory=dict)
+    # Identidad para fusionar dos copias del proyecto. Ver `model/merge.py`.
+    uid: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
 
     @property
     def end(self) -> float:

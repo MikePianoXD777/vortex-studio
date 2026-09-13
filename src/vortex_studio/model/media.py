@@ -40,6 +40,7 @@ class MediaInfo:
     audio_codec: str = ""
     channels: int = 0
     sample_rate: int = 0
+    color_transfer: str = ""    # la curva del video: "smpte2084" es HDR10, "arib-std-b67" HLG
     size: int = 0               # bytes, para saber si el archivo cambió
     mtime: float = 0.0          # fecha de modificación, ídem
 

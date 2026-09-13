@@ -63,6 +63,7 @@ class RenderJob:
     quality: str = "Normal"
     with_audio: bool = True
     nested: dict = field(default_factory=dict)   # id -> secuencia, para las anidadas
+    parallel: bool = False          # por segmentos en paralelo; ver `media/segments.py`
 
     id: int = field(default_factory=lambda: next(_ids))
     status: str = WAITING
@@ -242,6 +243,21 @@ class RenderQueue(QObject):
         fps = getattr(job.preset, "fps", None) or secuencia.fps
         job.total = max(1, int(round((job.end - job.start) * fps)))
         ancho, alto = output_size(job.preset, secuencia.width, secuencia.height)
+        calidad = getattr(job.preset, "quality", None) or job.quality
+        sonido = (AudioMixer(clips, **secuencia.audio_mix_options()).stream(job.start, job.end)
+                  if job.with_audio and clips else None)
+        if job.parallel:
+            from vortex_studio.media.segments import render_segments
+
+            def armador():
+                # Cada segmento con su propia copia de todo: nada se comparte entre hilos.
+                propias = {i: sequence_from_dict(d) for i, d in job.nested.items()}
+                return SequenceRenderer(sequence_from_dict(job.sequence), dict(job.media),
+                                        resolve=propias.get)
+
+            render_segments(armador, job.path, job.start, job.end, (ancho, alto), fps, calidad,
+                            sonido, progress=avance)
+            return
         renderer = SequenceRenderer(secuencia, dict(job.media), resolve=resolver)
         try:
             export_video(

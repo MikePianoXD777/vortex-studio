@@ -474,6 +474,7 @@ class Paste(Command):
         self.created = []
         for entrada in self.entries:
             item = item_from_dict(entrada["data"])
+            item.uid = uuid.uuid4().hex[:12]        # lo pegado es otro elemento
             item.start = max(0.0, self.time + entrada["offset"])
             if getattr(item, "link", ""):
                 item.link = nuevos.setdefault(item.link, new_link())

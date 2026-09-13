@@ -121,6 +121,8 @@ class Clip:
     audio_fx: AudioFx = field(default_factory=AudioFx)
     stabilize: int = 0       # fuerza de 0 (apagada) a 100. Ver `media/stabilize.py`
     interpolation: str = SAMPLE_NEAREST   # cuadros intermedios en cámara lenta
+    # Identidad para fusionar dos copias del proyecto. Ver `model/merge.py`.
+    uid: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
 
     def __post_init__(self) -> None:
         self.source = Path(self.source)
@@ -577,6 +579,8 @@ class Project:
     # Ruta absoluta -> lo que se sabe del archivo. Ver `model/media.py`.
     media: dict[str, MediaInfo] = field(default_factory=dict)
     active_id: str = ""
+    # De qué versión guardada salió esta copia. Ver `model/versions.py`.
+    version_base: str = ""
 
     @property
     def active(self) -> Sequence:

@@ -74,7 +74,7 @@ from vortex_studio.model import (
 )
 from vortex_studio.model.commands import copy_items, new_link, overwrite
 from vortex_studio.model.project import DIP_BLACK, DIP_WHITE, CROSS, SAMPLINGS, Marker
-from vortex_studio.model import multicam, timeremap
+from vortex_studio.model import interchange, multicam, timeremap, versions
 from vortex_studio.model.transform import FILL
 from vortex_studio.model.autosave import (
     AUTOSAVE_SECONDS,
@@ -234,6 +234,8 @@ class MainWindow(QMainWindow):
         self._clipboard: list[dict] = []
         self._title: Title | None = None
         self._path: Path | None = None
+        self.lock_holder = None             # quién más tiene abierto el proyecto
+        self.last_merge_conflicts: list[str] = []
         self._dirty = False
 
         # Atajos de una sola tecla (Espacio, C, L, Supr…). Hay que apagarlos
@@ -384,6 +386,13 @@ class MainWindow(QMainWindow):
         self._action(archivo, "Importar &subtítulos (SRT, VTT)…", None,
                      lambda: self.import_subtitles())
         self._action(archivo, "Exportar s&ubtítulos…", None, lambda: self.export_subtitles())
+        self._action(archivo, "Exportar &edición (EDL, XML, AAF)…", None,
+                     lambda: self.export_edit())
+        archivo.addSeparator()
+        self._action(archivo, "Guardar &versión…", None, lambda: self.save_version())
+        self._versions_menu = archivo.addMenu("Versiones &guardadas")
+        self._versions_menu.aboutToShow.connect(self._fill_versions_menu)
+        self._action(archivo, "&Fusionar con otra copia…", None, lambda: self.merge_with())
         archivo.addSeparator()
         self._action(archivo, "&Salir", "archivo.salir", self.close)
 
@@ -749,6 +758,8 @@ class MainWindow(QMainWindow):
     def new_project(self) -> None:
         if not self._confirm_discard():
             return
+        versions.release(self._path, self._session)
+        self.lock_holder = None
         self._clear_autosave()
         self._close_sources()
         self.project = Project()
@@ -773,14 +784,148 @@ class MainWindow(QMainWindow):
 
     def adopt_project(self, project: Project, path: Path | None) -> None:
         """Pone en la ventana un proyecto ya cargado."""
+        nueva = Path(path) if path is not None else None
+        if nueva != self._path:
+            versions.release(self._path, self._session)
         self._clear_autosave()
         self._close_sources()
         self.project = project
-        self._path = Path(path) if path is not None else None
+        self._path = nueva
         self._adopt(project.active, reset_history=True)
         self._dirty = False
         self._update_title()
         self._announce_missing_media()
+        self._take_lock()
+
+    def _take_lock(self) -> None:
+        """Deja el candado del proyecto, o avisa si alguien más lo tiene abierto."""
+        self.lock_holder = None
+        if self._path is None:
+            return
+        self.lock_holder = versions.acquire(self._path, self._session)
+        if self.lock_holder is not None:
+            self.statusBar().showMessage(
+                f"Ojo: {self.lock_holder.description} también tiene abierto este proyecto. "
+                f"Si los dos guardan, uno pisa al otro: usa Guardar versión y luego "
+                f"Fusionar con otra copia.", 20000)
+
+    # --- versiones y fusión ---------------------------------------------------------
+
+    def save_version(self, label: str | None = None):
+        """Guarda una copia con nombre junto al proyecto, y el proyecto mismo."""
+        if self._path is None:
+            self.statusBar().showMessage("Guarda el proyecto primero: las versiones van junto a él.",
+                                         5000)
+            return None
+        if label is None:
+            label, ok = QInputDialog.getText(self, "Guardar versión", "Nombre de la versión:")
+            if not ok:
+                return None
+        self._flush()
+        version = versions.save_version(self.project, self._path, label.strip())
+        self.save()
+        self.statusBar().showMessage(f"Versión «{version.label}» guardada.", 5000)
+        return version
+
+    def _fill_versions_menu(self) -> None:
+        self._versions_menu.clear()
+        lista = versions.list_versions(self._path) if self._path is not None else []
+        if not lista:
+            vacia = self._versions_menu.addAction("No hay versiones guardadas")
+            vacia.setEnabled(False)
+            return
+        for version in lista:
+            cuando = time.strftime("%d/%m %H:%M", time.localtime(version.saved_at))
+            accion = self._versions_menu.addAction(f"{version.label}  ·  {cuando}  ·  {version.author}")
+            accion.triggered.connect(lambda _=False, v=version: self.restore_version(v))
+
+    def restore_version(self, version) -> bool:
+        """Vuelve a una versión guardada. Queda sin guardar hasta que el usuario guarde."""
+        if self._path is None:
+            return False
+        try:
+            proyecto = versions.load_version(version, self._path)
+        except Exception as error:
+            self.statusBar().showMessage(f"No se pudo abrir la versión: {error}", 6000)
+            return False
+        self.adopt_project(proyecto, self._path)
+        self._dirty = True
+        self._update_title()
+        self.statusBar().showMessage(f"De vuelta en la versión «{version.label}». Guarda para "
+                                     f"quedarte con ella.", 8000)
+        return True
+
+    def merge_with(self, path=None) -> list[str] | None:
+        """Junta con otra copia del proyecto que salió de la misma versión guardada.
+
+        Devuelve los conflictos (vacío si no hubo), o None si no se pudo.
+        """
+        from vortex_studio.model.merge import merge_projects
+        from vortex_studio.model.serialize import project_to_dict
+
+        if self._path is None:
+            self.statusBar().showMessage("Guarda el proyecto primero.", 5000)
+            return None
+        if path is None:
+            path, _ = QFileDialog.getOpenFileName(self, "La otra copia del proyecto", "",
+                                                  PROJECT_FILTER)
+            if not path:
+                return None
+        otra_ruta = Path(path)
+        try:
+            otra = load_project(otra_ruta)
+        except Exception as error:
+            self.statusBar().showMessage(f"No se pudo abrir {otra_ruta.name}: {error}", 6000)
+            return None
+        base_id = otra.version_base or self.project.version_base
+        version = (versions.find_version(self._path, base_id)
+                   or versions.find_version(otra_ruta, base_id))
+        if version is None:
+            self.statusBar().showMessage(
+                "No hay una versión guardada de la que salieron las dos copias: "
+                "sin ella no se sabe qué cambió cada quien.", 8000)
+            return None
+        dueño = self._path if version.path.parent == versions.versions_dir(self._path) else otra_ruta
+        self._flush()
+        carpeta = self._path.parent
+        base = project_to_dict(versions.load_version(version, dueño), carpeta)
+        fusion, conflictos = merge_projects(base, project_to_dict(self.project, carpeta),
+                                            project_to_dict(otra, carpeta))
+        from vortex_studio.model.serialize import project_from_dict
+
+        proyecto = project_from_dict(fusion, carpeta)
+        self.adopt_project(proyecto, self._path)
+        self._dirty = True
+        self._update_title()
+        self.last_merge_conflicts = conflictos
+        aviso = f"Fusionado con {otra_ruta.name}."
+        if conflictos:
+            aviso += (f" {len(conflictos)} conflicto{'s' if len(conflictos) != 1 else ''}, "
+                      f"se quedó lo tuyo: {conflictos[0]}")
+        self.statusBar().showMessage(aviso, 15000)
+        return conflictos
+
+    def export_edit(self, path=None):
+        """La edición para otro programa: EDL, XML de Final Cut 7 o AAF, por la extensión."""
+        if self.sequence.duration <= 0:
+            self.statusBar().showMessage("La secuencia está vacía: nada que exportar.", 4000)
+            return None
+        if path is None:
+            nombre = self._path.stem if self._path else self.sequence.name
+            path, _ = QFileDialog.getSaveFileName(
+                self, "Exportar edición", f"{nombre}.xml",
+                "XML para Premiere, Resolve y Final Cut (*.xml);;EDL CMX 3600 (*.edl);;"
+                "AAF para Avid (*.aaf)")
+            if not path:
+                return None
+        try:
+            ruta = interchange.write_file(path, self.sequence, self.project.media)
+        except (RuntimeError, ValueError, OSError) as error:
+            self.statusBar().showMessage(f"No se pudo exportar la edición: {error}", 8000)
+            return None
+        self.statusBar().showMessage(f"Edición exportada: {ruta.name}. El color, los textos y "
+                                     f"los efectos no viajan.", 8000)
+        return ruta
 
     def missing_media(self) -> list[Path]:
         """Los archivos que usa el proyecto y ya no están donde se dejaron."""
@@ -821,6 +966,8 @@ class MainWindow(QMainWindow):
         self._dirty = False
         self._clear_autosave()      # lo guardado ya está a salvo
         self._update_title()
+        if versions.read_lock(self._path) is None:
+            versions.acquire(self._path, self._session)
         return True
 
     def save_as(self) -> bool:
@@ -1169,10 +1316,20 @@ class MainWindow(QMainWindow):
             self.sequence.height = info.height or self.sequence.height
             self.preview.set_canvas(self.sequence.width, self.sequence.height)
 
+        # Material HDR: se convierte solo, o se vería lavado y gris.
+        from vortex_studio.media.colorspace import space_for_transfer
+
+        espacio = space_for_transfer(info.color_transfer)
+        if espacio:
+            clip.color.input_space = espacio
+
         self._fit_zoom()
         self.timeline.select(clip)
         self._commit("Importar video")
         self._seek(clip.start)
+        if espacio:
+            self.statusBar().showMessage(f"{path.name} es {espacio}: se convierte a Rec.709 "
+                                         f"(Color → Espacio de color del material).", 8000)
 
     def _media_info(self, path: Path):
         """El sondeo del archivo, del caché del proyecto si sigue vigente."""
@@ -1395,10 +1552,12 @@ class MainWindow(QMainWindow):
             return
 
         self.queue_export(Path(path).with_suffix(preset.extension), start, end,
-                          options.quality(), options.with_audio(), preset)
+                          options.quality(), options.with_audio(), preset,
+                          parallel=options.parallel())
 
     def queue_export(self, path: Path, start: float, end: float, quality: str = "Normal",
-                     with_audio: bool = True, preset=DEFAULT_PRESET) -> RenderJob:
+                     with_audio: bool = True, preset=DEFAULT_PRESET,
+                     parallel: bool = False) -> RenderJob:
         """Manda la exportación a la cola y deja seguir editando.
 
         Se lleva una copia congelada de la secuencia: lo que se edite después
@@ -1409,7 +1568,8 @@ class MainWindow(QMainWindow):
                         nested={s.id: sequence_to_dict(s) for s in self.project.sequences
                                 if s is not self.sequence},
                         media=dict(self.project.media), start=start, end=end,
-                        preset=preset, quality=quality, with_audio=with_audio)
+                        preset=preset, quality=quality, with_audio=with_audio,
+                        parallel=parallel and preset.kind != AUDIO_PRESET)
         self.render_queue.add(job)
         self.queue_panel.show()
         self.statusBar().showMessage(
@@ -3360,6 +3520,7 @@ class MainWindow(QMainWindow):
         # la copia de emergencia sobra. Si el programa truena, esto nunca
         # corre y la copia se queda para la próxima.
         self._clear_autosave()
+        versions.release(self._path, self._session)
         self._close_sources()
         self.frames.close()
         super().closeEvent(event)
@@ -3404,6 +3565,12 @@ class ExportDialog(QDialog):
         self._audio.setChecked(self._hay_audio)
         self._audio.setEnabled(self._hay_audio)
 
+        from vortex_studio.media.segments import default_workers
+
+        self._parallel = QCheckBox(f"Render en paralelo ({default_workers()} segmentos a la vez)")
+        self._parallel.setToolTip("Parte el video en segmentos, los exporta a la vez en varios "
+                                  "núcleos y los une sin volver a codificar")
+
         self._preset_name = QLineEdit()
         self._preset_name.setPlaceholderText("Nombre para guardar estos ajustes")
         self._save_preset = QPushButton("Guardar preset")
@@ -3435,6 +3602,7 @@ class ExportDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addLayout(form)
         layout.addWidget(self._audio)
+        layout.addWidget(self._parallel)
         layout.addLayout(fila)
         layout.addWidget(self._preset_msg)
         layout.addWidget(buttons)
@@ -3465,6 +3633,7 @@ class ExportDialog(QDialog):
             self._fps.setEnabled(False)
             self._audio.setChecked(self._hay_audio)
             self._audio.setEnabled(False)
+            self._parallel.setEnabled(False)
             self._ok.setEnabled(self._hay_audio)
             if not self._hay_audio:
                 self._descripcion.setText("La secuencia no tiene audio que exportar.")
@@ -3474,6 +3643,7 @@ class ExportDialog(QDialog):
             self._quality.setEnabled(True)
             self._fps.setEnabled(True)
             self._audio.setEnabled(self._hay_audio)
+            self._parallel.setEnabled(True)
             self._ok.setEnabled(True)
 
     def save_current_as(self, nombre: str):
@@ -3522,3 +3692,6 @@ class ExportDialog(QDialog):
 
     def with_audio(self) -> bool:
         return self._audio.isChecked()
+
+    def parallel(self) -> bool:
+        return self._parallel.isEnabled() and self._parallel.isChecked()

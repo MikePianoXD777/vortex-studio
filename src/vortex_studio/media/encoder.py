@@ -69,8 +69,12 @@ def export_video(
     audio: Iterator | None = None,
     audio_rate: int = 48000,
     audio_layout: str = "stereo",
+    options: dict | None = None,
 ) -> Path:
     """Codifica los cuadros que entregue `frames` a H.264.
+
+    `options` se suma a las del codificador; el render por segmentos lo usa
+    para codificar sin cuadros B (ver `media/segments.py`).
 
     `progress` recibe (hechos, total) y devuelve False para cancelar. Si se
     cancela, el archivo a medias se borra: un video truncado que parece
@@ -96,6 +100,7 @@ def export_video(
         stream.options = {
             "crf": str(QUALITY.get(quality, QUALITY[DEFAULT_QUALITY])),
             "preset": "medium",
+            **(options or {}),
         }
 
         sound = _AudioWriter(container, audio, audio_rate, audio_layout) if audio else None

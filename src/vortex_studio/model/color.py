@@ -25,6 +25,14 @@ GAIN = (0, 200, 100)           # luces, por canal
 LUT_INTENSITY = (0, 100, 100)
 CHANNELS = ("r", "g", "b")
 
+# Espacio de color del material. Vacío es Rec.709 normal, que no se toca.
+# Ver `media/colorspace.py`.
+SPACE_NONE = ""
+SPACE_PQ = "Rec.2020 PQ (HDR10)"
+SPACE_HLG = "Rec.2020 HLG"
+SPACE_OCIO = "OCIO"
+INPUT_SPACES = (SPACE_NONE, SPACE_PQ, SPACE_HLG, SPACE_OCIO)
+
 # Ángulo máximo que se le pasa al filtro `vignette`. Medido a ojo sobre un
 # plano parejo de 16:9: más allá de esto las esquinas se van a negro y el
 # control deja de servir para nada.
@@ -62,6 +70,24 @@ class ColorAdjust:
     lut: str = ""
     lut_intensity: int = 100
 
+    # Nivel 4. Efectos de plugins, en orden: `[{"plugin", "values", "enabled"}]`
+    # (ver `model/plugins.py`). Viven en el color y no aparte porque son lo
+    # mismo: filtros de FFmpeg en la cadena de cada cuadro, y así viajan solos
+    # al decodificador, a la exportación y a la capa de ajuste.
+    effects: list = field(default_factory=list)
+    input_space: str = SPACE_NONE
+    ocio_config: str = ""       # vacío: la configuración de estudio que trae OCIO
+    ocio_space: str = ""
+
+    @property
+    def effects_signature(self) -> tuple:
+        return tuple((e.get("plugin", ""), tuple(sorted((e.get("values") or {}).items())),
+                      bool(e.get("enabled", True))) for e in self.effects)
+
+    @property
+    def has_effects(self) -> bool:
+        return any(e.get("enabled", True) for e in self.effects)
+
     @property
     def signature(self) -> tuple:
         """Todo lo que cambia la imagen, en una tupla que se puede comparar.
@@ -75,7 +101,8 @@ class ColorAdjust:
         """
         return (self.brightness, self.contrast, self.saturation, self.gamma,
                 self.temperature, self.vignette, tuple(self.curves.points()),
-                self.exposure, self.tint, self.lgg, self.lut, self.lut_intensity)
+                self.exposure, self.tint, self.lgg, self.lut, self.lut_intensity,
+                self.effects_signature, self.input_space, self.ocio_config, self.ocio_space)
 
     @property
     def lgg(self) -> tuple:
@@ -108,7 +135,7 @@ class ColorAdjust:
                  self.exposure, self.tint)
                 == (0, 100, 100, 100, 0, 0, 0, 0)
                 and self.curves.is_neutral and self.lgg_is_neutral
-                and not self.has_lut)
+                and not self.has_lut and not self.has_effects and not self.input_space)
 
     def reset(self) -> None:
         self.brightness, self.contrast, self.saturation = 0, 100, 100
@@ -121,6 +148,8 @@ class ColorAdjust:
             setattr(self, f"gamma_{c}", 100)
             setattr(self, f"gain_{c}", 100)
         self.lut, self.lut_intensity = "", 100
+        self.effects = []
+        self.input_space, self.ocio_config, self.ocio_space = SPACE_NONE, "", ""
 
     # --- conversión a los factores que espera FFmpeg ----------------------
 
@@ -169,6 +198,10 @@ class ColorAdjust:
             for c in CHANNELS:
                 setattr(self, f"{g}_{c}", getattr(otro, f"{g}_{c}"))
         self.lut, self.lut_intensity = otro.lut, otro.lut_intensity
+        self.effects = [{"plugin": e.get("plugin", ""), "values": dict(e.get("values") or {}),
+                         "enabled": bool(e.get("enabled", True))} for e in otro.effects]
+        self.input_space, self.ocio_config = otro.input_space, otro.ocio_config
+        self.ocio_space = otro.ocio_space
 
     def apply(self, otro: "ColorAdjust") -> None:
         self.brightness, self.contrast = otro.brightness, otro.contrast
