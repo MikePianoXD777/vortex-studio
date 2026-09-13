@@ -12,6 +12,94 @@ puede romper compatibilidad.
 
 Nada todavía.
 
+## [0.5.0a1] — 2026-09-12
+
+**El nivel 3 del roadmap, completo: producción seria.** Keyframes en
+cualquier parámetro con editor de curvas, color con lift/gamma/gain y LUTs,
+scopes, llave de croma, estabilización, capa de ajuste, efectos de audio con
+normalización LUFS y ducking, secuencias anidadas, subtítulos SRT/VTT,
+presets propios, exportar por marcadores y caché de render por zonas. Sigue
+en pre-alfa: pasa 742 pruebas automáticas —134 más que la 0.4.0a1—, cada
+función con al menos tres pruebas propias, pero nadie la ha usado con
+material propio de verdad.
+
+**El formato del archivo subió a la versión 5.** Los proyectos de la 0.1 a
+la 0.4 abren sin problema, y sus keyframes se mueven igual. Al revés no.
+
+**Sigue sin ejecutables.** Los binarios llegan al terminar la pre-alfa.
+
+### Keyframes
+
+- Interpolación **lineal, suave, sostenida y bezier** por tramo, con las
+  manijas de la bezier arrastrables. Los keyframes viejos, sin
+  interpolación escrita, usan la de antes.
+- **Cualquier número se anima**: color, máscara, volumen, llave de croma,
+  imágenes y textos. Si un valor ya está animado, mover su deslizador pone
+  un keyframe en el playhead; los paneles no tuvieron que aprender nada de
+  keyframes para eso.
+- **Editor de keyframes** (`Shift+K`) con la curva del parámetro, arrastre
+  en tiempo y valor, y doble clic para poner uno.
+- Las máscaras animadas salen de aquí: sus seis valores se animan.
+
+### Color
+
+- **Exposición** y **tinte**, y **lift, gamma y gain** por canal. Van en la
+  misma tabla de `lutrgb` de siempre, así que no le cuestan nada más a cada
+  cuadro.
+- **LUTs `.cube`** con intensidad: `lut3d` y, por debajo del 100 %, `split`
+  + `mix`. Un LUT roto avisa al cargarlo; uno que ya no está no deja el clip
+  en negro. Se guarda relativo al proyecto, igual que el material.
+- **Scopes**: histograma, forma de onda y vectorscopio con NumPy sobre el
+  cuadro compuesto reducido, sin esperar al decodificador.
+
+### Efectos
+
+- **Llave de croma** con `colorkey` y `despill`. La transparencia se separa
+  antes de corregir color y se vuelve a juntar al final: varios filtros de
+  color no saben de alfa y se la comían.
+- **Estabilización** por correlación de fase: se analiza una vez, se guarda
+  la trayectoria y se corrige cuadro por cuadro con un poco de zoom. No se
+  usó `deshake` porque depende de los cuadros anteriores: el preview después
+  de un salto y la exportación en orden no coincidirían.
+- **Capa de ajuste**: corrige lo que tiene debajo con el mismo procesador de
+  color de los clips, con opacidad, fusión y máscara.
+
+### Audio
+
+- **Ecualizador de tres bandas** y **compresor** por clip.
+- **Normalización a LUFS** según BS.1770-4: ponderación K con `biquad` y los
+  coeficientes de la norma, bloques de 400 ms y las dos compuertas. Un tono
+  de referencia mide exacto.
+- **Ducking**: una pista de Voz baja sola a la de Música, muestra por
+  muestra y sin escalones entre bloques.
+
+### Secuencias, subtítulos y exportación
+
+- **Secuencias anidadas**: anidar la selección, insertar una secuencia,
+  entrar con doble clic. Se detectan los ciclos y el menú ni los ofrece. Se
+  ven en el preview —se componen en el hilo del decodificador—, suenan y se
+  exportan.
+- **Subtítulos SRT y VTT**, de ida y de vuelta, con los detalles que rompen
+  un importador ingenuo: coma contra punto, horas omitidas, ajustes de VTT,
+  etiquetas, BOM y fines de línea de Windows.
+- **Presets propios** con tamaño, calidad y cuadros por segundo, guardados
+  en `presets.json`. Los de fábrica no se pisan.
+- **Exportar por marcadores**: un archivo por tramo, todos a la cola.
+
+### Caché de render por zonas
+
+- La línea de tiempo se parte en zonas y cada una tiene nivel y **firma**:
+  un hash de todo lo que vive en ella y de los archivos que usa. La barra
+  bajo la regla va en rojo, amarillo o verde. `Enter` renderiza las rojas y
+  el preview las reproduce desde el archivo. Si cambia la firma, la zona
+  vuelve a rojo sola.
+
+### Arreglado
+
+- El ecualizador subía la mitad de lo que decía: una repisa da la mitad de
+  su ganancia en su frecuencia de esquina, y las esquinas estaban donde
+  debía ir la banda completa.
+
 ## [0.4.0a1] — 2026-09-12
 
 **El nivel 2 del roadmap, completo: usable a diario.** Lo que se usa todos

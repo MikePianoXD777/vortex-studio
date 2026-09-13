@@ -62,6 +62,7 @@ class RenderJob:
     preset: object
     quality: str = "Normal"
     with_audio: bool = True
+    nested: dict = field(default_factory=dict)   # id -> secuencia, para las anidadas
 
     id: int = field(default_factory=lambda: next(_ids))
     status: str = WAITING
@@ -213,6 +214,8 @@ class RenderQueue(QObject):
         from vortex_studio.ui.renderer import SequenceRenderer
 
         secuencia = sequence_from_dict(job.sequence)
+        hijas = {ident: sequence_from_dict(datos) for ident, datos in job.nested.items()}
+        resolver = hijas.get
         ultimo = [0.0]
 
         def avance(hecho: int, total: int) -> bool:
@@ -226,7 +229,7 @@ class RenderQueue(QObject):
         if job._cancel.is_set():
             raise Cancelled()
 
-        clips = secuencia.audio_clips()
+        clips = secuencia.audio_clips(resolver)
         if job.is_audio:
             if not clips:
                 raise RuntimeError("La secuencia no tiene audio que exportar.")
@@ -236,15 +239,16 @@ class RenderQueue(QObject):
                          job.end - job.start, avance)
             return
 
-        fps = secuencia.fps
+        fps = getattr(job.preset, "fps", None) or secuencia.fps
         job.total = max(1, int(round((job.end - job.start) * fps)))
         ancho, alto = output_size(job.preset, secuencia.width, secuencia.height)
-        renderer = SequenceRenderer(secuencia, dict(job.media))
+        renderer = SequenceRenderer(secuencia, dict(job.media), resolve=resolver)
         try:
             export_video(
                 job.path,
                 renderer.frames(job.start, job.end, fps, (ancho, alto)),
-                job.total, ancho, alto, fps, job.quality, avance,
+                job.total, ancho, alto, fps,
+                getattr(job.preset, "quality", None) or job.quality, avance,
                 AudioMixer(clips, **secuencia.audio_mix_options()).stream(job.start, job.end)
                 if job.with_audio and clips else None,
             )

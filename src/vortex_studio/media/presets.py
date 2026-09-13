@@ -18,7 +18,9 @@ Python puro: la cuenta de tamaños se prueba sin codificar nada.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+from dataclasses import asdict, dataclass
+from pathlib import Path
 
 VIDEO = "video"
 AUDIO = "audio"
@@ -31,6 +33,9 @@ class ExportPreset:
     short_side: int | None = None       # None: el tamaño de la secuencia
     extension: str = ".mp4"
     description: str = ""
+    quality: str | None = None      # None: la que se elija en el diálogo
+    fps: float | None = None        # None: la de la secuencia
+    user: bool = False              # lo guardó el usuario: se puede borrar
 
 
 PRESETS = (
@@ -47,9 +52,70 @@ PRESETS = (
 DEFAULT = PRESETS[0]
 
 
+# --- presets del usuario --------------------------------------------------------
+#
+# Los cuatro de fábrica cubren lo común, pero cada quien tiene los suyos: el
+# vertical a 60 fps para TikTok, el borrador para mandar a revisión. Se guardan
+# en `presets.json`, junto a los atajos, y aparecen en la misma lista.
+
+def presets_path() -> Path:
+    from vortex_studio.ui.shortcuts import config_dir
+    return config_dir() / "presets.json"
+
+
+def user_presets() -> list[ExportPreset]:
+    try:
+        filas = json.loads(presets_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    salida = []
+    nombres_fabrica = {p.name for p in PRESETS}
+    for fila in filas if isinstance(filas, list) else []:
+        try:
+            preset = ExportPreset(**{**fila, "user": True})
+        except TypeError:
+            continue            # un preset de una versión futura con campos raros
+        if preset.name not in nombres_fabrica:
+            salida.append(preset)
+    return salida
+
+
+def all_presets() -> list[ExportPreset]:
+    return list(PRESETS) + user_presets()
+
+
+def save_user_preset(preset: ExportPreset) -> ExportPreset:
+    """Guarda o reemplaza un preset propio. Los de fábrica no se pisan."""
+    nombre = preset.name.strip()
+    if not nombre:
+        raise ValueError("El preset necesita nombre.")
+    if nombre in {p.name for p in PRESETS}:
+        raise ValueError(f"«{nombre}» es un preset de fábrica; ponle otro nombre.")
+    nuevo = ExportPreset(**{**asdict(preset), "name": nombre, "user": True})
+    lista = [p for p in user_presets() if p.name != nombre] + [nuevo]
+    _write(lista)
+    return nuevo
+
+
+def delete_user_preset(name: str) -> bool:
+    lista = user_presets()
+    quedan = [p for p in lista if p.name != name]
+    if len(quedan) == len(lista):
+        return False
+    _write(quedan)
+    return True
+
+
+def _write(lista: list[ExportPreset]) -> None:
+    ruta = presets_path()
+    ruta.parent.mkdir(parents=True, exist_ok=True)
+    filas = [{k: v for k, v in asdict(p).items() if k != "user"} for p in lista]
+    ruta.write_text(json.dumps(filas, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
 def by_name(name: str) -> ExportPreset:
-    """El preset con ese nombre; el de siempre si no existe."""
-    return next((p for p in PRESETS if p.name == name), DEFAULT)
+    """El preset con ese nombre, de fábrica o propio; el de siempre si no existe."""
+    return next((p for p in all_presets() if p.name == name), DEFAULT)
 
 
 def output_size(preset: ExportPreset, width: int, height: int) -> tuple[int, int]:

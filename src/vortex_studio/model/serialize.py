@@ -20,7 +20,7 @@ from vortex_studio.model.curves import Curves
 from vortex_studio.model.mask import Mask
 from vortex_studio.model.media import MediaInfo, library_key
 from vortex_studio.model.overlays import AdjustmentLayer, ImageOverlay, Title
-from vortex_studio.model.project import Clip, Marker, Project, Sequence, Track
+from vortex_studio.model.project import Clip, Marker, NestedClip, Project, Sequence, Track
 from vortex_studio.model.transform import Transform
 
 # 2: máscaras, modos de fusión, curva de color, viñeta y animación de texto.
@@ -61,7 +61,10 @@ def _read_path(texto: str, base: Path | None) -> Path:
 
 def item_to_dict(item: Any, base: Path | None = None) -> dict:
     data = asdict(item)
-    if isinstance(item, Clip):
+    if isinstance(item, NestedClip):
+        data["tipo"] = "anidada"
+        data["source"] = ""
+    elif isinstance(item, Clip):
         data["tipo"] = "clip"
         data["source"] = _write_path(item.source, base)
         if item.color.lut:
@@ -115,12 +118,16 @@ def item_from_dict(data: dict, base: Path | None = None) -> Any:
     mask = data.pop("mask", None)
     markers = data.pop("markers", None)
 
-    if kind == "clip":
+    if kind in ("clip", "anidada"):
         color = _color(data.pop("color", None), base)
         chroma = data.pop("chroma", None)
         audio_fx = data.pop("audio_fx", None)
-        data["source"] = _read_path(data["source"], base)
-        item = Clip(**data)
+        if kind == "anidada":
+            data["source"] = Path("")
+            item = NestedClip(**data)
+        else:
+            data["source"] = _read_path(data["source"], base)
+            item = Clip(**data)
         if color:
             item.color = color
         if chroma:
@@ -151,6 +158,7 @@ def item_from_dict(data: dict, base: Path | None = None) -> Any:
 
 def sequence_to_dict(sequence: Sequence, base: Path | None = None) -> dict:
     return {
+        "id": sequence.id,
         "name": sequence.name,
         "fps": sequence.fps,
         "width": sequence.width,
@@ -180,6 +188,8 @@ def sequence_from_dict(data: dict, base: Path | None = None) -> Sequence:
         width=data.get("width", 1920),
         height=data.get("height", 1080),
     )
+    if data.get("id"):
+        sequence.id = data["id"]
     sequence.tracks = [
         Track(
             name=track["name"],
@@ -296,6 +306,7 @@ def project_to_dict(project: Project, base: Path | None = None) -> dict:
         "formato": FORMAT_VERSION,
         "name": project.name,
         "sequences": [sequence_to_dict(s, base) for s in project.sequences],
+        "activa": project.active.id,
         "media": media_to_list(project.media, base),
     }
 
@@ -307,6 +318,7 @@ def project_from_dict(data: dict, base: Path | None = None) -> Project:
     sequences = [sequence_from_dict(s, base) for s in data.get("sequences", [])]
     project.sequences = sequences or [Sequence.default()]
     project.media = media_from_list(data.get("media", []), base)
+    project.active_id = data.get("activa", "")
     return project
 
 

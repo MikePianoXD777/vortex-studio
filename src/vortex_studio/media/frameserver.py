@@ -55,14 +55,19 @@ class FrameJob:
     adjust: object = field(default=None, compare=False, hash=False)
     signature: tuple = ()
     chroma: object = field(default=None, compare=False, hash=False)
+    # Una secuencia anidada no se decodifica: se compone. Aquí va lo que el
+    # compositor necesita, y la ruta del trabajo lleva la firma del proyecto
+    # para que editar la hija invalide el búfer solo.
+    nested: object = field(default=None, compare=False, hash=False)
 
     @classmethod
-    def make(cls, key: int, path, time: float, adjust=None, chroma=None) -> "FrameJob":
+    def make(cls, key: int, path, time: float, adjust=None, chroma=None,
+             nested=None) -> "FrameJob":
         copia = adjust.copy() if adjust is not None else None
         llave = chroma.copy() if chroma is not None and chroma.is_on else None
         firma = ((copia.signature if copia is not None else ())
                  + ((llave.signature,) if llave is not None else ()))
-        return cls(key, Path(path), round(float(time), 4), copia, firma, llave)
+        return cls(key, Path(path), round(float(time), 4), copia, firma, llave, nested)
 
     @property
     def cache_key(self) -> tuple:
@@ -73,8 +78,10 @@ class FrameServer:
     """Decodifica en su propio hilo y guarda lo decodificado."""
 
     def __init__(self, on_ready: Callable[[], None] | None = None,
-                 cache_bytes: int = CACHE_BYTES, pool_limit: int = 8) -> None:
+                 cache_bytes: int = CACHE_BYTES, pool_limit: int = 8,
+                 nested: Callable | None = None) -> None:
         self._on_ready = on_ready
+        self._nested = nested       # compone un trabajo de secuencia anidada, en este hilo
         self._limit = cache_bytes
 
         self._cond = threading.Condition()
@@ -214,11 +221,13 @@ class FrameServer:
 
                 frame = None
                 try:
-                    fuente = self._pool.get(job.key, job.path)
+                    fuente = None if job.nested is not None else self._pool.get(job.key, job.path)
                     # La llave solo se pasa si hay: así cualquier fuente con la
                     # firma de siempre —incluidas las falsas de las pruebas—
                     # sigue sirviendo.
-                    if job.chroma is None:
+                    if job.nested is not None:
+                        frame = self._nested(job) if self._nested is not None else None
+                    elif job.chroma is None:
                         frame = fuente.frame_at(job.time, job.adjust)
                     else:
                         frame = fuente.frame_at(job.time, job.adjust, job.chroma)

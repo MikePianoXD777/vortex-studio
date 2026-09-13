@@ -85,6 +85,7 @@ def framing_of(transform) -> dict:
         "fit": transform.fit,
         "crop": transform.crop,
         "anchor": (transform.anchor_x, transform.anchor_y),
+        "stabilize": None,
     }
 
 
@@ -254,6 +255,15 @@ def _draw_frame(painter: QPainter, target: QRectF, frame: Frame,
     """
     framing = framing or {}
     destino = fit_rect(target, frame.width, frame.height, framing.get("fit", FIT))
+    estabilizar = framing.get("stabilize")
+    if estabilizar is not None:
+        # La corrección mueve la imagen al revés del temblor y la agranda un
+        # poco desde el centro para que no se asomen las orillas.
+        dx, dy, zoom = estabilizar
+        ancho, alto = destino.width() * zoom, destino.height() * zoom
+        centro_x = destino.center().x() + dx * destino.width() * zoom
+        centro_y = destino.center().y() + dy * destino.height() * zoom
+        destino = QRectF(centro_x - ancho / 2, centro_y - alto / 2, ancho, alto)
     izquierda, arriba, derecha, abajo = framing.get("crop", (0.0, 0.0, 0.0, 0.0))
 
     fuente = QRectF(frame.width * izquierda, frame.height * arriba,

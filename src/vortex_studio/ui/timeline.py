@@ -56,6 +56,7 @@ CLIP_AUDIO = QColor("#3f7d5c")
 CLIP_TEXT = QColor("#a8763d")
 CLIP_IMAGE = QColor("#7a5aa8")
 CLIP_ADJUST = QColor("#7f8a3a")
+CLIP_NESTED = QColor("#357f82")
 CLIP_BORDER = QColor("#0f1113")
 SELECTED = QColor("#ffffff")
 TEXT = QColor("#c8ccd2")
@@ -113,6 +114,8 @@ def _color_for(track, clip) -> QColor:
         return CLIP_IMAGE
     if type(clip).__name__ == "AdjustmentLayer":
         return CLIP_ADJUST
+    if type(clip).__name__ == "NestedClip":
+        return CLIP_NESTED
     return CLIP_AUDIO if track.kind == "audio" else CLIP_VIDEO
 
 
@@ -127,6 +130,7 @@ class TimelineWidget(QWidget):
     track_toggled = Signal(object, str)  # pista, interruptor
     marker_activated = Signal(object, object)   # marcador, dueño (None = secuencia)
     media_dropped = Signal(object, float, int)  # ruta, tiempo, pista
+    clip_activated = Signal(object)             # doble clic sobre un elemento
 
     def __init__(self, sequence: Sequence, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -164,6 +168,9 @@ class TimelineWidget(QWidget):
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.StrongFocus)
         self.setAcceptDrops(True)
+        # Zonas de render: [(inicio, fin, estado)] con estado "listo", 2 (pesada)
+        # o 1 (ligera). La pone la ventana; ver `model/render_zones.py`.
+        self.render_bar: list = []
 
     # --- conversión tiempo <-> pixel -------------------------------------
 
@@ -284,6 +291,18 @@ class TimelineWidget(QWidget):
             painter.setPen(TEXT)
             painter.drawText(QPointF(x + 3, RULER_HEIGHT - 9), timecode(t, self.sequence.fps))
             t += step
+        self._draw_render_bar(painter)
+
+    def _draw_render_bar(self, painter: QPainter) -> None:
+        """La barra de Premiere: verde renderizado, rojo pesado, amarillo ligero."""
+        colores = {"listo": QColor("#4fb866"), 2: QColor("#d9534f"), 1: QColor("#e0b43c")}
+        for inicio, fin, estado in self.render_bar:
+            color = colores.get(estado)
+            if color is None:
+                continue
+            x0, x1 = max(HEADER_WIDTH, self.x_for(inicio)), min(self.width(), self.x_for(fin))
+            if x1 > x0:
+                painter.fillRect(QRectF(x0, RULER_HEIGHT - 3, x1 - x0, 3), color)
 
     def _draw_markers(self, painter: QPainter) -> None:
         """Los marcadores van clavados en la regla, con su línea hacia abajo."""
@@ -972,6 +991,11 @@ class TimelineWidget(QWidget):
         if marcador is not None:
             self._drag = None
             self.marker_activated.emit(marcador, dueno)
+            return
+        _, item, _ = self._item_at(pos.x(), pos.y())
+        if item is not None:
+            self._drag = None
+            self.clip_activated.emit(item)
             return
         super().mouseDoubleClickEvent(event)
 

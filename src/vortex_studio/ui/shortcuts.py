@@ -81,6 +81,7 @@ DEFAULTS: dict[str, tuple[str, str]] = {
     "editar.pegar": ("Pegar", "Ctrl+V"),
     "editar.pegar_atributos": ("Pegar atributos", "Ctrl+Shift+V"),
     "editar.enlazar": ("Enlazar o desenlazar", "Ctrl+L"),
+    "editar.anidar": ("Anidar la selección en una secuencia", "Ctrl+Shift+N"),
     "editar.eliminar": ("Eliminar", "Del"),
     "editar.eliminar_hueco": ("Eliminar y cerrar hueco", "Shift+Del"),
     "editar.atajos": ("Atajos de teclado", "Ctrl+/"),
@@ -107,6 +108,7 @@ DEFAULTS: dict[str, tuple[str, str]] = {
     "reproducir.normal": ("Velocidad normal", "K"),
     "reproducir.rapido": ("Más rápido", "Shift+L"),
     "reproducir.repetir": ("Repetir", "L"),
+    "reproducir.renderizar": ("Renderizar zona", "Return"),
 
     "navegar.cuadro_atras": ("Cuadro anterior", "Left"),
     "navegar.cuadro_adelante": ("Cuadro siguiente", "Right"),

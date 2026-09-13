@@ -11,6 +11,90 @@ While we're on `0.x`, any minor version may break compatibility.
 
 Nothing yet.
 
+## [0.5.0a1] — 2026-09-12
+
+**Level 3 of the roadmap, complete: serious production.** Keyframes on any
+parameter with a curve editor, lift/gamma/gain color and LUTs, scopes, chroma
+key, stabilization, adjustment layers, audio effects with LUFS normalization
+and ducking, nested sequences, SRT/VTT subtitles, custom presets, export by
+markers and a zone render cache. Still pre-alpha: it passes 742 automated
+tests — 134 more than 0.4.0a1 —, every feature with at least three tests of
+its own, but nobody has used it on their own footage yet.
+
+**The file format moved to version 5.** Projects from 0.1 through 0.4 open
+fine, and their keyframes move the same way. Not the other way around.
+
+**Still no executables.** Binaries come when pre-alpha ends.
+
+### Keyframes
+
+- **Linear, ease, hold and bezier** interpolation per segment, with draggable
+  bezier handles. Old keyframes with no interpolation written use the
+  previous one.
+- **Any number can be animated**: color, mask, volume, chroma key, images and
+  text. Once a value is animated, moving its slider sets a keyframe at the
+  playhead; the panels didn't have to learn anything about keyframes for it.
+- **Keyframe editor** (`Shift+K`) with the parameter's curve, dragging in time
+  and value, and double-click to add one.
+- Animated masks come from this: all six mask values can be animated.
+
+### Color
+
+- **Exposure** and **tint**, and per-channel **lift, gamma and gain**. They
+  live in the same `lutrgb` table as before, so they cost nothing extra per
+  frame.
+- **`.cube` LUTs** with intensity: `lut3d` and, below 100 %, `split` + `mix`.
+  A broken LUT warns when loaded; a missing one doesn't turn the clip black.
+  It's stored relative to the project, like footage.
+- **Scopes**: histogram, waveform and vectorscope with NumPy on the downscaled
+  composited frame, without waiting on the decoder.
+
+### Effects
+
+- **Chroma key** with `colorkey` and `despill`. Transparency is split off
+  before color correction and merged back at the end: several color filters
+  don't know about alpha and were eating it.
+- **Stabilization** by phase correlation: analyzed once, the trajectory is
+  stored and each frame is corrected with a little zoom. `deshake` wasn't
+  used because it depends on previous frames: the preview after a jump and
+  the export in order wouldn't match.
+- **Adjustment layer**: corrects what's below it with the same color
+  processor clips use, with opacity, blend and mask.
+
+### Audio
+
+- Per-clip **three-band EQ** and **compressor**.
+- **LUFS normalization** per BS.1770-4: K-weighting with `biquad` and the
+  standard's coefficients, 400 ms blocks and both gates. A reference tone
+  measures exactly.
+- **Ducking**: a Voice track dips the Music track on its own, sample by
+  sample and with no steps between blocks.
+
+### Sequences, subtitles and export
+
+- **Nested sequences**: nest the selection, insert a sequence, double-click to
+  open. Cycles are detected and the menu doesn't even offer them. They show
+  in the preview — composited on the decoder thread —, play and export.
+- **SRT and VTT subtitles**, both ways, with the details that break a naive
+  importer: comma versus dot, omitted hours, VTT settings, tags, BOM and
+  Windows line endings.
+- **Custom presets** with size, quality and frame rate, stored in
+  `presets.json`. Built-in ones can't be overwritten.
+- **Export by markers**: one file per range, all to the queue.
+
+### Zone render cache
+
+- The timeline is split into zones, each with a level and a **signature**: a
+  hash of everything living in it and the files it uses. The bar under the
+  ruler shows red, yellow or green. `Enter` renders the red ones and the
+  preview plays them back from the file. If the signature changes, the zone
+  turns red again on its own.
+
+### Fixed
+
+- The EQ boosted half of what it said: a shelf gives half its gain at its
+  corner frequency, and the corners sat where the full band should be.
+
 ## [0.4.0a1] — 2026-09-12
 
 **Level 2 of the roadmap, complete: usable day to day.** The everyday editing

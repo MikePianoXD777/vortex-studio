@@ -7,19 +7,19 @@ Editor de video no lineal. Parte de Vortex Suite.
 Las funciones de DaVinci Resolve, CapCut, Premiere Pro y After Effects, pero
 fáciles de usar. La capacidad sí; la complejidad no.
 
-> ### ⚠️ Pre-alfa — `0.4.0a1`
+> ### ⚠️ Pre-alfa — `0.5.0a1`
 >
-> **Esto no está listo para trabajo real.** Pasa 608 pruebas automáticas,
+> **Esto no está listo para trabajo real.** Pasa 742 pruebas automáticas,
 > pero nadie lo ha usado todavía con material propio de verdad. Eso no es lo
 > mismo que estar probado.
 >
 > Lo que puedes esperar:
 >
 > - Cosas que fallan de formas que no hemos visto
-> - El formato del archivo `.vortex` subió a la versión 4: los proyectos de
->   la 0.1 a la 0.3 abren bien, pero al revés no
-> - Un proyecto viejo con material de otra proporción que la secuencia se ve
->   distinto: antes se estiraba, ahora entra ajustado con franjas
+> - El formato del archivo `.vortex` subió a la versión 5: los proyectos de
+>   la 0.1 a la 0.4 abren bien, pero al revés no
+> - La caché de render y los análisis de estabilización ocupan disco en la
+>   caché del sistema; se pueden borrar sin perder nada
 > - En las transiciones de video, el audio sigue cortando seco
 >
 > Úsalo para curiosear y para reportar lo que se rompa. No para editar algo
@@ -130,6 +130,19 @@ abrir ventanas, así que funciona por SSH o en una máquina sin pantalla.
 | `test_panel_medios.py` | Panel de medios, miniaturas, búsqueda y arrastrar |
 | `test_proxies.py` | Proxies de 540p y su interruptor |
 | `test_cola_render.py` | Exportar en segundo plano, con progreso y cancelar |
+| `test_keyframes.py` | Interpolación, cualquier parámetro animado y el editor de curvas |
+| `test_color_avanzado.py` | Exposición, tinte, lift/gamma/gain y LUTs |
+| `test_croma.py` | Llave de croma y supresión de derrame |
+| `test_capa_ajuste.py` | Capas de ajuste |
+| `test_scopes.py` | Histograma, forma de onda y vectorscopio |
+| `test_subtitulos.py` | Importar y exportar SRT y VTT |
+| `test_audio_fx.py` | Ecualizador, compresor, LUFS y ducking |
+| `test_estabilizar.py` | Estabilización por correlación de fase |
+| `test_rangos_y_anidado.py` | Tramos por marcadores y ciclos de anidadas |
+| `test_anidadas.py` | Secuencias anidadas en la ventana |
+| `test_presets_propios.py` | Presets propios y exportar por marcadores |
+| `test_zonas_render.py` | Zonas de render y su firma |
+| `test_cache_render.py` | Caché de render por zonas |
 | `test_portabilidad.py` | Que funcione igual en Linux y Windows |
 
 ## Atajos
@@ -179,6 +192,9 @@ Estos son los de fábrica:
 | `I` `O` / `Ctrl+Shift+X` | Marcar entrada, salida / quitar marcas |
 | `M` / `Shift+M` | Poner marcador / editarlo: nombre, nota y color |
 | `Alt+Shift+M` | Marcador dentro del clip seleccionado |
+| `Shift+K` | Editor de keyframes |
+| `Enter` | Renderizar la zona (entre marcas, o todo) |
+| `Ctrl+Shift+N` | Anidar la selección en una secuencia |
 | `Shift+↓` `Shift+↑` | Marcador siguiente / anterior |
 | `F` | Pantalla completa |
 
@@ -338,6 +354,48 @@ seleccionar, mover ni borrar nada de lo que tiene.
 **Marcadores.** Llevan nombre, nota y color, en la regla o dentro de un clip.
 Los del clip viajan con él. La nota aparece al pasar el cursor encima.
 
+## Producción
+
+**Keyframes en cualquier parámetro.** Color, máscara, volumen, llave de
+croma, imágenes y textos, además de la transformación. Si un valor ya está
+animado, mover su deslizador pone un keyframe donde está el playhead. El
+editor de keyframes (`Shift+K`) muestra la curva de cada parámetro; los
+keyframes se arrastran, y cada tramo es lineal, suave, sostenido o bezier,
+con sus dos manijas.
+
+**Color.** Exposición y tinte junto a lo de siempre, y las tres ruedas de
+DaVinci —lift, gamma y gain— como deslizadores por canal. LUTs `.cube` con
+intensidad. Los **scopes** (Ver → Scopes) dan histograma, forma de onda y
+vectorscopio del cuadro compuesto.
+
+**Efectos.** Llave de croma con similitud, suavidad y supresión de derrame.
+**Estabilización**: la primera vez analiza el movimiento del video en
+segundo plano y lo guarda; desde ahí la toma se corrige igual en el preview
+y en la exportación, saltes a donde saltes.
+
+**Capa de ajuste** (Insertar → Capa de ajuste): corrige el color de todo lo
+que tiene debajo, con su opacidad y su máscara.
+
+**Audio.** Ecualizador de tres bandas, compresor, normalización a −14, −16
+o −23 LUFS según BS.1770, y ducking: marca una pista como Voz y otra como
+Música, y la música baja sola cuando suena la voz.
+
+**Secuencias anidadas.** `Ctrl+Shift+N` mete lo seleccionado en una
+secuencia nueva y deja un clip en su lugar; doble clic lo abre. Una
+secuencia no se deja meter en otra si eso hace un ciclo.
+
+**Subtítulos.** Archivo → Importar subtítulos (SRT o VTT) los pone como
+textos; Exportar subtítulos saca los textos de vuelta.
+
+**Exportar.** Presets propios, con su tamaño, calidad y cuadros por segundo.
+Exportar por marcadores manda un archivo por cada tramo entre marcadores a
+la cola.
+
+**Caché de render.** La barra bajo la regla dice qué zonas son pesadas
+(rojo), ligeras (amarillo) o ya renderizadas (verde). `Enter` renderiza las
+rojas y el preview las reproduce desde el archivo. Si cambias algo de una
+zona, vuelve a rojo sola.
+
 ## Sonido
 
 Se oye mientras editas, con volumen y silencio en la barra de transporte. El
@@ -455,6 +513,13 @@ editor. Hay una prueba que lo vigila.
 - Panel de medios con miniaturas, búsqueda y arrastrar al timeline
 - Proxies de 540p con interruptor global
 - Cola de render en segundo plano
+- Keyframes en cualquier parámetro, con interpolación lineal, suave,
+  sostenida y bezier, y editor de curvas
+- Exposición, tinte, lift/gamma/gain y LUTs `.cube`; scopes
+- Llave de croma, estabilización y capa de ajuste
+- Ecualizador, compresor, normalización LUFS y ducking
+- Secuencias anidadas, subtítulos SRT y VTT, presets propios, exportar por
+  marcadores y caché de render por zonas
 - Sonido al editar, con mezcla de pistas y onda en las pistas de audio
 - Marcadores con nota y color, en la secuencia y dentro de los clips
 - Formatos vertical, cuadrado y cine
@@ -483,5 +548,9 @@ una advertencia literal.
 - No hay cortinillas ni efectos de transición más allá de cruzada, a negro y
   a blanco.
 - La viñeta es el ajuste más caro que hay: unos 12 ms por cuadro en 1080p.
-- La máscara es de una sola forma por capa, y sin animar.
-- No hay máscaras animadas ni seguimiento de movimiento.
+- La máscara es de una sola forma por capa.
+- No hay seguimiento de movimiento (nivel 4).
+- Cambiar de secuencia reinicia el deshacer, y deshacer no quita la
+  secuencia que creó un "Anidar".
+- La estabilización corrige desplazamiento, no giro ni zoom de la cámara.
+- La barra de zonas solo mide la imagen; el audio no se renderiza a caché.

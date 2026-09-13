@@ -19,6 +19,8 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFileDialog,
     QFormLayout,
+    QHBoxLayout,
+    QPushButton,
     QKeySequenceEdit,
     QLabel,
     QLineEdit,
@@ -40,7 +42,14 @@ from vortex_studio.media.mixer import AudioMixer
 from vortex_studio.media.encoder import QUALITY, Cancelled, export_audio, export_video
 from vortex_studio.media.presets import AUDIO as AUDIO_PRESET
 from vortex_studio.media.presets import DEFAULT as DEFAULT_PRESET
-from vortex_studio.media.presets import PRESETS, by_name, output_size
+from vortex_studio.media.presets import (
+    PRESETS,
+    all_presets,
+    by_name,
+    delete_user_preset,
+    output_size,
+    save_user_preset,
+)
 from vortex_studio.model import (
     ANCHORS,
     AUDIO_MODES,
@@ -80,6 +89,10 @@ from vortex_studio.ui.compositor import Layer, clear_mask_cache, compose
 from vortex_studio.ui.dialogs import MarkerDialog, PasteAttributesDialog
 from vortex_studio.ui.panels import PropertiesPanel
 from vortex_studio.model.overlays import AdjustmentLayer
+from vortex_studio.model.project import NestedClip
+from vortex_studio.model.nesting import would_cycle
+from vortex_studio.model import render_zones
+from vortex_studio.ui import render_cache
 from vortex_studio.ui.renderer import (
     SequenceRenderer,
     adjustment_layer,
@@ -204,7 +217,17 @@ class MainWindow(QMainWindow):
         # El preview decodifica en su propio hilo. Ver `media/frameserver.py`.
         self._frame_signal = _FrameSignal()
         self._frame_signal.ready.connect(self._frames_ready)
-        self.frames = FrameServer(on_ready=self._frame_signal.ready.emit)
+        self.frames = FrameServer(on_ready=self._frame_signal.ready.emit,
+                                  nested=self._nested_frame_job)
+        # Cada edición sube este número: es lo que invalida los cuadros de
+        # las secuencias anidadas cuando cambia la hija.
+        self._edit_serial = 0
+        self._snapshot_memo = None
+        self._nested_workers: dict = {}     # solo lo toca el hilo del decodificador
+        self.cache_worker = render_cache.RenderCacheWorker(self)
+        self.use_render_cache = True
+        self._zones: list = []
+        self._zones_serial = -1
         self._ready_scheduled = False
         self._images: dict[Path, QImage] = {}
         self._clipboard: list[dict] = []
@@ -261,6 +284,9 @@ class MainWindow(QMainWindow):
 
         # Proxies: interruptor global, recordado entre sesiones.
         self.proxies = ProxyManager(self)
+        from vortex_studio.media.stabilize import STABILIZER, load_or_analyze
+        from vortex_studio.ui.analysis import BackgroundAnalyzer
+        self.stabilizer = BackgroundAnalyzer(load_or_analyze, STABILIZER.has_analysis, self)
         self._proxy_paths: dict[Path, Path] = {}
         self.use_proxies = bool(load_settings().get("proxies", False))
 
@@ -352,6 +378,7 @@ class MainWindow(QMainWindow):
                      lambda: self.import_to_bin())
         self._action(archivo, "Exportar &video…", "archivo.exportar_video", self.export_video)
         self._action(archivo, "Exportar &cuadro…", "archivo.exportar_cuadro", self.export_frame)
+        self._action(archivo, "Exportar por &marcadores…", None, self.export_by_markers)
         archivo.addSeparator()
         self._action(archivo, "Importar &subtítulos (SRT, VTT)…", None,
                      lambda: self.import_subtitles())
@@ -525,6 +552,17 @@ class MainWindow(QMainWindow):
         self._action(formato, "Ajustar al primer clip", None, self.format_from_clip)
         self._action(formato, "Rellenar el cuadro con todos los clips", None,
                      lambda: self.reframe_all(FILL))
+        formato.addSeparator()
+        self._action(formato, "&Renderizar zona (entre marcas o todo)", "reproducir.renderizar",
+                     lambda: self.render_zones())
+        self._action(formato, "&Borrar la caché de render", None, self.clear_render_cache)
+        formato.addSeparator()
+        self._action(formato, "&Nueva secuencia", None, lambda: self.new_sequence())
+        self._action(formato, "&Anidar la selección", "editar.anidar", lambda: self.nest_selection())
+        self._switch_menu = formato.addMenu("&Cambiar a")
+        self._switch_menu.aboutToShow.connect(self._fill_switch_menu)
+        self._insert_menu = formato.addMenu("&Insertar secuencia")
+        self._insert_menu.aboutToShow.connect(self._fill_insert_menu)
 
         ver = self.menuBar().addMenu("&Ver")
         self._action(ver, "Pantalla &completa", "ver.pantalla_completa", self.toggle_fullscreen)
@@ -617,6 +655,8 @@ class MainWindow(QMainWindow):
         self.timeline.track_toggled.connect(self._track_toggled)
         self.timeline.marker_activated.connect(self.edit_marker)
         self.timeline.media_dropped.connect(self.place_media)
+        self.timeline.clip_activated.connect(
+            lambda item: self.open_nested(item) if isinstance(item, NestedClip) else None)
         self.timeline.source_duration = self._source_duration
 
         self.transport.play_pause.connect(self.toggle_play)
@@ -636,6 +676,17 @@ class MainWindow(QMainWindow):
         self.keyframe_editor.changed.connect(self._keyframes_edited)
         self.keyframe_editor.committed.connect(self._keyframes_committed)
         self.proxies.ready.connect(self._proxy_ready)
+        self.stabilizer.ready.connect(self._stabilize_ready)
+        self.cache_worker.zone_ready.connect(lambda _firma: self._refresh_render_bar())
+        self.cache_worker.finished.connect(self._cache_finished)
+        self.cache_worker.failed.connect(
+            lambda error: self.statusBar().showMessage(f"No se pudo renderizar: {error}", 8000))
+        self.stabilizer.progress.connect(
+            lambda path, avance: self.effects_panel.set_stabilize_status(
+                f"Analizando {Path(path).name}: {avance * 100:.0f} %"))
+        self.stabilizer.failed.connect(
+            lambda path, error: self.effects_panel.set_stabilize_status(
+                f"No se pudo analizar: {error}"))
         self.proxies.progress.connect(self._proxy_progress)
         self.proxies.failed.connect(
             lambda path, error: self.statusBar().showMessage(
@@ -821,6 +872,8 @@ class MainWindow(QMainWindow):
             marcas = f"   ·   Marcas {timecode(inicio, seq.fps)} → {timecode(fin, seq.fps)}"
 
         proxies = "   ·   Proxies" if getattr(self, "use_proxies", False) else ""
+        if len(self.project.sequences) > 1:
+            marcadores = marcadores + f"   ·   Secuencia «{seq.name}»"
         self.statusBar().showMessage(
             f"{seq.width}×{seq.height}   ·   {seq.fps:g} fps   ·   "
             f"{timecode(seq.duration, seq.fps)}   ·   "
@@ -833,6 +886,7 @@ class MainWindow(QMainWindow):
     def _schedule(self, label: str) -> None:
         """Apunta un cambio para registrarlo cuando el usuario deje de teclear."""
         self._absorb_animation()
+        self._edit_serial += 1
         self._pending = label
         self._commit_timer.start()
         self._dirty = True
@@ -848,6 +902,7 @@ class MainWindow(QMainWindow):
 
     def _commit(self, label: str) -> None:
         """Registra un cambio ya aplicado y refresca lo que dependa de él."""
+        self._edit_serial += 1
         self._commit_timer.stop()
         self._pending = None
         self.history.push(self.sequence, label)
@@ -856,6 +911,7 @@ class MainWindow(QMainWindow):
         self._update_history_actions()
         self._refresh()
         self._update_status()
+        self._refresh_render_bar()
 
     def undo(self) -> None:
         self._flush()
@@ -869,14 +925,17 @@ class MainWindow(QMainWindow):
         if sequence is None:
             return
         self._pause()
-        self.project.sequences[0] = sequence
+        self.project.sequences[self.project.active_index()] = sequence
         self._adopt(sequence, reset_history=False)
         self._dirty = True
         self._update_title()
 
     def _adopt(self, sequence: Sequence, reset_history: bool) -> None:
         """Pone una secuencia nueva en circulación por toda la interfaz."""
+        self._edit_serial += 1
         self.sequence = sequence
+        if any(s is sequence for s in self.project.sequences):
+            self.project.active_id = sequence.id
         self.timeline.sequence = sequence
         self.timeline.selected = None
         self.timeline.refresh()
@@ -1078,7 +1137,8 @@ class MainWindow(QMainWindow):
         vistos: list[Path] = []
         for track in self.sequence.video_tracks():
             for clip in track.clips:
-                if isinstance(clip, Clip) and Path(clip.source) not in vistos:
+                if isinstance(clip, Clip) and not isinstance(clip, NestedClip) \
+                        and Path(clip.source) not in vistos:
                     vistos.append(Path(clip.source))
         return vistos
 
@@ -1217,7 +1277,7 @@ class MainWindow(QMainWindow):
         if options.exec() != QDialog.Accepted:
             return
 
-        preset = options.preset()
+        preset = options.export_preset()
         solo_audio = preset.kind == AUDIO_PRESET
         if solo_audio and not self._audio_clips():
             self.statusBar().showMessage("No hay audio que exportar.", 5000)
@@ -1243,6 +1303,8 @@ class MainWindow(QMainWindow):
         """
         self._flush()
         job = RenderJob(path=Path(path), sequence=sequence_to_dict(self.sequence),
+                        nested={s.id: sequence_to_dict(s) for s in self.project.sequences
+                                if s is not self.sequence},
                         media=dict(self.project.media), start=start, end=end,
                         preset=preset, quality=quality, with_audio=with_audio)
         self.render_queue.add(job)
@@ -1250,6 +1312,37 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             f"Exportando {job.name} en segundo plano. Puedes seguir editando.", 6000)
         return job
+
+    def export_by_markers(self) -> None:
+        """Un archivo por tramo entre marcadores, todos a la cola."""
+        from vortex_studio.model.ranges import marker_ranges
+
+        inicio, fin = self._range()
+        if not marker_ranges(self.sequence, inicio, fin):
+            self.statusBar().showMessage("Pon marcadores (M) donde empieza cada parte.", 5000)
+            return
+        opciones = ExportDialog(self, inicio, fin, self.sequence)
+        if opciones.exec() != QDialog.Accepted:
+            return
+        carpeta = QFileDialog.getExistingDirectory(self, "Carpeta para los tramos")
+        if carpeta:
+            self.queue_marker_exports(Path(carpeta), opciones.export_preset(),
+                                      opciones.quality(), opciones.with_audio())
+
+    def queue_marker_exports(self, folder: Path, preset=DEFAULT_PRESET, quality: str = "Normal",
+                             with_audio: bool = True) -> list:
+        from vortex_studio.model.ranges import marker_ranges, numbered_names
+
+        inicio, fin = self._range()
+        tramos = marker_ranges(self.sequence, inicio, fin)
+        if not tramos:
+            self.statusBar().showMessage("No hay marcadores en el tramo.", 5000)
+            return []
+        trabajos = [self.queue_export(Path(folder) / f"{nombre}{preset.extension}",
+                                      tramo.start, tramo.end, quality, with_audio, preset)
+                    for tramo, nombre in zip(tramos, numbered_names(tramos))]
+        self.statusBar().showMessage(f"{len(trabajos)} tramos en la cola de render.", 6000)
+        return trabajos
 
     def _render_finished(self, job) -> None:
         if job.status == DONE:
@@ -1264,12 +1357,13 @@ class MainWindow(QMainWindow):
 
     def _audio_clips(self) -> list:
         """Lo que suena: respeta silencio y solo por pista, y el modo Silenciar."""
-        return self.sequence.audio_clips()
+        return self.sequence.audio_clips(self.project.sequence_by_id)
 
     def _renderer(self) -> SequenceRenderer:
         """El armador de cuadros de la secuencia actual, con los
         decodificadores e imágenes de la ventana."""
-        return SequenceRenderer(self.sequence, self.project.media, self._sources, self._images)
+        return SequenceRenderer(self.sequence, self.project.media, self._sources, self._images,
+                                resolve=self.project.sequence_by_id)
 
     def _aspect_of(self, clip) -> float | None:
         return self._renderer().aspect_of(clip)
@@ -1385,6 +1479,15 @@ class MainWindow(QMainWindow):
             if isinstance(clip, (Fill, AdjustmentLayer)):
                 plan.append((clip, None, peso))
                 continue
+            if isinstance(clip, NestedClip):
+                datos, firma, medios = self._project_snapshot()
+                vista = animate.view(clip, local_in(clip, t))
+                trabajo = FrameJob.make(
+                    id(clip), Path(f"secuencia-{clip.sequence_id}-{firma}"),
+                    clip.source_time(inside(clip, t)), vista.color, None,
+                    nested=(datos, firma, clip.sequence_id, medios))
+                plan.append((clip, trabajo, peso))
+                continue
             vista = animate.view(clip, local_in(clip, t))
             trabajo = FrameJob.make(id(clip), self._preview_path(clip),
                                     clip.source_time(inside(clip, t)), vista.color,
@@ -1416,7 +1519,7 @@ class MainWindow(QMainWindow):
                 continue
             frame = self.frames.get(trabajo) or self.frames.latest(trabajo.key)
             trabajos.append(trabajo)
-            capas.append(layer_for(clip, frame, t, peso))
+            capas.append(layer_for(clip, frame, t, peso, self.sequence.fps))
 
         if trabajos and HAS_PYAV:
             self.frames.request(trabajos, self._ahead(t))
@@ -2135,6 +2238,165 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"{len(textos)} subtítulos en {ruta.name}.", 5000)
         return ruta
 
+    # --- secuencias anidadas ---------------------------------------------------
+
+    def _project_snapshot(self):
+        """Todas las secuencias en datos planos, con su firma. Una vez por edición.
+
+        Es lo que se le manda al hilo del decodificador para componer una
+        anidada: datos congelados, nunca los objetos que se están editando.
+        """
+        if self._snapshot_memo is not None and self._snapshot_memo[0] == self._edit_serial:
+            return self._snapshot_memo[1:]
+        import hashlib
+        import json
+
+        datos = {s.id: sequence_to_dict(s) for s in self.project.sequences}
+        firma = hashlib.sha1(json.dumps(datos, sort_keys=True, default=str)
+                             .encode("utf-8")).hexdigest()[:12]
+        self._snapshot_memo = (self._edit_serial, datos, firma, dict(self.project.media))
+        return datos, firma, self._snapshot_memo[3]
+
+    def _nested_frame_job(self, job):
+        """Compone un cuadro de secuencia anidada. Corre en el hilo del decodificador."""
+        from vortex_studio.model.serialize import sequence_from_dict
+        from vortex_studio.media.color import ColorProcessor
+        from vortex_studio.ui.renderer import color_frame, image_to_rgb_frame
+
+        datos, firma, ident, medios = job.nested
+        entrada = self._nested_workers.get(firma)
+        if entrada is None:
+            for vieja in self._nested_workers.values():
+                for render in vieja[1].values():
+                    render.close()
+            self._nested_workers.clear()
+            secuencias = {i: sequence_from_dict(d) for i, d in datos.items()}
+            entrada = self._nested_workers[firma] = (secuencias, {}, ColorProcessor())
+        secuencias, renders, procesador = entrada
+        hija = secuencias.get(ident)
+        if hija is None:
+            return None
+        render = renders.get(ident)
+        if render is None:
+            render = renders[ident] = SequenceRenderer(hija, dict(medios), resolve=secuencias.get)
+        imagen = render.compose(job.time, hija.width, hija.height)
+        return color_frame(image_to_rgb_frame(imagen), job.adjust, procesador)
+
+    def new_sequence(self):
+        nueva = Sequence.default()
+        nueva.name = f"Secuencia {len(self.project.sequences) + 1}"
+        nueva.width, nueva.height, nueva.fps = (self.sequence.width, self.sequence.height,
+                                                self.sequence.fps)
+        self.project.sequences.append(nueva)
+        self._dirty = True
+        self.switch_sequence(nueva.id)
+        return nueva
+
+    def switch_sequence(self, ident: str) -> bool:
+        """Edita otra secuencia del proyecto. El historial arranca de nuevo."""
+        destino = self.project.sequence_by_id(ident)
+        if destino is None or destino is self.sequence:
+            return False
+        self._flush()
+        self._pause()
+        self.project.active_id = ident
+        self._adopt(destino, reset_history=True)
+        self._update_title()
+        self.statusBar().showMessage(f"Editando «{destino.name}».", 4000)
+        return True
+
+    def open_nested(self, clip) -> bool:
+        return isinstance(clip, NestedClip) and self.switch_sequence(clip.sequence_id)
+
+    def insert_sequence(self, ident: str):
+        """Mete otra secuencia como clip en el playhead, si no hace ciclo."""
+        hija = self.project.sequence_by_id(ident)
+        if hija is None:
+            return None
+        if would_cycle(self.project, self.sequence.id, ident):
+            self.statusBar().showMessage(
+                f"No se puede: meter «{hija.name}» aquí haría un ciclo.", 6000)
+            return None
+        if hija.duration <= 0:
+            self.statusBar().showMessage(f"«{hija.name}» está vacía.", 4000)
+            return None
+        pista = next((p for p in reversed(self.sequence.video_tracks()) if not p.locked), None)
+        if pista is None:
+            return None
+        anidada = NestedClip(source=Path(""), start=self.timeline.playhead,
+                             duration=hija.duration, sequence_id=ident, name=hija.name)
+        overwrite(pista, anidada)
+        pista.add(anidada)
+        self.timeline.select(anidada)
+        self._fit_zoom()
+        self._commit("Insertar secuencia")
+        return anidada
+
+    def nest_selection(self):
+        """Mete lo seleccionado en una secuencia nueva y deja un clip en su lugar.
+
+        Cada elemento conserva su pista y su distancia; la anidada cae en la
+        pista de video más alta que tenía la selección.
+        """
+        items = self.timeline.selected_items(with_links=not self.timeline.ignore_link)
+        items = [i for i in items if self._track_of(i) is not None
+                 and not self._track_of(i).locked]
+        if not items:
+            self.statusBar().showMessage("Selecciona lo que quieres anidar.", 4000)
+            return None
+
+        madre = self.sequence
+        inicio = min(i.start for i in items)
+        fin = max(i.end for i in items)
+        hija = Sequence.default()
+        hija.name = f"Anidada {len(self.project.sequences)}"
+        hija.width, hija.height, hija.fps = madre.width, madre.height, madre.fps
+        por_nombre = {t.name: t for t in hija.tracks}
+
+        destino = None
+        for item in items:
+            pista = self._track_of(item)
+            copia_pista = por_nombre.get(pista.name)
+            if copia_pista is None or copia_pista.kind != pista.kind:
+                copia_pista = Track(pista.name, kind=pista.kind)
+                hija.tracks.append(copia_pista)
+                por_nombre[pista.name] = copia_pista
+            copia = copy.deepcopy(item)
+            copia.start -= inicio
+            copia_pista.add(copia)
+            if pista.kind == "video" and (destino is None or madre.tracks.index(pista)
+                                          < madre.tracks.index(destino)):
+                destino = pista
+
+        for item in items:
+            pista = self._track_of(item)
+            pista.clips = [c for c in pista.clips if c is not item]
+        destino = destino or madre.video_tracks()[-1]
+
+        self.project.sequences.append(hija)
+        anidada = NestedClip(source=Path(""), start=inicio, duration=fin - inicio,
+                             sequence_id=hija.id, name=hija.name)
+        overwrite(destino, anidada)
+        destino.add(anidada)
+        self.timeline.select(anidada)
+        self._commit("Anidar")
+        return anidada
+
+    def _fill_switch_menu(self) -> None:
+        self._switch_menu.clear()
+        for secuencia in self.project.sequences:
+            accion = self._switch_menu.addAction(secuencia.name)
+            accion.setCheckable(True)
+            accion.setChecked(secuencia is self.sequence)
+            accion.triggered.connect(lambda _=False, i=secuencia.id: self.switch_sequence(i))
+
+    def _fill_insert_menu(self) -> None:
+        self._insert_menu.clear()
+        for secuencia in self.project.sequences:
+            accion = self._insert_menu.addAction(secuencia.name)
+            accion.setEnabled(not would_cycle(self.project, self.sequence.id, secuencia.id))
+            accion.triggered.connect(lambda _=False, i=secuencia.id: self.insert_sequence(i))
+
     def add_adjustment_layer(self, seconds: float = 5.0) -> AdjustmentLayer | None:
         """Una capa de ajuste en V2, en el playhead, encima del material."""
         pista = next((p for p in self.sequence.video_tracks() if not p.locked), None)
@@ -2301,8 +2563,21 @@ class MainWindow(QMainWindow):
         return medidas
 
     def _effects_committed(self, label: str) -> None:
+        self._request_stabilization()
         self._commit(label)
         self._sync_panels(self.timeline.playhead)
+
+    def _request_stabilization(self) -> None:
+        """Encarga el análisis de los clips que piden estabilizar y no lo tienen."""
+        fuentes = {Path(c.source) for t in self.sequence.video_tracks() for c in t.clips
+                   if isinstance(c, Clip) and not isinstance(c, NestedClip)
+                   and getattr(c, "stabilize", 0) > 0}
+        if self.stabilizer.request(fuentes):
+            self.effects_panel.set_stabilize_status("Analizando el movimiento…")
+
+    def _stabilize_ready(self, path) -> None:
+        self.effects_panel.set_stabilize_status("Listo: la toma ya se corrige.")
+        self._refresh()
 
     def _animation_targets(self) -> list:
         t = self.timeline.playhead
@@ -2350,7 +2625,88 @@ class MainWindow(QMainWindow):
     def _skip(self, seconds: float) -> None:
         self._scrubbed(self.timeline.playhead + seconds)
 
+    # --- caché de render ------------------------------------------------------
+
+    def zones(self) -> list:
+        """Las zonas de la secuencia, calculadas una vez por edición."""
+        if self._zones_serial != self._edit_serial:
+            _, firma, _ = self._project_snapshot()
+            hay_anidadas = any(isinstance(c, NestedClip) for t in self.sequence.tracks
+                               for c in t.clips)
+            self._zones = render_zones.zones(self.sequence, firma if hay_anidadas else None)
+            self._zones_serial = self._edit_serial
+        return self._zones
+
+    def _refresh_render_bar(self) -> None:
+        self.timeline.render_bar = [
+            (z.start, z.end, "listo" if render_cache.is_cached(z.signature) else z.level)
+            for z in self.zones() if z.level > render_zones.NONE
+            or render_cache.is_cached(z.signature)]
+        self.timeline.update()
+
+    def render_zones(self, start: float | None = None, end: float | None = None,
+                     include_light: bool = False) -> int:
+        """Renderiza las zonas pesadas del tramo que no estén en caché."""
+        if start is None or end is None:
+            start, end = self._range()
+        pendientes = [z for z in self.zones() if z.end > start + 1e-6 and z.start < end - 1e-6
+                      and (z.level == render_zones.HEAVY
+                           or (include_light and z.level == render_zones.LIGHT))
+                      and not render_cache.is_cached(z.signature)]
+        if not pendientes:
+            self.statusBar().showMessage("No hay zonas pesadas por renderizar.", 4000)
+            return 0
+        if not HAS_PYAV:
+            return 0
+        self._flush()
+        otras = {s.id: sequence_to_dict(s) for s in self.project.sequences
+                 if s is not self.sequence}
+        if self.cache_worker.start(sequence_to_dict(self.sequence), otras,
+                                   dict(self.project.media), pendientes):
+            self.statusBar().showMessage(
+                f"Renderizando {len(pendientes)} zona{'s' if len(pendientes) != 1 else ''}…", 5000)
+            return len(pendientes)
+        return 0
+
+    def _cache_finished(self, hechas: int) -> None:
+        self._refresh_render_bar()
+        self._refresh()
+        if hechas:
+            self.statusBar().showMessage(
+                f"{hechas} zona{'s' if hechas != 1 else ''} renderizada{'s' if hechas != 1 else ''}.",
+                5000)
+
+    def clear_render_cache(self) -> int:
+        cuantos = render_cache.clear_cache()
+        self._refresh_render_bar()
+        self._refresh()
+        self.statusBar().showMessage(f"Caché de render borrada ({cuantos} archivos).", 4000)
+        return cuantos
+
+    def _cached_zone_at(self, t: float):
+        if not self.use_render_cache or not HAS_PYAV:
+            return None
+        zona = render_zones.zone_at(self.zones(), t)
+        if zona is None or not render_cache.is_cached(zona.signature):
+            return None
+        return zona
+
     def _render(self, t: float) -> None:
+        zona = self._cached_zone_at(t)
+        if zona is not None:
+            # La zona ya está renderizada con todo quemado: se lee del archivo
+            # como un video más, sin textos ni imágenes encima (ya van dentro).
+            trabajo = FrameJob.make(hash(zona.signature), render_cache.cached_file(zona.signature),
+                                    max(0.0, t - zona.start))
+            frame = self.frames.get(trabajo) or self.frames.latest(trabajo.key)
+            self.frames.request([trabajo])
+            self.preview.set_time(t)
+            self.preview.set_layers([Layer(frame)] if frame is not None else [])
+            self.preview.set_overlays([])
+            self.preview.set_titles([])
+            self._showing_cache = zona.signature
+            return
+        self._showing_cache = None
         self.preview.set_time(t)
         self.preview.set_layers(self._layers_at(t))
         self.preview.set_overlays(overlays_at(self.sequence, t, self._image_for))
@@ -2583,7 +2939,9 @@ class MainWindow(QMainWindow):
                 event.ignore()
                 return
         self.render_queue.shutdown()
+        self.cache_worker.shutdown()
         self.proxies.shutdown()
+        self.stabilizer.shutdown()
 
         self._clock.stop()
         self._autosave_timer.stop()
@@ -2602,10 +2960,12 @@ class MainWindow(QMainWindow):
 class ExportDialog(QDialog):
     """Qué se va a exportar, con qué preset y qué calidad, antes de pedir el archivo."""
 
+    FPS_CHOICES = (None, 24.0, 25.0, 30.0, 50.0, 60.0)
+
     def __init__(self, parent, start: float, end: float, sequence) -> None:
         super().__init__(parent)
         self.setWindowTitle("Exportar")
-        self.setMinimumWidth(380)
+        self.setMinimumWidth(400)
         self._sequence = sequence
 
         marked = (start, end) != (0.0, sequence.duration)
@@ -2613,8 +2973,7 @@ class ExportDialog(QDialog):
                  f"{'   (entre las marcas)' if marked else ''}")
 
         self._preset = QComboBox()
-        self._preset.addItems([p.name for p in PRESETS])
-        self._preset.setCurrentText(DEFAULT_PRESET.name)
+        self._fill_presets(DEFAULT_PRESET.name)
 
         self._descripcion = QLabel()
         self._descripcion.setWordWrap(True)
@@ -2626,11 +2985,29 @@ class ExportDialog(QDialog):
         self._quality.addItems(QUALITY.keys())
         self._quality.setCurrentText("Normal")
 
+        self._fps = QComboBox()
+        for valor in self.FPS_CHOICES:
+            self._fps.addItem(f"Los de la secuencia ({sequence.fps:g})" if valor is None
+                              else f"{valor:g}", valor)
+
         pistas = sum(len(t.clips) for t in sequence.audio_tracks())
         self._hay_audio = pistas > 0
         self._audio = QCheckBox(f"Incluir audio ({pistas} clip{'s' if pistas != 1 else ''})")
         self._audio.setChecked(self._hay_audio)
         self._audio.setEnabled(self._hay_audio)
+
+        self._preset_name = QLineEdit()
+        self._preset_name.setPlaceholderText("Nombre para guardar estos ajustes")
+        self._save_preset = QPushButton("Guardar preset")
+        self._save_preset.clicked.connect(lambda: self.save_current_as(self._preset_name.text()))
+        self._delete_preset = QPushButton("Borrar")
+        self._delete_preset.clicked.connect(self.delete_current)
+        self._preset_msg = QLabel("")
+        self._preset_msg.setStyleSheet("color:#7d838c; font-size:10px;")
+        fila = QHBoxLayout()
+        fila.addWidget(self._preset_name, 1)
+        fila.addWidget(self._save_preset)
+        fila.addWidget(self._delete_preset)
 
         form = QFormLayout()
         form.addRow("Preset:", self._preset)
@@ -2638,7 +3015,7 @@ class ExportDialog(QDialog):
         form.addRow("Tramo:", QLabel(rango))
         form.addRow("Duración:", QLabel(f"{end - start:.2f} s"))
         form.addRow("Tamaño:", self._size)
-        form.addRow("Cuadros por segundo:", QLabel(f"{sequence.fps:g}"))
+        form.addRow("Cuadros por segundo:", self._fps)
         form.addRow("Calidad:", self._quality)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -2650,19 +3027,34 @@ class ExportDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addLayout(form)
         layout.addWidget(self._audio)
+        layout.addLayout(fila)
+        layout.addWidget(self._preset_msg)
         layout.addWidget(buttons)
 
         self._preset.currentTextChanged.connect(self._preset_changed)
         self._preset_changed(self._preset.currentText())
 
+    def _fill_presets(self, elegido: str) -> None:
+        self._preset.blockSignals(True)
+        self._preset.clear()
+        self._preset.addItems([p.name for p in all_presets()])
+        self._preset.setCurrentText(elegido)
+        self._preset.blockSignals(False)
+
     def _preset_changed(self, nombre: str) -> None:
         """Lo que no aplica al preset se apaga, en vez de ignorarse en silencio."""
         preset = by_name(nombre)
         self._descripcion.setText(preset.description)
+        self._delete_preset.setEnabled(preset.user)
+        if preset.quality:
+            self._quality.setCurrentText(preset.quality)
+        indice = self._fps.findData(preset.fps)
+        self._fps.setCurrentIndex(indice if indice >= 0 else 0)
 
         if preset.kind == AUDIO_PRESET:
             self._size.setText("solo audio")
             self._quality.setEnabled(False)
+            self._fps.setEnabled(False)
             self._audio.setChecked(self._hay_audio)
             self._audio.setEnabled(False)
             self._ok.setEnabled(self._hay_audio)
@@ -2672,14 +3064,53 @@ class ExportDialog(QDialog):
             ancho, alto = output_size(preset, self._sequence.width, self._sequence.height)
             self._size.setText(f"{ancho} × {alto}")
             self._quality.setEnabled(True)
+            self._fps.setEnabled(True)
             self._audio.setEnabled(self._hay_audio)
             self._ok.setEnabled(True)
 
+    def save_current_as(self, nombre: str):
+        """Guarda preset, calidad y cuadros por segundo con ese nombre."""
+        from dataclasses import replace
+
+        base = by_name(self._preset.currentText())
+        try:
+            nuevo = save_user_preset(replace(base, name=nombre.strip(), quality=self.quality(),
+                                             fps=self.fps(), description="Preset propio."))
+        except ValueError as error:
+            self._preset_msg.setText(str(error))
+            return None
+        self._fill_presets(nuevo.name)
+        self._preset_changed(nuevo.name)
+        self._preset_msg.setText(f"Guardado «{nuevo.name}».")
+        return nuevo
+
+    def delete_current(self) -> bool:
+        nombre = self._preset.currentText()
+        if not delete_user_preset(nombre):
+            return False
+        self._fill_presets(DEFAULT_PRESET.name)
+        self._preset_changed(DEFAULT_PRESET.name)
+        self._preset_msg.setText(f"Borrado «{nombre}».")
+        return True
+
     def preset(self):
+        """El preset elegido, tal cual está guardado."""
         return by_name(self._preset.currentText())
+
+    def export_preset(self):
+        """El preset con los cuadros por segundo y la calidad que quedaron en el diálogo."""
+        from dataclasses import replace
+
+        elegido = self.preset()
+        if elegido.kind == AUDIO_PRESET:
+            return elegido
+        return replace(elegido, fps=self.fps(), quality=self.quality())
 
     def quality(self) -> str:
         return self._quality.currentText()
+
+    def fps(self) -> float | None:
+        return self._fps.currentData()
 
     def with_audio(self) -> bool:
         return self._audio.isChecked()

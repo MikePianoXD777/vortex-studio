@@ -7,20 +7,19 @@ A non-linear video editor. Part of Vortex Suite.
 The features of DaVinci Resolve, CapCut, Premiere Pro and After Effects, but
 easy to use. The capability, yes; the complexity, no.
 
-> ### ⚠️ Pre-alpha — `0.4.0a1`
+> ### ⚠️ Pre-alpha — `0.5.0a1`
 >
-> **This is not ready for real work.** It passes 608 automated tests, but
+> **This is not ready for real work.** It passes 742 automated tests, but
 > nobody has actually used it on their own footage yet. That is not the same
 > as being tested.
 >
 > What to expect:
 >
 > - Things breaking in ways we haven't seen
-> - The `.vortex` file format moved to version 4: projects from 0.1 through
->   0.3 open fine, but not the other way around
-> - An older project with footage in a different aspect ratio than the
->   sequence looks different: it used to be stretched, now it's fitted with
->   bars
+> - The `.vortex` file format moved to version 5: projects from 0.1 through
+>   0.4 open fine, but not the other way around
+> - The render cache and stabilization analyses take disk space in the
+>   system cache; they can be deleted without losing anything
 > - During video transitions, audio still hard-cuts
 >
 > Use it to poke around and to report what breaks. Not to edit anything you
@@ -108,6 +107,13 @@ environment if it doesn't exist.
 - Media bin with thumbnails, search and drag to the timeline
 - 540p proxies with a global switch
 - Background render queue
+- Keyframes on any parameter, with linear, ease, hold and bezier
+  interpolation, and a curve editor
+- Exposure, tint, lift/gamma/gain and `.cube` LUTs; scopes
+- Chroma key, stabilization and adjustment layers
+- EQ, compressor, LUFS normalization and ducking
+- Nested sequences, SRT and VTT subtitles, custom presets, export by markers
+  and a zone render cache
 - Sound while editing, with track mixing and waveforms on the audio tracks
 - Markers with notes and colors, on the sequence and inside clips
 - Vertical, square and cinema formats
@@ -167,6 +173,19 @@ without opening windows, so it works over SSH or on a headless machine.
 | `test_panel_medios.py` | Media bin, thumbnails, search and drag |
 | `test_proxies.py` | 540p proxies and their switch |
 | `test_cola_render.py` | Background export, with progress and cancel |
+| `test_keyframes.py` | Interpolation, animating any parameter and the curve editor |
+| `test_color_avanzado.py` | Exposure, tint, lift/gamma/gain and LUTs |
+| `test_croma.py` | Chroma key and spill suppression |
+| `test_capa_ajuste.py` | Adjustment layers |
+| `test_scopes.py` | Histogram, waveform and vectorscope |
+| `test_subtitulos.py` | SRT and VTT import and export |
+| `test_audio_fx.py` | EQ, compressor, LUFS and ducking |
+| `test_estabilizar.py` | Phase-correlation stabilization |
+| `test_rangos_y_anidado.py` | Marker ranges and nesting cycles |
+| `test_anidadas.py` | Nested sequences in the window |
+| `test_presets_propios.py` | Custom presets and export by markers |
+| `test_zonas_render.py` | Render zones and their signature |
+| `test_cache_render.py` | Zone render cache |
 | `test_portabilidad.py` | That it behaves the same on Linux and Windows |
 
 ## Shortcuts
@@ -216,6 +235,9 @@ These are the defaults:
 | `I` `O` / `Ctrl+Shift+X` | Mark in, out / clear marks |
 | `M` / `Shift+M` | Add marker / edit it: name, note and color |
 | `Alt+Shift+M` | Marker inside the selected clip |
+| `Shift+K` | Keyframe editor |
+| `Enter` | Render the zone (between marks, or everything) |
+| `Ctrl+Shift+N` | Nest the selection into a sequence |
 | `Shift+↓` `Shift+↑` | Next / previous marker |
 | `F` | Fullscreen |
 
@@ -373,6 +395,46 @@ delete anything on it.
 **Markers.** They carry a name, a note and a color, on the ruler or inside a
 clip. Clip markers travel with the clip. The note shows up on hover.
 
+## Production
+
+**Keyframes on any parameter.** Color, mask, volume, chroma key, images and
+text, besides the transform. Once a value is animated, moving its slider sets
+a keyframe at the playhead. The keyframe editor (`Shift+K`) shows each
+parameter's curve; keyframes are dragged, and each segment is linear, ease,
+hold or bezier, with its two handles.
+
+**Color.** Exposure and tint next to the usual controls, and DaVinci's three
+wheels — lift, gamma and gain — as per-channel sliders. `.cube` LUTs with
+intensity. **Scopes** (View → Scopes) show the histogram, waveform and
+vectorscope of the composited frame.
+
+**Effects.** Chroma key with similarity, smoothness and spill suppression.
+**Stabilization**: the first time it analyzes the video's motion in the
+background and stores it; from then on the shot is corrected the same way in
+the preview and in the export, wherever you jump to.
+
+**Adjustment layer** (Insert → Adjustment layer): corrects the color of
+everything below it, with its own opacity and mask.
+
+**Audio.** Three-band EQ, compressor, normalization to −14, −16 or −23 LUFS
+per BS.1770, and ducking: mark one track as Voice and another as Music, and
+the music dips on its own whenever the voice plays.
+
+**Nested sequences.** `Ctrl+Shift+N` moves the selection into a new sequence
+and leaves a clip in its place; double-click opens it. A sequence can't be
+placed inside another if that would make a cycle.
+
+**Subtitles.** File → Import subtitles (SRT or VTT) brings them in as text;
+Export subtitles writes the text back out.
+
+**Export.** Custom presets, with their size, quality and frame rate. Export by
+markers sends one file per range between markers to the queue.
+
+**Render cache.** The bar under the ruler shows which zones are heavy (red),
+light (yellow) or already rendered (green). `Enter` renders the red ones and
+the preview plays them back from the file. Change anything in a zone and it
+turns red again by itself.
+
 ## Sound
 
 You hear it while editing, with volume and mute on the transport bar. The
@@ -485,8 +547,12 @@ literal warning.
   white.
 - The vignette is the most expensive adjustment there is: around 12 ms per
   frame at 1080p.
-- One mask shape per layer, and it can't be animated.
-- No animated masks and no motion tracking.
+- One mask shape per layer.
+- No motion tracking (level 4).
+- Switching sequences resets undo, and undo doesn't remove the sequence a
+  "Nest" created.
+- Stabilization corrects shifts, not camera rotation or zoom.
+- The zone bar only measures the picture; audio isn't rendered to cache.
 
 ## Language
 

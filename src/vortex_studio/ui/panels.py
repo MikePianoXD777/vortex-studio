@@ -1507,16 +1507,23 @@ class EffectsPanel(Page):
         self._key_hint.setWordWrap(True)
         self._key_hint.setStyleSheet("color:#6f757e; font-size:10px;")
 
-        self._stabilize_box = QWidget()
-        self._stabilize_layout = QVBoxLayout(self._stabilize_box)
-        self._stabilize_layout.setContentsMargins(0, 0, 0, 0)
+        self.stabilize = QCheckBox("Estabilizar")
+        self.stabilize.setToolTip("Quita el temblor de una toma a mano. La primera vez "
+                                  "analiza el video en segundo plano.")
+        self.stabilize.toggled.connect(self._stabilize_toggled)
+        self.strength = SliderRow("Fuerza", 1, 100, 50)
+        self.strength.changed.connect(self._strength_changed)
+        self.stabilize_status = QLabel("")
+        self.stabilize_status.setWordWrap(True)
+        self.stabilize_status.setStyleSheet("color:#6f757e; font-size:10px;")
 
         self._set_content(column(
             self._name,
             section("Llave de croma"),
             self.key_enabled, self.key_preset, self.key_color,
             self.similarity, self.smoothness, self.spill, self._key_hint,
-            self._stabilize_box,
+            section("Estabilización"),
+            self.stabilize, self.strength, self.stabilize_status,
             None,
         ))
         self.set_target(None)
@@ -1533,6 +1540,10 @@ class EffectsPanel(Page):
             self.smoothness.set_value(int(round(clip.chroma.smoothness)))
             self.spill.set_value(int(round(clip.chroma.spill)))
             TextPanel._paint(self.key_color, clip.chroma.color)
+            self.stabilize.setChecked(clip.stabilize > 0)
+            if clip.stabilize > 0:
+                self.strength.set_value(int(clip.stabilize))
+        self.stabilize.setEnabled(tiene)
         self._loading = False
         self._describe()
 
@@ -1541,6 +1552,8 @@ class EffectsPanel(Page):
         for widget in (self.key_preset, self.key_color, self.similarity, self.smoothness,
                        self.spill):
             widget.setEnabled(viva)
+        estable = self._clip is not None and getattr(self._clip, "stabilize", 0) > 0
+        self.strength.setEnabled(bool(estable))
 
     def _key_toggled(self, prendida: bool) -> None:
         if self._loading or self._clip is None:
@@ -1548,6 +1561,22 @@ class EffectsPanel(Page):
         self._clip.chroma.enabled = prendida
         self._describe()
         self.committed.emit("Llave de croma" if prendida else "Quitar llave de croma")
+
+    def _stabilize_toggled(self, prendida: bool) -> None:
+        if self._loading or self._clip is None:
+            return
+        self._clip.stabilize = self.strength.value() if prendida else 0
+        self._describe()
+        self.committed.emit("Estabilizar" if prendida else "Quitar estabilización")
+
+    def _strength_changed(self, valor: int) -> None:
+        if self._loading or self._clip is None or self._clip.stabilize <= 0:
+            return
+        self._clip.stabilize = valor
+        self.changed.emit()
+
+    def set_stabilize_status(self, texto: str) -> None:
+        self.stabilize_status.setText(texto)
 
     def _preset_chosen(self, indice: int) -> None:
         from vortex_studio.model.chroma import PRESETS

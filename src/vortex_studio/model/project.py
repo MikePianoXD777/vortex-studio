@@ -7,6 +7,7 @@ Los tiempos van en segundos (float) salvo donde se diga lo contrario.
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -111,6 +112,7 @@ class Clip:
     anim: dict = field(default_factory=dict)
     chroma: ChromaKey = field(default_factory=ChromaKey)
     audio_fx: AudioFx = field(default_factory=AudioFx)
+    stabilize: int = 0       # fuerza de 0 (apagada) a 100. Ver `media/stabilize.py`
 
     def __post_init__(self) -> None:
         self.source = Path(self.source)
@@ -174,6 +176,23 @@ def accepts(track, item) -> bool:
     texto, y clips de archivo en audio."""
     tipos = {"video": (Clip, ImageOverlay, AdjustmentLayer), "texto": (Title,), "audio": (Clip,)}
     return isinstance(item, tipos.get(track.kind, ()))
+
+
+@dataclass(eq=False)
+class NestedClip(Clip):
+    """Una secuencia usada como clip dentro de otra.
+
+    Hereda todo lo de un clip —transformación, color, máscara, fundidos,
+    velocidad, recorte— y en vez de un archivo lee de otra secuencia del
+    proyecto, por su id. `in_point` es desde qué segundo de esa secuencia.
+    """
+
+    sequence_id: str = ""
+
+    def __post_init__(self) -> None:
+        self.source = Path(self.source)
+        if not self.name:
+            self.name = "Secuencia anidada"
 
 
 @dataclass
@@ -254,6 +273,9 @@ class Sequence:
     tracks: list[Track] = field(default_factory=list)
     markers: list[Marker] = field(default_factory=list)
     duck_depth: float = 12.0      # cuántos dB baja la música cuando habla la voz
+    # Identidad estable: una secuencia anidada se refiere a otra por su id,
+    # no por su nombre (que se puede cambiar) ni por su lugar en la lista.
+    id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
 
     @classmethod
     def default(cls) -> Sequence:
@@ -296,10 +318,29 @@ class Sequence:
             pistas = [t for t in pistas if t.solo]
         return [t for t in pistas if not t.muted]
 
-    def audio_clips(self) -> list:
-        """Lo que va a la mezcla: los clips de las pistas que suenan."""
-        return [c for t in self.audible_tracks() for c in t.clips
-                if getattr(c, "audio_mode", KEEP_PITCH) != MUTE_AUDIO]
+    def audio_clips(self, resolve=None, _depth: int = 0) -> list:
+        """Lo que va a la mezcla: los clips de las pistas que suenan.
+
+        Con `resolve(id) -> Sequence`, las secuencias anidadas aportan su
+        audio: copias de sus clips, corridas a donde cae la anidada y
+        recortadas a su tramo. Las copias no tocan la secuencia original.
+        """
+        propios = [c for t in self.audible_tracks() for c in t.clips
+                   if getattr(c, "audio_mode", KEEP_PITCH) != MUTE_AUDIO]
+        if resolve is None or _depth > 8:
+            return propios
+        for track in self.visible_video_tracks():
+            for anidada in track.clips:
+                if not isinstance(anidada, NestedClip):
+                    continue
+                hija = resolve(anidada.sequence_id)
+                if hija is None or hija is self:
+                    continue
+                for clip in hija.audio_clips(resolve, _depth + 1):
+                    copia = _shifted_into(clip, anidada)
+                    if copia is not None:
+                        propios.append(copia)
+        return propios
 
     def audio_mix_options(self) -> dict:
         """Lo que el mezclador necesita para el ducking: quién es voz y quién se agacha."""
@@ -443,6 +484,8 @@ class Sequence:
             return False
         if getattr(getattr(clip, "chroma", None), "is_on", False):
             return False
+        if getattr(clip, "stabilize", 0) > 0:
+            return False        # la corrección mueve la imagen: puede destapar orillas
         if transform.fit == FIT and aspect_of is not None and self.height > 0:
             aspecto = aspect_of(clip)
             if aspecto and abs(aspecto - self.width / self.height) > 0.01:
@@ -513,10 +556,36 @@ class Project:
     sequences: list[Sequence] = field(default_factory=lambda: [Sequence.default()])
     # Ruta absoluta -> lo que se sabe del archivo. Ver `model/media.py`.
     media: dict[str, MediaInfo] = field(default_factory=dict)
+    active_id: str = ""
 
     @property
     def active(self) -> Sequence:
-        return self.sequences[0]
+        return self.sequence_by_id(self.active_id) or self.sequences[0]
+
+    def sequence_by_id(self, ident: str) -> Sequence | None:
+        return next((s for s in self.sequences if s.id == ident), None) if ident else None
+
+    def active_index(self) -> int:
+        activa = self.active
+        return next(i for i, s in enumerate(self.sequences) if s is activa)
+
+
+def _shifted_into(clip, anidada: "NestedClip"):
+    """Copia de un clip de la secuencia hija, puesta en el tiempo de la madre."""
+    import copy as _copy
+
+    inicio = anidada.start + (clip.start - anidada.in_point)
+    fin = inicio + clip.duration
+    if fin <= anidada.start + 1e-9 or inicio >= anidada.end - 1e-9:
+        return None
+    copia = _copy.copy(clip)
+    if inicio < anidada.start:
+        recorte = anidada.start - inicio
+        copia.in_point = clip.in_point + recorte * max(clip.speed, 0.0)
+        inicio = anidada.start
+    copia.start = inicio
+    copia.duration = min(fin, anidada.end) - inicio
+    return copia
 
 
 def timecode(seconds: float, fps: float = 30.0) -> str:

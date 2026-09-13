@@ -24,8 +24,35 @@ from vortex_studio.media.pool import SourcePool
 from vortex_studio.model import animate
 from vortex_studio.model.media import lookup
 from vortex_studio.model.overlays import AdjustmentLayer
-from vortex_studio.model.project import Fill
+from vortex_studio.model.project import Fill, NestedClip
 from vortex_studio.ui.compositor import Layer, compose, framing_of
+
+
+def image_to_rgb_frame(image: QImage):
+    """Una QImage como `Frame` RGB, con sus bytes propios."""
+    from vortex_studio.media import Frame
+
+    imagen = image.convertToFormat(QImage.Format_RGB888)
+    paso, alto = imagen.bytesPerLine(), imagen.height()
+    return Frame(bytes(imagen.constBits())[:paso * alto], imagen.width(), alto, paso)
+
+
+def color_frame(frame, adjust, processor):
+    """Corrige el color de un `Frame` RGB ya compuesto (el de una anidada)."""
+    if adjust is None or adjust.is_neutral or not HAS_PYAV:
+        return frame
+    import av
+    import numpy as np
+
+    from vortex_studio.media import Frame
+
+    crudo = np.frombuffer(frame.data, dtype=np.uint8).reshape(frame.height, frame.stride)
+    arreglo = crudo[:, :frame.width * 3].reshape(frame.height, frame.width, 3)
+    salida = processor.apply(av.VideoFrame.from_ndarray(np.ascontiguousarray(arreglo),
+                                                        format="rgb24"), adjust)
+    rgb = salida.reformat(format="rgb24")
+    plano = rgb.planes[0]
+    return Frame(bytes(plano), rgb.width, rgb.height, plano.line_size)
 
 
 def inside(clip, t: float) -> float:
@@ -42,8 +69,14 @@ def local_in(item, t: float) -> float:
     return max(0.0, min(t, item.start + item.duration) - item.start)
 
 
-def layer_for(clip, frame, t: float, weight: float) -> Layer:
+def layer_for(clip, frame, t: float, weight: float, fps: float = 30.0) -> Layer:
     vista = animate.view(clip, local_in(clip, t))
+    encuadre = framing_of(clip.transform)
+    fuerza = getattr(clip, "stabilize", 0)
+    if fuerza > 0:
+        from vortex_studio.media.stabilize import STABILIZER
+        encuadre["stabilize"] = STABILIZER.offset(clip.source, clip.source_time(inside(clip, t)),
+                                                  fuerza, fps)
     return Layer(
         frame,
         weight * clip.fade_at(inside(clip, t)),
@@ -51,7 +84,7 @@ def layer_for(clip, frame, t: float, weight: float) -> Layer:
         clip.blend,
         vista.mask,
         None,
-        framing_of(clip.transform),
+        encuadre,
     )
 
 
@@ -80,8 +113,12 @@ class SequenceRenderer:
 
     def __init__(self, sequence, media: dict | None = None,
                  sources: SourcePool | None = None,
-                 images: dict | None = None) -> None:
+                 images: dict | None = None, resolve=None) -> None:
         self.sequence = sequence
+        self.resolve = resolve          # id -> Sequence, para las anidadas
+        self._children: dict[str, "SequenceRenderer"] = {}
+        self._depth = 0
+        self._processor = None
         self.media = media if media is not None else {}
         self.sources = sources if sources is not None else SourcePool()
         self.images = images if images is not None else {}
@@ -104,9 +141,30 @@ class SequenceRenderer:
             self.images[path] = QImage(str(path))
         return self.images[path]
 
+    def nested_frame(self, clip, t: float):
+        """El cuadro de una secuencia anidada: se compone la hija en su tiempo."""
+        if self.resolve is None or self._depth > 6:
+            return None
+        hija = self.resolve(clip.sequence_id)
+        if hija is None or hija is self.sequence:
+            return None
+        hijo = self._children.get(clip.sequence_id)
+        if hijo is None or hijo.sequence is not hija:
+            hijo = SequenceRenderer(hija, self.media, SourcePool(4), self.images, self.resolve)
+            hijo._depth = self._depth + 1
+            self._children[clip.sequence_id] = hijo
+        imagen = hijo.compose(clip.source_time(inside(clip, t)), hija.width, hija.height)
+        if self._processor is None:
+            from vortex_studio.media.color import ColorProcessor
+            self._processor = ColorProcessor()
+        color = animate.view(clip, local_in(clip, t)).color
+        return color_frame(image_to_rgb_frame(imagen), color, self._processor)
+
     def frame_of(self, clip, t: float):
         if clip is None or not HAS_PYAV:
             return None
+        if isinstance(clip, NestedClip):
+            return self.nested_frame(clip, t)
         try:
             fuente = self.sources.get(id(clip), clip.source)
             color = animate.view(clip, local_in(clip, t)).color
@@ -127,7 +185,7 @@ class SequenceRenderer:
             elif isinstance(item, AdjustmentLayer):
                 capas.append(adjustment_layer(item, t, peso))
             else:
-                capas.append(layer_for(item, self.frame_of(item, t), t, peso))
+                capas.append(layer_for(item, self.frame_of(item, t), t, peso, self.sequence.fps))
         return capas
 
     def compose(self, t: float, width: int, height: int) -> QImage:
@@ -154,3 +212,5 @@ class SequenceRenderer:
 
     def close(self) -> None:
         self.sources.close_all()
+        for hijo in self._children.values():
+            hijo.close()
