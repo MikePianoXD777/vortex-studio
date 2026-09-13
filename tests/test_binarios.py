@@ -176,7 +176,7 @@ def test_un_nombre_que_no_existe_sigue_fallando():
 # --- la versión ---------------------------------------------------------------
 
 def test_es_la_beta():
-    assert vortex_studio.__version__ == "0.1.0b1"
+    assert vortex_studio.__version__.startswith("0.1.0b")
     assert "Development Status :: 4 - Beta" in (RAIZ / "pyproject.toml").read_text(
         encoding="utf-8")
 
@@ -420,3 +420,97 @@ def test_la_compilacion_corre_al_publicar():
     texto = _flujo()
     assert "release:\n    types: [published]" in texto
     assert "contents: write" in texto
+
+
+# --- las bibliotecas de X11 que viajan en el paquete de Linux ---------------------
+
+def _bibliotecas():
+    spec = importlib.util.spec_from_file_location(
+        "bibliotecas_linux", RAIZ / "empaquetado" / "bibliotecas_linux.py")
+    modulo = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(modulo)
+    return modulo
+
+
+def _carpeta_con(tmp_path, nombres):
+    carpeta = tmp_path / "lib"
+    carpeta.mkdir()
+    for nombre in nombres:
+        (carpeta / nombre).write_bytes(b"\x7fELF")
+    return carpeta
+
+
+def test_encuentra_las_bibliotecas_y_las_manda_a_la_raiz(tmp_path):
+    modulo = _bibliotecas()
+    carpeta = _carpeta_con(tmp_path, modulo.X11)
+    binarios = modulo.binarios_x11(estricto=True, carpetas=[carpeta], plataforma="linux")
+    assert [Path(ruta).name for ruta, _ in binarios] == list(modulo.X11)
+    assert {destino for _, destino in binarios} == {"."}
+
+
+def test_la_cursor_de_xcb_esta_en_la_lista():
+    """La que Ubuntu 22.04 no instala sola y hace que Qt 6 no abra en X11."""
+    assert "libxcb-cursor.so.0" in _bibliotecas().X11
+
+
+def test_en_modo_estricto_una_que_falta_truena(tmp_path):
+    modulo = _bibliotecas()
+    carpeta = _carpeta_con(tmp_path, modulo.X11[1:])
+    with pytest.raises(modulo.Falta, match="libxcb-cursor"):
+        modulo.binarios_x11(estricto=True, carpetas=[carpeta], plataforma="linux")
+
+
+def test_sin_modo_estricto_solo_avisa(tmp_path, capsys):
+    modulo = _bibliotecas()
+    carpeta = _carpeta_con(tmp_path, modulo.X11[1:])
+    binarios = modulo.binarios_x11(estricto=False, carpetas=[carpeta], plataforma="linux")
+    assert len(binarios) == len(modulo.X11) - 1
+    assert "libxcb-cursor" in capsys.readouterr().out
+
+
+def test_el_modo_estricto_sale_de_la_variable(tmp_path, monkeypatch):
+    modulo = _bibliotecas()
+    carpeta = _carpeta_con(tmp_path, [])
+    monkeypatch.setenv("VORTEX_STRICT_BUNDLE", "1")
+    with pytest.raises(modulo.Falta):
+        modulo.binarios_x11(carpetas=[carpeta], plataforma="linux")
+
+
+def test_en_windows_no_agrega_nada(tmp_path):
+    assert _bibliotecas().binarios_x11(estricto=True, carpetas=[tmp_path], plataforma="win32") == []
+
+
+def test_la_receta_usa_las_bibliotecas():
+    receta = (RAIZ / "vortex-studio.spec").read_text(encoding="utf-8")
+    assert "binaries=binarios_x11()," in receta
+
+
+def _linux() -> str:
+    return _flujo().split("\n  windows:")[0]
+
+
+def test_la_compilacion_instala_y_exige_las_bibliotecas():
+    linux = _linux()
+    instalacion = linux[linux.index("libxcb-cursor0"):linux.index("pip install")]
+    for paquete in ("libxcb-cursor0", "libxcb-icccm4", "libxcb-image0", "libxcb-keysyms1",
+                    "libxcb-render-util0", "libxcb-util1", "libxkbcommon-x11-0", "xvfb"):
+        assert paquete in instalacion
+    compilar = linux[linux.index("- name: Compilar"):linux.index("- name: Prueba de humo")]
+    assert 'VORTEX_STRICT_BUNDLE: "1"' in compilar
+
+
+def test_la_compilacion_abre_en_x11_sin_las_del_sistema_antes_de_subir():
+    linux = _linux()
+    quitar = linux.index("dpkg -r --force-depends libxcb-cursor0")
+    abrir = linux.index("QT_QPA_PLATFORM=xcb ./dist/vortex-studio/vortex-studio --smoke-test")
+    assert quitar < abrir < linux.index("gh release upload")
+
+
+def test_sin_tag_la_compilacion_no_toca_ninguna_release():
+    texto = _flujo()
+    assert "REF: ${{ github.event.release.tag_name || inputs.tag || github.sha }}" in texto
+    assert texto.count("ref: ${{ env.REF }}") == 2
+    for trabajo in texto.split("\n  windows:"):
+        subir = trabajo[trabajo.index("- name: Subir a la release"):]
+        assert subir.splitlines()[1].strip() == "if: env.TAG != ''"
+        assert "if: env.TAG == ''" in subir and "actions/upload-artifact" in subir

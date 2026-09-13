@@ -6,6 +6,11 @@ El resultado queda en dist/vortex-studio/.
 """
 
 import importlib.util
+import os
+import sys
+
+sys.path.insert(0, os.path.join(SPECPATH, "empaquetado"))
+from bibliotecas_linux import binarios_x11  # noqa: E402
 
 # OCIO y AAF son opcionales: entran al ejecutable solo si están instalados
 # en el entorno que compila (la compilación de los binarios instala `.[pro]`).
@@ -14,7 +19,9 @@ OPCIONALES = [m for m in ("PyOpenColorIO", "aaf2") if importlib.util.find_spec(m
 a = Analysis(
     ["src/vortex_studio/__main__.py"],
     pathex=["src"],
-    binaries=[],
+    # En Linux, las bibliotecas de X11 que Qt pide y no todos los escritorios
+    # traen. Ver `empaquetado/bibliotecas_linux.py`.
+    binaries=binarios_x11(),
     # El ícono va adentro para que la ventana lo use en cualquier sistema.
     datas=[("src/vortex_studio/assets", "vortex_studio/assets")],
     hiddenimports=["av", *OPCIONALES],

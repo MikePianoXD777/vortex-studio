@@ -19,6 +19,7 @@ from vortex_studio import __version__
 
 ASSETS = Path(__file__).resolve().parent / "assets"
 SMOKE_FLAG = "--smoke-test"
+SELF_CHECK_FLAG = "--self-check"     # ver `selfcheck.py`
 
 
 def app_icon() -> QIcon:
@@ -90,7 +91,8 @@ def _dark_palette() -> QPalette:
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv if argv is None else argv)
     humo = SMOKE_FLAG in argv
-    if humo:
+    revision = SELF_CHECK_FLAG in argv
+    if humo or revision:
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
     app = QApplication.instance() or QApplication(argv)
@@ -105,6 +107,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if humo:
         return smoke_test(app)
+    if revision:
+        from vortex_studio import selfcheck
+
+        return selfcheck.main(app)
 
     from vortex_studio.ui.splash import SplashScreen
 
