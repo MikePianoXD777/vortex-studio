@@ -43,7 +43,7 @@ The executables aren't signed, so Windows may warn through SmartScreen:
 **More info → Run anyway**.
 
 **Linux** (x86_64, glibc 2.35 or newer: Ubuntu 22.04, Fedora 36, Debian 12 or
-later):
+later; with PulseAudio or PipeWire, which every desktop ships):
 
 ```bash
 tar xzf VortexStudio-0.1.0b1-linux-x86_64.tar.gz

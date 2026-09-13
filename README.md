@@ -44,7 +44,7 @@ Los ejecutables no están firmados, así que Windows puede avisar con
 SmartScreen: **Más información → Ejecutar de todas formas**.
 
 **Linux** (x86_64, glibc 2.35 o más nueva: Ubuntu 22.04, Fedora 36, Debian 12
-o posteriores):
+o posteriores; con PulseAudio o PipeWire, que traen todos los escritorios):
 
 ```bash
 tar xzf VortexStudio-0.1.0b1-linux-x86_64.tar.gz

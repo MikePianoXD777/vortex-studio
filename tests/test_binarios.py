@@ -407,6 +407,14 @@ def test_la_compilacion_prueba_antes_de_subir():
         assert trabajo.index("--smoke-test") < trabajo.index("gh release upload")
 
 
+def test_la_maquina_de_linux_tiene_la_biblioteca_de_sonido():
+    """Sin libpulse la prueba de humo truena al importar el reproductor de audio."""
+    linux = _flujo().split("\n  windows:")[0]
+    instalacion = next(l for l in linux.splitlines() if "apt-get install" in l)
+    assert "libpulse0" in instalacion
+    assert linux.index("libpulse0") < linux.index("--smoke-test")
+
+
 def test_la_compilacion_corre_al_publicar():
     texto = _flujo()
     assert "release:\n    types: [published]" in texto
