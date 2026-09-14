@@ -492,7 +492,7 @@ class TextPanel(Page):
         self._anchor = QComboBox()
         self._anchor.addItems(ANCHORS.keys())
         self._anchor.setCurrentText("Subtítulo")
-        self._anchor.currentTextChanged.connect(self._push)
+        self._anchor.currentTextChanged.connect(self._anchor_changed)
 
         self._align = QComboBox()
         self._align.addItems(["izquierda", "centro", "derecha"])
@@ -735,6 +735,20 @@ class TextPanel(Page):
             self._paint_color_button(color.name())
             self.changed.emit()
 
+    def _anchor_changed(self, nombre: str) -> None:
+        """Una posición de orilla alinea el texto hacia esa orilla.
+
+        La posición mueve el ancla a 6 % o 94 % del ancho, y con la alineación
+        en «centro» medio texto quedaba fuera del cuadro.
+        """
+        if not self._loading:
+            lado = ("izquierda" if "izquierda" in nombre
+                    else "derecha" if "derecha" in nombre else "centro")
+            self._align.blockSignals(True)
+            self._align.setCurrentText(lado)
+            self._align.blockSignals(False)
+        self._push()
+
     def _push(self) -> None:
         if self._title is None or self._loading:
             return
@@ -779,7 +793,12 @@ class ImagePanel(Page):
 
         self._x = SliderRow("Horizontal", 0, 100, 50)
         self._y = SliderRow("Vertical", 0, 100, 50)
-        self._scale = SliderRow("Tamaño", 2, 200, 35)
+        # Hasta 400 %: llenar una secuencia vertical con una foto horizontal
+        # pide más de 300 %.
+        self._scale = SliderRow("Tamaño", 2, 400, 35)
+        # La ventana dice cuánto hay que escalar para cubrir el cuadro: el
+        # panel no conoce ni la imagen ni la secuencia.
+        self.cover_scale = None
         self._opacity = SliderRow("Opacidad", 0, 100, 100)
         for row in (self._x, self._y, self._scale, self._opacity):
             row.changed.connect(self._push)
@@ -851,12 +870,17 @@ class ImagePanel(Page):
         self._push()
 
     def _cover(self) -> None:
-        """Centrada y al ancho completo: el caso de una portada o un fondo."""
+        """Centrada y cubriendo todo el cuadro: el caso de una portada o un fondo.
+
+        Antes solo la ponía al ancho completo, y en una secuencia vertical una
+        foto horizontal cubría un tercio.
+        """
         if self._overlay is None:
             return
+        escala = self.cover_scale(self._overlay) if self.cover_scale is not None else 1.0
         self._x.set_value(50)
         self._y.set_value(50)
-        self._scale.set_value(100)
+        self._scale.set_value(max(100, min(400, round(escala * 100 + 0.49))))
         self._push()
 
 
@@ -1047,7 +1071,9 @@ class ClipPanel(Page):
             return
         self._item.audio_mode = nombre
         self._sync_switches()
-        self.committed.emit(f"Audio: {nombre.lower()}")
+        # La ventana lo aplica también al audio enlazado: el panel no sabe de
+        # enlaces, y con el video seleccionado su audio seguía igual.
+        self.committed.emit(f"__audio_mode__{nombre}")
 
     def _commit_heavy(self) -> None:
         """Velocidad y transición, al soltar el deslizador."""
@@ -1729,6 +1755,12 @@ class EffectsPanel(Page):
         self._effect_params_layout.setContentsMargins(0, 0, 0, 0)
         self.effect_rows: dict[str, SliderRow] = {}
         self.plugin_warnings: list[str] = []
+        # Un efecto propio mal escrito no aparece en la lista; sin este aviso
+        # desaparecía sin que nadie supiera por qué.
+        self.plugin_warning_label = QLabel("")
+        self.plugin_warning_label.setWordWrap(True)
+        self.plugin_warning_label.setStyleSheet("color:#e5484d; font-size:10px;")
+        self.plugin_warning_label.hide()
         self.reload_plugins()
 
         agregar = QHBoxLayout()
@@ -1747,7 +1779,8 @@ class EffectsPanel(Page):
             section("Estabilización"),
             self.stabilize, self.strength, self.stabilize_status,
             section("Efectos"),
-            agregar, self.effects_list, controles, self._effect_params,
+            agregar, self.plugin_warning_label, self.effects_list, controles,
+            self._effect_params,
             None,
         ))
         self.set_target(None)
@@ -1760,6 +1793,10 @@ class EffectsPanel(Page):
         catalogo, avisos = plugins.catalog()
         plugins._cache = catalogo
         self.plugin_warnings = avisos
+        self.plugin_warning_label.setText(
+            "No se cargaron estos efectos propios:\n" + "\n".join(f"• {a}" for a in avisos)
+            if avisos else "")
+        self.plugin_warning_label.setVisible(bool(avisos))
         self.plugin_menu.clear()
         for plugin in sorted(catalogo.values(), key=lambda p: p.name):
             self.plugin_menu.addItem(plugin.name, plugin.id)

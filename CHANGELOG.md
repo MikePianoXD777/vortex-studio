@@ -12,6 +12,71 @@ puede romper compatibilidad.
 
 Nada todavía.
 
+## [0.1.0b3] — 2026-09-13
+
+**El parche del QA a mano.** La `0.1.0b2` se probó en Linux con una hoja de
+359 pruebas, una por cada función del editor: a mano las primeras áreas y
+de forma automática, contra el mismo código, todas las demás. Salieron 23
+fallas, y aquí van arregladas las que estorbaban al editar. Pasa 1225
+pruebas automáticas y el banco completo corrió tres veces seguidas antes de
+publicar.
+
+### Arreglado
+
+- **La reproducción daba tirones**, sobre todo con clips de celular o de
+  sitios como Pexels, que traen keyframes cada varios segundos. Se sumaban
+  tres cosas: el decodificador volvía a buscar el keyframe casi en cada
+  revisión del reloj, a 29.97 fps repetía unos cuadros y brincaba otros, y
+  el reloj revisaba al mismo ritmo que los cuadros. Con un 1080p vertical a
+  29.97 se pasó de 82 búsquedas en 6 segundos a ninguna, y los cuadros ya
+  llegan parejos.
+- **Entre dos cuadros se veía el siguiente.** En cámara lenta con «Cuadro
+  más cercano» la imagen iba un cuadro adelantada; la mezcla de cuadros y el
+  flujo óptico mezclaban los vecinos equivocados, también en la zona
+  renderizada; y en el monitor la estabilización corregía con un cuadro de
+  retraso.
+- **Exportar a 29.97** sacaba el video a 30 fps, y la imagen se iba
+  adelantando al audio 67 ms por minuto. Ahora sale a 30000/1001, y lo mismo
+  con 23.976 y 59.94.
+- **Marcadores**: los puestos con `M` o `Alt+Shift+M` se guardaban con
+  nombre `False`, y su diálogo tronaba al editarlos o al darles doble clic.
+  Los proyectos que ya los traen abren bien.
+- **Guardar versión…** tronaba siempre, antes de pedir el nombre.
+- **Congelar cuadro** se comía el resto del clip y dejaba su audio sonando
+  sin imagen. Ahora mete 2 segundos congelados y recorre lo que sigue, con su
+  audio.
+- **Quitar remapeo** dejaba el clip a la velocidad promedio de la curva —por
+  ejemplo 1.67×— en vez de regresarlo a 1×.
+- **Mantener tono y Silenciar**, en la pestaña Clip, no llegaban al audio
+  enlazado cuando estaba seleccionado el video.
+- **Una secuencia anidada se podía pegar dentro de sí misma** con copiar y
+  pegar.
+- **Ajustar al primer clip** tomaba el tamaño pero no los fps.
+- **Ajustar timeline** dejaba el final de la secuencia fuera de la vista.
+- **El volumen** arrancaba al 100 % aunque el deslizador dijera 80.
+- **Texto en las orillas**: las posiciones de izquierda y derecha cortaban
+  el texto. Ahora se alinea hacia su orilla.
+- **Llenar el cuadro** con una imagen horizontal en una secuencia vertical
+  cubría un tercio. Ahora la cubre completa.
+- **Proxies**: un video importado con los proxies prendidos no usaba el
+  suyo hasta apagarlos y volver a prenderlos.
+- **La multicámara** se pintaba en el timeline como video normal; ahora
+  lleva el color de las anidadas.
+- **Normalizar** decía que había llegado a la sonoridad aunque el material
+  fuera tan bajo que no alcanzaba.
+
+### Agregado
+
+- **Soltar archivos desde el gestor de archivos** —Dolphin, Nautilus, el
+  explorador de Windows— directo al timeline.
+- **Archivos faltantes**: al abrir un proyecto cuyo material se movió, sale
+  un aviso con la lista y la opción de buscarlo por nombre en otra carpeta.
+  Sus clips quedan rayados en rojo en el timeline, con «Falta».
+- **Efectos propios mal escritos** se avisan en la pestaña Efectos, en vez
+  de desaparecer sin explicación.
+- **Archivos incompletos**: un video cuya descarga se cortó avisa que parece
+  incompleto, en vez de «moov atom not found».
+
 ## [0.1.0b2] — 2026-09-13
 
 **Parche de los ejecutables.** Se buscaron bugs en los binarios de la

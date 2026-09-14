@@ -250,7 +250,9 @@ def test_mas_alla_del_final_se_sostiene_el_ultimo_cuadro(media):
     from vortex_studio.media.decoder import VideoSource
 
     with VideoSource(media["mudo"]) as a, VideoSource(media["mudo"]) as b:
-        ultimo = a.frame_at(5.96)
+        # El último cuadro de 6 s a 30 fps empieza en 5.9667: 5.96 todavía es
+        # el penúltimo.
+        ultimo = a.frame_at(5.99)
         despues = b.frame_at(10.0)
     assert despues is not None and despues.data == ultimo.data
 

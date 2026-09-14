@@ -111,6 +111,13 @@ def flow_frame(a: Frame, b: Frame, amount: float) -> Frame:
     return Frame(bytes(plano), rgb.width, rgb.height, plano.line_size)
 
 
+# Cuánto puede quedar el instante pedido después del cuadro y seguir siendo
+# ese cuadro. Los trabajos del servidor redondean el tiempo a 4 decimales: con
+# 1e-6, a 29.97 fps el redondeo a veces caía un pelo después del cuadro, se
+# servía el siguiente y el que venía repetía ese mismo.
+TOLERANCIA = 1e-4
+
+
 class VideoSource:
     """Lee frames de un archivo de video por tiempo, no por orden.
 
@@ -137,6 +144,10 @@ class VideoSource:
         self._recent: OrderedDict[tuple, Frame] = OrderedDict()   # vecinos para mezclar
 
         self._last_time = -1.0
+        self._next_time = float("-inf")     # cuándo empieza el cuadro que sigue al que se tiene
+        self._pending = None                # ese cuadro, ya decodificado
+        self._gen = None                    # la decodificación en curso
+        self._raw = None
         self._tail: float | None = None     # cuándo cae el último cuadro, si ya se buscó
         self._cached: Frame | None = None
         self._color = ColorProcessor()
@@ -162,15 +173,18 @@ class VideoSource:
                 and abs(self._last_time - self._tail) < 1e-9):
             return self._cached if settings == self._applied else self._recolor(adjust)
 
-        # Si el cuadro es el mismo y el color no cambió, no hay que decodificar
-        # nada: esto es lo que hace que mover un deslizador de color se sienta
-        # inmediato con el video pausado.
-        if self._cached is not None and settings != self._applied and abs(t - self._last_time) < 1e-6:
-            return self._recolor(adjust)
+        # Si el instante cae en el cuadro que ya se tiene —desde que empieza
+        # hasta que empieza el siguiente— no hay que decodificar nada; si
+        # cambió el color, se vuelve a filtrar el mismo. Así mover un
+        # deslizador con el video en pausa se siente inmediato, y reproducir
+        # no vuelve a buscar el keyframe cada vez que el reloj pide un
+        # instante un pelo antes o después del cuadro recién servido.
+        if self._cached is not None and self._covers(t):
+            return self._cached if settings == self._applied else self._recolor(adjust)
 
         # Solo hacemos seek si vamos hacia atrás o saltamos lejos; avanzar
         # poco a poco es mucho más barato decodificando en orden.
-        if self._cached is None or t < self._last_time or t - self._last_time > 1.0:
+        if self._cached is None or t < self._last_time - TOLERANCIA or t - self._last_time > 1.0:
             self._seek(t)
 
         try:
@@ -184,18 +198,64 @@ class VideoSource:
             hallado = self._decode_until(t, adjust, key, settings)
         return hallado if hallado is not None else self._hold_last(adjust, key, settings)
 
+    def _covers(self, t: float) -> bool:
+        """¿El cuadro que se tiene es el que se ve en `t`?"""
+        if abs(t - self._last_time) < TOLERANCIA:
+            return True
+        return self._last_time - TOLERANCIA <= t < self._next_time - TOLERANCIA
+
+    def _next_decoded(self):
+        """El siguiente cuadro en orden: el que sobró de la vuelta anterior, o uno nuevo."""
+        if self._pending is not None:
+            frame, self._pending = self._pending, None
+            return frame
+        if self._gen is None:
+            self._gen = self._container.decode(self._stream)
+        try:
+            return next(self._gen)
+        except StopIteration:
+            self._gen = None
+            return None
+
     def _decode_until(self, t: float, adjust, key, settings: tuple) -> Frame | None:
-        """Decodifica en orden hasta el primer cuadro que se ve en `t`."""
-        for frame in self._container.decode(self._stream):
+        """Decodifica en orden hasta el cuadro que se ve en `t`.
+
+        El que se ve es el último que empieza en `t` o antes, y para saberlo
+        hay que sacar uno de más: ese se guarda y es el primero que se mira la
+        próxima vez. Antes se entregaba el primero que empezaba en `t` o
+        después, que entre dos cuadros es el siguiente: la cámara lenta con
+        cuadro más cercano iba un cuadro adelantada, y en el monitor la
+        estabilización corregía con un cuadro de retraso.
+        """
+        previo = None
+        while True:
+            frame = self._next_decoded()
+            if frame is None:
+                break
             when = float(frame.pts * self._stream.time_base) if frame.pts is not None else t
-            if when + 1e-6 >= t:
-                self._last_time = when
-                self._raw = frame
-                self._applied = settings
-                self._cached = self._to_rgb(self._color.apply(frame, adjust, key)
-                                            if adjust or key else frame)
-                return self._cached
+            if when <= t + TOLERANCIA:
+                previo = (frame, when)
+                continue
+            if previo is None:
+                # Se pidió antes del primer cuadro que hay: se da ese.
+                return self._keep(frame, when, float("inf"), adjust, key, settings)
+            self._pending = frame
+            return self._keep(previo[0], previo[1], when, adjust, key, settings)
+        if previo is not None:
+            # Se acabó el archivo: el último cuadro vale para lo que siga.
+            return self._keep(previo[0], previo[1], float("inf"), adjust, key, settings)
         return None
+
+    def _keep(self, frame, when: float, siguiente: float, adjust, key, settings: tuple) -> Frame:
+        """Deja ese cuadro como el que se tiene, válido hasta `siguiente`."""
+        if frame is not self._raw or settings != self._applied or self._cached is None:
+            self._raw = frame
+            self._applied = settings
+            self._cached = self._to_rgb(self._color.apply(frame, adjust, key)
+                                        if adjust or key else frame)
+        self._last_time = when
+        self._next_time = siguiente
+        return self._cached
 
     def _hold_last(self, adjust, key, settings: tuple) -> Frame | None:
         """El último cuadro del archivo, para lo que se pida después del final.
@@ -207,6 +267,9 @@ class VideoSource:
         """
         self._container.seek(int(max(0.0, self.duration - 2.0) / self._stream.time_base),
                              stream=self._stream, backward=True, any_frame=False)
+        self._gen = None
+        self._pending = None
+        self._next_time = float("inf")
         ultimo = None
         for frame in self._container.decode(self._stream):
             ultimo = frame
@@ -283,7 +346,13 @@ class VideoSource:
     def _seek(self, t: float) -> None:
         offset = int(t / self._stream.time_base)
         self._container.seek(offset, stream=self._stream, backward=True, any_frame=False)
+        # Lo que se tenía ya no sirve: el cuadro guardado es de otro lugar
+        # del archivo, y el que sobró también.
         self._last_time = t
+        self._next_time = float("-inf")
+        self._pending = None
+        self._gen = None
+        self._cached = None
 
     @staticmethod
     def _to_rgb(frame) -> Frame:

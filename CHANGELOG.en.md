@@ -11,6 +11,69 @@ While we're on `0.x`, any minor version may break compatibility.
 
 Nothing yet.
 
+## [0.1.0b3] — 2026-09-13
+
+**The hands-on QA patch.** `0.1.0b2` was tested on Linux against a
+359-row sheet, one row per editor feature: the first areas by hand, and the
+rest automatically against the same code. It turned up 23 failures, and the
+ones that got in the way of editing are fixed here. It passes 1225
+automated tests, and the full suite ran three times in a row before
+publishing.
+
+### Fixed
+
+- **Playback stuttered**, especially with phone footage or clips from sites
+  like Pexels, which have keyframes several seconds apart. Three things
+  added up: the decoder went back to the keyframe on almost every clock
+  tick, at 29.97 fps it repeated some frames and skipped others, and the
+  clock checked at the same rate as the frames. With a vertical 1080p clip
+  at 29.97 it went from 82 seeks in 6 seconds to none, and frames now arrive
+  evenly.
+- **Between two frames, the next one was shown.** In slow motion with
+  "Nearest frame" the picture ran one frame ahead; frame blending and
+  optical flow blended the wrong neighbours, in the rendered zone too; and
+  in the viewer, stabilization corrected one frame late.
+- **Exporting at 29.97** wrote the video at 30 fps, so the picture drifted
+  ahead of the audio by 67 ms per minute. It now comes out at 30000/1001, and
+  the same goes for 23.976 and 59.94.
+- **Markers** added with `M` or `Alt+Shift+M` were saved with the name
+  `False`, and their dialog crashed when editing or double-clicking them.
+  Projects that already have them open fine.
+- **Save version…** always crashed, before asking for the name.
+- **Freeze frame** ate the rest of the clip and left its audio playing with
+  no picture. It now inserts 2 frozen seconds and ripples what follows, audio
+  included.
+- **Remove time remapping** left the clip at the curve's average speed —say
+  1.67×— instead of putting it back to 1×.
+- **Keep pitch and Mute**, in the Clip tab, didn't reach the linked audio
+  when the video was selected.
+- **A nested sequence could be pasted inside itself** with copy and paste.
+- **Match first clip** took the size but not the frame rate.
+- **Fit timeline** left the end of the sequence out of view.
+- **Volume** started at 100% even though the slider said 80.
+- **Text at the edges**: the left and right positions cut the text off. It
+  now aligns toward its edge.
+- **Fill the frame** with a landscape image in a vertical sequence covered a
+  third of it. It now covers it completely.
+- **Proxies**: a video imported with proxies on didn't use its own until
+  proxies were turned off and on again.
+- **Multicam** clips were drawn on the timeline like regular video; they now
+  get the nested-sequence colour.
+- **Normalize** said it had reached the target loudness even when the
+  material was too quiet to get there.
+
+### Added
+
+- **Drop files from your file manager** —Dolphin, Nautilus, Windows
+  Explorer— straight onto the timeline.
+- **Missing files**: opening a project whose media was moved shows a notice
+  with the list and an option to look for it by name in another folder. Its
+  clips are striped red on the timeline and labelled "Falta" (missing).
+- **Broken custom effects** are reported in the Effects tab instead of
+  vanishing without explanation.
+- **Incomplete files**: a video whose download was cut short says it looks
+  incomplete, instead of "moov atom not found".
+
 ## [0.1.0b2] — 2026-09-13
 
 **An executables patch.** The `0.1.0b1` binaries were tested for bugs as

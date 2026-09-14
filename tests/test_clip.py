@@ -136,12 +136,17 @@ def test_congelar_cuadro(ventana, media):
     ventana._seek(2.0)
     ventana.freeze_frame()
 
+    # Tres pedazos: lo de antes, 2 s congelados y el resto del clip, que ya
+    # no se pierde: se corre 2 s.
     piezas = clips(ventana)
-    assert len(piezas) == 2
-    congelado = piezas[1]
+    assert len(piezas) == 3
+    antes, congelado, resto = piezas
     assert congelado.speed == 0.0
+    assert congelado.start == pytest.approx(2.0) and congelado.duration == pytest.approx(2.0)
     # Con velocidad cero el archivo se queda parado en el mismo instante.
     assert congelado.source_time(2.0) == congelado.source_time(3.5)
+    assert resto.start == pytest.approx(4.0) and resto.duration == pytest.approx(4.0)
+    assert resto.source_time(4.0) == pytest.approx(2.0)
 
 
 def test_los_fundidos_sobreviven_al_guardado(ventana, media, tmp_path):

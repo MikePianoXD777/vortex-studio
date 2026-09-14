@@ -91,6 +91,7 @@ DIP_FILLS = {DIP_BLACK: QColor(10, 10, 12, 190), DIP_WHITE: QColor(240, 242, 245
 MARKER_TEXT = QColor("#1b1d21")
 LINKED_SELECTED = QColor("#b9c6d6")
 OFFSET_TAG = QColor("#ff6b5e")
+MISSING = QColor(229, 72, 77, 150)     # rayado de un clip cuyo archivo no está
 LOCKED_HATCH = QColor(0, 0, 0, 90)
 BUTTON_BG = QColor("#2b2f34")
 BUTTON_ON = {"enabled": QColor("#5f9bd8"), "muted": QColor("#e8904a"),
@@ -128,7 +129,9 @@ def _color_for(track, clip) -> QColor:
         return CLIP_IMAGE
     if type(clip).__name__ == "AdjustmentLayer":
         return CLIP_ADJUST
-    if type(clip).__name__ == "NestedClip":
+    # Por herencia y no por nombre exacto: la multicámara también es una
+    # anidada y se pintaba como video normal.
+    if any(clase.__name__ == "NestedClip" for clase in type(clip).__mro__):
         return CLIP_NESTED
     return CLIP_AUDIO if track.kind == "audio" else CLIP_VIDEO
 
@@ -177,6 +180,7 @@ class TimelineWidget(QWidget):
         # Los interruptores de Imán y Enlace de la fila de herramientas.
         # Apagar el enlace es como tener Alt apretado en cada clic.
         self.snapping = True
+        self.missing: set[str] = set()      # rutas de archivos que ya no están
         self.linked_selection = True
 
         self._scrubbing = False
@@ -525,13 +529,28 @@ class TimelineWidget(QWidget):
 
         self._draw_clip_markers(painter, clip, rect)
 
+        # El archivo ya no está donde se dejó: rayado rojo y la palabra
+        # «Falta», para que no se confunda con un clip negro a propósito.
+        falta = str(getattr(clip, "source", "")) in getattr(self, "missing", ())
+        if falta:
+            painter.save()
+            painter.setClipRect(rect)
+            painter.setPen(QPen(MISSING, 1.2))
+            paso = 9
+            x = rect.left() - rect.height()
+            while x < rect.right():
+                painter.drawLine(QPointF(x, rect.bottom()), QPointF(x + rect.height(), rect.top()))
+                x += paso
+            painter.restore()
+
         if rect.width() > 34:
             painter.setPen(tinta)
             fuente = QFont()
             fuente.setPixelSize(11)
             painter.setFont(fuente)
             letrero = rect.adjusted(10, 0, -8, 0)
-            painter.drawText(letrero, Qt.AlignLeft | Qt.AlignVCenter, clip.name)
+            painter.drawText(letrero, Qt.AlignLeft | Qt.AlignVCenter,
+                             f"Falta · {clip.name}" if falta else clip.name)
             # Enlazado lleva un eslabón junto al nombre: se nota sin ocupar
             # lugar, igual que el subrayado de antes pero sin ensuciar la letra.
             if getattr(clip, "link", "") and rect.width() > 70:
@@ -1084,29 +1103,43 @@ class TimelineWidget(QWidget):
 
     # --- soltar medios desde el panel ----------------------------------------
 
+    @staticmethod
+    def _dropped_paths(datos) -> list[Path]:
+        """Los archivos que trae un arrastre: del panel de medios o del gestor de archivos.
+
+        Antes solo se aceptaba lo que venía del panel; soltar un archivo desde
+        Dolphin, Nautilus o el explorador no hacía nada.
+        """
+        if datos.hasFormat(MEDIA_MIME):
+            return [Path(linea.strip())
+                    for linea in bytes(datos.data(MEDIA_MIME)).decode("utf-8").splitlines()
+                    if linea.strip()]
+        if datos.hasUrls():
+            return [Path(url.toLocalFile()) for url in datos.urls()
+                    if url.isLocalFile() and Path(url.toLocalFile()).is_file()]
+        return []
+
     def dragEnterEvent(self, event) -> None:
-        if event.mimeData().hasFormat(MEDIA_MIME):
+        if self._dropped_paths(event.mimeData()):
             event.acceptProposedAction()
         else:
             event.ignore()
 
     def dragMoveEvent(self, event) -> None:
-        if event.mimeData().hasFormat(MEDIA_MIME):
+        if self._dropped_paths(event.mimeData()):
             event.acceptProposedAction()
 
     def dropEvent(self, event) -> None:
-        datos = event.mimeData()
-        if not datos.hasFormat(MEDIA_MIME):
+        rutas = self._dropped_paths(event.mimeData())
+        if not rutas:
             event.ignore()
             return
         pos = event.position()
         indice = self._track_index_at(pos.y())
         tiempo = self._snap(self.time_for(pos.x()))
         self._snap_at = None
-        for linea in bytes(datos.data(MEDIA_MIME)).decode("utf-8").splitlines():
-            if linea.strip():
-                self.media_dropped.emit(Path(linea.strip()), tiempo,
-                                        -1 if indice is None else indice)
+        for ruta in rutas:
+            self.media_dropped.emit(ruta, tiempo, -1 if indice is None else indice)
         event.acceptProposedAction()
 
     def _update_cursor(self, pos) -> None:

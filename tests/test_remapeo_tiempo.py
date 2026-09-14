@@ -40,15 +40,23 @@ def test_prender_dos_veces_no_hace_nada():
     assert tr.keys(clip) == llaves
 
 
-def test_apagar_empieza_en_el_mismo_cuadro_con_la_velocidad_promedio():
+def test_apagar_regresa_a_velocidad_normal_desde_el_mismo_cuadro():
+    """Quitar remapeo es volver a la normalidad, no quedarse con el promedio."""
     clip = _clip()
-    tr.set_speed_from(clip, 0.0, 2.0)
-    tr.set_speed_from(clip, 0.0, 2.0)
+    tr.set_speed_from(clip, 2.0, 2.0)
     primer_cuadro = clip.source_time(10.0)
     assert tr.disable(clip)
     assert not tr.is_remapped(clip)
-    assert clip.speed == pytest.approx(2.0)
+    assert clip.speed == pytest.approx(1.0)
     assert clip.source_time(10.0) == pytest.approx(primer_cuadro)
+    assert clip.source_time(11.0) == pytest.approx(primer_cuadro + 1.0)
+
+
+def test_apagar_una_reversa_tambien_regresa_a_normal():
+    clip = _clip()
+    tr.set_speed_from(clip, 1.0, -1.0)
+    assert tr.disable(clip)
+    assert clip.speed == pytest.approx(1.0)
 
 
 def test_apagar_un_clip_congelado_queda_congelado():

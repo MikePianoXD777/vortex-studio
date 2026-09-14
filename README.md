@@ -7,9 +7,9 @@ Editor de video no lineal. Parte de Vortex Suite.
 Las funciones de DaVinci Resolve, CapCut, Premiere Pro y After Effects, pero
 fáciles de usar. La capacidad sí; la complejidad no.
 
-> ### 🧪 Beta — `0.1.0b2`
+> ### 🧪 Beta — `0.1.0b3`
 >
-> **Ya se puede usar, pero es una beta.** Pasa 1152 pruebas automáticas
+> **Ya se puede usar, pero es una beta.** Pasa 1225 pruebas automáticas
 > y salió de la pre-alfa con un diseño nuevo y ejecutables, pero todavía hay
 > que usarlo con material de verdad para encontrar lo que las pruebas no
 > ven.
@@ -17,7 +17,7 @@ fáciles de usar. La capacidad sí; la complejidad no.
 > Lo que puedes esperar:
 >
 > - Cosas que fallan de formas que no hemos visto: guarda seguido
-> - La numeración volvió a empezar: la `0.1.0b2` es más nueva que la
+> - La numeración volvió a empezar: la `0.1.0b3` es más nueva que la
 >   `0.6.0a1` y abre todos sus proyectos
 > - El flujo óptico tarda más de un segundo por cuadro: renderiza su zona
 >   con `Enter` antes de reproducir
@@ -35,9 +35,9 @@ están los ejecutables de cada versión.
 
 **Windows** (64 bits):
 
-- `VortexStudio-0.1.0b2-windows-x64-instalador.exe` lo instala y lo agrega al
+- `VortexStudio-0.1.0b3-windows-x64-instalador.exe` lo instala y lo agrega al
   menú Inicio. No pide permisos de administrador.
-- `VortexStudio-0.1.0b2-windows-x64-portable.zip` es la versión portátil:
+- `VortexStudio-0.1.0b3-windows-x64-portable.zip` es la versión portátil:
   descomprime y abre `vortex-studio.exe`.
 
 Los ejecutables no están firmados, así que Windows puede avisar con
@@ -47,8 +47,8 @@ SmartScreen: **Más información → Ejecutar de todas formas**.
 o posteriores; con PulseAudio o PipeWire, que traen todos los escritorios):
 
 ```bash
-tar xzf VortexStudio-0.1.0b2-linux-x86_64.tar.gz
-cd VortexStudio-0.1.0b2-linux-x86_64
+tar xzf VortexStudio-0.1.0b3-linux-x86_64.tar.gz
+cd VortexStudio-0.1.0b3-linux-x86_64
 ./instalar.sh
 ```
 
@@ -186,6 +186,8 @@ abrir ventanas, así que funciona por SSH o en una máquina sin pantalla.
 | `test_diseno_beta.py` | Barra superior, transporte, herramientas, medios, interruptores y paneles del diseño nuevo |
 | `test_binarios.py` | Ícono, prueba de humo, instaladores de Linux y Windows, bibliotecas de X11 y la compilación automática |
 | `test_revision_a_fondo.py` | La revisión a fondo del editor empacado (`--self-check`) |
+| `test_reproduccion_fluida.py` | Que la reproducción no vuelva a buscar keyframes ni repita cuadros |
+| `test_parche_b3.py` | Las fallas que salieron en el QA a mano de la beta |
 | `test_portabilidad.py` | Que funcione igual en Linux y Windows |
 
 ## Atajos

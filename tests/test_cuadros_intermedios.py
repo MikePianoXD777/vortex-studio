@@ -62,8 +62,10 @@ def _fila(frame, y=45):
 def test_sin_muestreo_se_repite_un_cuadro_entero(grises):
     from vortex_studio.media.decoder import VideoSource
 
+    # 0.15 s cae entre el cuadro 1 (gris 12) y el 2 (gris 24): se ve el 1,
+    # que es el que empezó. Hasta la 0.1.0b2 se daba el siguiente.
     with VideoSource(grises) as fuente:
-        assert _gris(fuente.frame_at(0.15)) == pytest.approx(24, abs=2)
+        assert _gris(fuente.frame_at(0.15)) == pytest.approx(12, abs=2)
 
 
 def test_la_mezcla_a_la_mitad_da_el_promedio_de_los_vecinos(grises):
@@ -156,7 +158,7 @@ def test_el_servidor_distingue_el_mismo_instante_con_otro_muestreo(grises):
         assert cercano.cache_key != mezcla.cache_key
         assert FrameJob.make(1, grises, 0.15, sampling=SAMPLE_NEAREST).cache_key == cercano.cache_key
         assert servidor.wait_for([cercano, mezcla], 10)
-        assert _gris(servidor.get(cercano)) == pytest.approx(24, abs=2)
+        assert _gris(servidor.get(cercano)) == pytest.approx(12, abs=2)
         assert _gris(servidor.get(mezcla)) == pytest.approx(18, abs=2)
     finally:
         servidor.close()
@@ -172,7 +174,7 @@ def test_el_render_usa_el_muestreo_del_clip(grises):
     # 0.6 s de pista a 0.25× son 0.15 s de material: entre el cuadro 1 y el 2.
     assert _gris(render.frame_of(clip, 0.6)) == pytest.approx(18, abs=2)
     clip.interpolation = SAMPLE_NEAREST
-    assert _gris(render.frame_of(clip, 0.6)) == pytest.approx(24, abs=2)
+    assert _gris(render.frame_of(clip, 0.6)) == pytest.approx(12, abs=2)
     render.close()
 
 

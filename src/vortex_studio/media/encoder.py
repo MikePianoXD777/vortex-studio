@@ -31,6 +31,20 @@ QUALITY = {
 DEFAULT_QUALITY = "Normal"
 
 
+def frame_rate(fps: float) -> Fraction:
+    """Los fps como fracción exacta: 29.97 es 30000/1001, no 30.
+
+    Antes se redondeaba a entero. Una secuencia a 29.97 salía a 30 cuadros
+    por segundo mientras el audio seguía el reloj real, y la imagen se iba
+    adelantando al sonido 67 ms por minuto.
+    """
+    fps = float(fps) if fps and fps > 0 else 30.0
+    ntsc = round(fps * 1.001)
+    if abs(fps - ntsc / 1.001) < 0.005 and abs(fps - ntsc) > 0.005:
+        return Fraction(ntsc * 1000, 1001)
+    return Fraction(fps).limit_denominator(1000)
+
+
 def image_to_frame(image, width: int, height: int):
     """Convierte una QImage RGB888 en un cuadro de FFmpeg."""
     frame = av.VideoFrame(width, height, "rgb24")
@@ -93,7 +107,9 @@ def export_video(
     container = av.open(str(path), mode="w")
     closed = False
     try:
-        stream = container.add_stream("libx264", rate=round(fps))
+        rate = frame_rate(fps)
+        fps = float(rate)
+        stream = container.add_stream("libx264", rate=rate)
         stream.width = width
         stream.height = height
         stream.pix_fmt = "yuv420p"

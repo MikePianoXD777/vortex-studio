@@ -63,14 +63,22 @@ def enable(clip) -> bool:
 
 
 def disable(clip) -> bool:
-    """Apaga el remapeo con la velocidad promedio, empezando en el mismo cuadro."""
+    """Apaga el remapeo: el clip vuelve a 1×, empezando en el mismo cuadro.
+
+    Antes quedaba a la velocidad promedio de la curva, y «Quitar remapeo»
+    dejaba un clip a 1.67× en vez de devolverlo a la normalidad. Un clip
+    congelado de punta a punta sigue congelado: ahí no hay movimiento que
+    recuperar.
+    """
     if not is_remapped(clip):
         return False
     inicio = material_at(clip, 0.0)
-    fin = material_at(clip, clip.duration)
     clip.in_point = max(0.0, clip.in_point + inicio)
-    pendiente = (fin - inicio) / clip.duration if clip.duration > 0 else 1.0
-    clip.speed = 0.0 if pendiente < 1e-6 else max(0.25, min(MAX_SPEED, pendiente))
+    # Congelado entero es una curva plana, no una pendiente neta de cero:
+    # una reversa que regresa al primer cuadro también suma cero.
+    valores = [k[1] for k in keys(clip)]
+    plano = max(valores) - min(valores) < 1e-6
+    clip.speed = 0.0 if plano else 1.0
     clip.anim.pop(TIME, None)
     return True
 

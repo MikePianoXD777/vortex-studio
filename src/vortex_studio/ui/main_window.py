@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QHBoxLayout,
+    QInputDialog,
     QPushButton,
     QKeySequenceEdit,
     QLabel,
@@ -279,6 +280,7 @@ class MainWindow(QMainWindow):
         self.transform_panel = self.panel.transform
         self.mask_panel = self.panel.mask
         self.effects_panel = self.panel.effects
+        self.image_panel.cover_scale = self._cover_scale
         self.audio_panel = self.panel.audio
 
         # Lo importado, a la izquierda como en Premiere; la cola de render
@@ -757,6 +759,9 @@ class MainWindow(QMainWindow):
         self.transport.loop_toggled.connect(self.set_loop)
         self.transport.speed_changed.connect(self.set_speed)
         self.transport.volume_changed.connect(self.audio.set_volume)
+        # El deslizador arranca en 80 antes de que haya a quién avisarle: sin
+        # esto sonaba al 100 hasta moverlo.
+        self.audio.set_volume(self.transport.volume())
 
         self.preview.fullscreen_toggled.connect(self.toggle_fullscreen)
         self.media_bin.import_requested.connect(lambda: self.import_to_bin())
@@ -988,18 +993,78 @@ class MainWindow(QMainWindow):
         return list(faltan.values())
 
     def _announce_missing_media(self) -> None:
-        """A la barra de estado, no a un diálogo: el proyecto abre igual.
+        """Avisa qué archivos faltan, los marca en el timeline y ofrece buscarlos.
 
-        Los clips de un archivo que falta se ven en negro y se oyen mudos, y
-        antes no había manera de saber si era eso o un error del editor.
+        Los clips de un archivo que falta se ven vacíos y se oyen mudos. Antes
+        solo lo decía la barra de estado durante 15 segundos, y se perdía. El
+        aviso no detiene nada: el proyecto abre igual.
         """
         faltan = self.missing_media()
+        self.timeline.missing = {str(p) for p in faltan}
+        self.timeline.update()
         if not faltan:
             return
+        plural = "s" if len(faltan) != 1 else ""
         nombres = ", ".join(p.name for p in faltan[:3]) + ("…" if len(faltan) > 3 else "")
         self.statusBar().showMessage(
-            f"Faltan {len(faltan)} archivo{'s' if len(faltan) != 1 else ''} del proyecto "
-            f"(se ven en negro): {nombres}", 15000)
+            f"Faltan {len(faltan)} archivo{plural} del proyecto (se ven en negro): {nombres}",
+            15000)
+
+        lista = "\n".join(f"• {p}" for p in faltan[:8]) + ("\n…" if len(faltan) > 8 else "")
+        aviso = QMessageBox(
+            QMessageBox.Warning, "Faltan archivos del proyecto",
+            f"No se encontraron {len(faltan)} archivo{plural} donde se dejaron. Sus clips "
+            f"quedan rayados en rojo en el timeline.\n\n{lista}\n\n"
+            f"Si los moviste, dime en qué carpeta están y los busco por nombre.",
+            QMessageBox.NoButton, self)
+        buscar = aviso.addButton("Buscar en una carpeta…", QMessageBox.AcceptRole)
+        aviso.addButton("Ahora no", QMessageBox.RejectRole)
+        aviso.setAttribute(Qt.WA_DeleteOnClose)
+        aviso.buttonClicked.connect(
+            lambda boton: self._pick_relink_folder() if boton is buscar else None)
+        self._missing_notice = aviso
+        aviso.open()            # sin detener nada: no es exec()
+
+    def _pick_relink_folder(self) -> None:
+        carpeta = QFileDialog.getExistingDirectory(self, "¿En qué carpeta están los archivos?")
+        if carpeta:
+            self.relink_media(Path(carpeta))
+
+    def relink_media(self, carpeta: Path) -> int:
+        """Busca por nombre, dentro de `carpeta`, los archivos que faltan y los vuelve a enlazar."""
+        faltan = self.missing_media()
+        if not faltan:
+            return 0
+        por_nombre: dict[str, list[Path]] = {}
+        for ruta in faltan:
+            por_nombre.setdefault(ruta.name, []).append(ruta)
+        hallados: dict[str, Path] = {}
+        for candidato in Path(carpeta).rglob("*"):
+            if candidato.name in por_nombre and candidato.is_file():
+                for viejo in por_nombre.pop(candidato.name):
+                    hallados[str(viejo)] = candidato
+                if not por_nombre:
+                    break
+
+        if hallados:
+            for secuencia in self.project.sequences:
+                for track in secuencia.tracks:
+                    for item in track.clips:
+                        nuevo = hallados.get(str(getattr(item, "source", "")))
+                        if nuevo is not None:
+                            item.source = nuevo
+            self._close_sources()
+            self.frames.reset()
+            self._commit("Buscar archivos faltantes")
+
+        restantes = self.missing_media()
+        self.timeline.missing = {str(p) for p in restantes}
+        self._refresh()
+        self._refresh_bin()
+        self.statusBar().showMessage(
+            f"Se encontraron {len(hallados)} de {len(faltan)} archivos"
+            + (f"; siguen faltando {len(restantes)}." if restantes else "."), 8000)
+        return len(hallados)
 
     def save(self) -> bool:
         self._flush()
@@ -1278,7 +1343,8 @@ class MainWindow(QMainWindow):
         try:
             info = self._media_info(path)
         except Exception as error:
-            self.statusBar().showMessage(f"No se pudo abrir {path.name}: {error}", 6000)
+            self.statusBar().showMessage(
+                f"No se pudo abrir {path.name}: {open_error_text(error)}", 8000)
             return
         if info.kind == AUDIO:
             self._place_audio(path, at, track_index)
@@ -1330,7 +1396,8 @@ class MainWindow(QMainWindow):
         try:
             info = self._media_info(path)
         except Exception as error:  # el archivo puede estar roto o no ser video
-            QMessageBox.critical(self, "No se pudo abrir", f"{path.name}\n\n{error}")
+            QMessageBox.critical(self, "No se pudo abrir",
+                                 f"{path.name}\n\n{open_error_text(error)}")
             return
 
         # La extensión no manda: un .mp4 puede traer solo audio, y un .mkv
@@ -1376,6 +1443,11 @@ class MainWindow(QMainWindow):
             self.sequence.width = info.width or self.sequence.width
             self.sequence.height = info.height or self.sequence.height
             self.preview.set_canvas(self.sequence.width, self.sequence.height)
+
+        # Con proxies prendidos, un video que se importa después también usa
+        # el suyo si ya existe; antes leía el original hasta apagar y prender.
+        if self.use_proxies:
+            self._scan_proxies()
 
         # Material HDR: se convierte solo, o se vería lavado y gris.
         from vortex_studio.media.colorspace import space_for_transfer
@@ -1933,8 +2005,13 @@ class MainWindow(QMainWindow):
             info = self._media_info(clip.source)
         except Exception:
             return
+        # Tamaño y fps: antes solo el tamaño, y la secuencia se quedaba con
+        # los fps de antes aunque el menú dice que toma los del clip.
+        if info.fps and info.fps > 0:
+            self.sequence.fps = round(float(info.fps), 5)
         if info.width:
             self.set_format(info.width, info.height)
+        self._update_status()
 
     def _track_of(self, item):
         return self.sequence.track_of(item)
@@ -2016,6 +2093,15 @@ class MainWindow(QMainWindow):
     def set_audio_mode(self, modo: str) -> None:
         """Qué hace el sonido a otra velocidad, en el clip y su enlazado."""
         item = self.timeline.selected or self.sequence.top_clip_at(self.timeline.playhead)
+        self._apply_audio_mode(item, modo)
+
+    def _apply_audio_mode(self, item, modo: str) -> None:
+        """Lo usan el menú y el panel: el modo va también al audio enlazado.
+
+        Antes el interruptor del panel solo cambiaba el clip seleccionado; con
+        el video seleccionado, su audio seguía sonando con el tono cambiado o
+        sin silenciar.
+        """
         if not isinstance(item, Clip) or modo not in AUDIO_MODES or not self._can_edit(item):
             return
         for clip in self.sequence.with_linked([item]):
@@ -2373,25 +2459,47 @@ class MainWindow(QMainWindow):
         self._sync_panels(self.timeline.playhead)
 
     def freeze_frame(self) -> None:
-        """Convierte el cuadro actual en una imagen fija de 2 segundos.
+        """Mete 2 segundos del cuadro actual congelado, y el resto se recorre.
 
-        Se hace partiendo el clip en el playhead y dejando la mitad derecha
-        con velocidad cero — es la manera más simple de congelar sin tener
-        que escribir un archivo intermedio.
+        Se parte el clip en el playhead, se inserta un pedazo con velocidad
+        cero y lo que sigue se corre 2 segundos, en su pista y en la de su
+        audio enlazado (que queda en silencio bajo el congelado). Antes el
+        congelado reemplazaba el resto del clip: se perdía el material y el
+        audio seguía sonando sin imagen.
         """
         t = self.timeline.playhead
         clip = self.sequence.top_clip_at(t)
         if clip is None or not self._can_edit(clip):
             return
 
-        # Sin enlace a propósito: el cuadro congelado es solo imagen, y el
-        # audio sigue su curso en su pista.
-        congelado = split_item(self.sequence, clip, t)
+        largo = 2.0
+        grupo = [c for c in self.sequence.with_linked([clip])
+                 if c.contains(t) and not getattr(self._track_of(c), "locked", True)]
+        congelado = None
+        for item in grupo:
+            pista = self._track_of(item)
+            resto = split_item(self.sequence, item, t)
+            if resto is None:
+                continue
+            for otro in pista.clips:
+                if otro.start >= t - 1e-9:
+                    otro.start += largo
+            if item is clip:
+                # Sin enlace a propósito: el cuadro congelado es solo imagen.
+                congelado = copy.deepcopy(resto)
+                congelado.uid = uuid.uuid4().hex[:12]
+                congelado.start = t
+                congelado.duration = largo
+                congelado.speed = 0.0       # el tiempo del archivo deja de avanzar
+                congelado.link = ""
+                congelado.fade_in = congelado.fade_out = 0.0
+                congelado.markers = []
+                congelado.anim = {}
+                pista.add(congelado)
+            pista.clips.sort(key=lambda c: c.start)
         if congelado is not None:
-            congelado.speed = 0.0       # el tiempo del archivo deja de avanzar
-            congelado.duration = 2.0
-            congelado.link = ""
             self.timeline.select(congelado)
+        self._fit_zoom()
         self._commit("Congelar cuadro")
 
     # --- capa: fusión, máscara y cuadro dentro de cuadro --------------------
@@ -2557,6 +2665,14 @@ class MainWindow(QMainWindow):
         if not self._clipboard:
             self.statusBar().showMessage("No hay nada copiado.", 3000)
             return
+        # Pegar una anidada dentro de sí misma (o de quien la contiene) se
+        # colaba por aquí: Insertar secuencia sí lo revisaba, pegar no.
+        for entrada in self._clipboard:
+            ident = (entrada.get("data") or {}).get("sequence_id") or ""
+            if ident and would_cycle(self.project, self.sequence.id, ident):
+                self.statusBar().showMessage(
+                    "No se puede pegar aquí: la secuencia quedaría dentro de sí misma.", 6000)
+                return
         comando = Paste(entries=self._clipboard, time=self.timeline.playhead)
         if not self._run(comando):
             self.statusBar().showMessage("No hay una pista libre donde pegarlo.", 4000)
@@ -2670,6 +2786,7 @@ class MainWindow(QMainWindow):
 
         Viaja con el clip: si lo mueves, el marcador va con él.
         """
+        name = name if isinstance(name, str) else ""     # ver `add_marker`
         t = self.timeline.playhead
         item = self.timeline.selected or self.sequence.top_clip_at(t)
         if item is None or not hasattr(item, "markers") or not item.contains(t):
@@ -2687,6 +2804,8 @@ class MainWindow(QMainWindow):
 
     def edit_marker(self, marker, owner=None) -> None:
         """Abre el marcador para ponerle nombre, nota y color."""
+        if not isinstance(marker.name, str):
+            marker.name = ""        # los guardados con la 0.1.0b2 traen False
         dialogo = MarkerDialog(self, marker, owner.name if owner is not None else "")
         resultado = dialogo.exec()
         if resultado == MarkerDialog.DELETE:
@@ -3070,6 +3189,10 @@ class MainWindow(QMainWindow):
             self._apply_speed(self.clip_panel._item,
                               float(etiqueta.removeprefix("__speed__")))
             return
+        if etiqueta.startswith("__audio_mode__"):
+            self._apply_audio_mode(self.clip_panel._item,
+                                   etiqueta.removeprefix("__audio_mode__"))
+            return
         self._fit_zoom()
         self._commit(etiqueta)
 
@@ -3185,10 +3308,19 @@ class MainWindow(QMainWindow):
             clip.anim.pop("gain", None)
             clip.gain = gain_for(lufs, target)
         if medidas:
+            import math
+
+            # La ganancia tiene tope: un clip muy bajo no llega al objetivo, y
+            # antes el aviso decía que sí.
+            cortos = sum(1 for clip in clips if id(clip) in medidas and clip.gain > 0
+                         and abs(medidas[id(clip)] + 20 * math.log10(clip.gain) - target) > 0.5)
             self._commit(f"Normalizar a {target:g} LUFS")
             self._sync_panels(self.timeline.playhead)
-            self.statusBar().showMessage(
-                f"{len(medidas)} clip{'s' if len(medidas) != 1 else ''} a {target:g} LUFS.", 5000)
+            aviso = f"{len(medidas)} clip{'s' if len(medidas) != 1 else ''} a {target:g} LUFS."
+            if cortos:
+                aviso += (f" {cortos} no llega{'n' if cortos != 1 else ''}: su audio es muy "
+                          f"bajo y la ganancia ya está al tope.")
+            self.statusBar().showMessage(aviso, 8000)
         else:
             self.statusBar().showMessage("No hay audio que normalizar.", 4000)
         return medidas
@@ -3350,6 +3482,20 @@ class MainWindow(QMainWindow):
         self._render(self.timeline.playhead)
         self.timeline.update()
 
+    def _cover_scale(self, overlay) -> float:
+        """Cuánto escalar una imagen para cubrir el cuadro de la secuencia.
+
+        La escala se mide contra el ancho del cuadro: 1.0 es de orilla a
+        orilla. Si la imagen es más ancha que el cuadro, con eso no llega
+        arriba y abajo, y hay que agrandarla hasta cubrir el alto.
+        """
+        imagen = self._image_for(overlay.source)
+        if imagen.isNull() or imagen.width() <= 0 or self.sequence.width <= 0:
+            return 1.0
+        cuadro = self.sequence.height / self.sequence.width
+        propia = imagen.height() / imagen.width()
+        return max(1.0, cuadro / propia)
+
     def _image_for(self, path: Path) -> QImage:
         """Las imágenes se cargan una vez y se guardan: el preview redibuja
         muchas veces por segundo y no puede volver a leer del disco."""
@@ -3367,7 +3513,12 @@ class MainWindow(QMainWindow):
         """Ajusta el zoom para que quepa toda la secuencia."""
         duration = self.sequence.duration
         if duration > 0:
-            usable = max(200, self.timeline.width() - 90)
+            from vortex_studio.ui.timeline import HEADER_WIDTH
+
+            # Lo que queda a la derecha de las cabeceras, con un respiro al
+            # final. Antes se restaban 90 y la cabecera mide 116: el final de
+            # la secuencia quedaba fuera de la vista.
+            usable = max(200, self.timeline.width() - HEADER_WIDTH - 16)
             self.timeline.pixels_per_second = usable / duration
             self.timeline.update()
 
@@ -3397,6 +3548,9 @@ class MainWindow(QMainWindow):
     # --- marcadores -------------------------------------------------------
 
     def add_marker(self, name: str = "") -> None:
+        # Desde el menú, `triggered` manda `checked` (un bool) como primer
+        # argumento: el marcador quedaba llamado False y su diálogo tronaba.
+        name = name if isinstance(name, str) else ""
         self.sequence.add_marker(self.timeline.playhead, name)
         self._commit("Poner marcador")
 
@@ -3469,8 +3623,13 @@ class MainWindow(QMainWindow):
         self.transport.set_playing(False)
 
     def _interval(self) -> int:
-        """Cada cuánto revisar. Más seguido que el cuadro, para no perder ninguno."""
-        return max(4, int(1000 / (self.sequence.fps * max(self._speed, 0.25))))
+        """Cada cuánto revisar: un tercio de cuadro, para no perder ninguno.
+
+        Antes era un cuadro entero: 33 ms contra cuadros de 33.4 ms a 29.97.
+        Con el temblor normal del temporizador, dos revisiones caían en el
+        mismo cuadro y la siguiente se brincaba uno, y eso se ve como tirones.
+        """
+        return max(4, int(1000 / (self.sequence.fps * max(self._speed, 0.25)) / 3))
 
     def _tick(self) -> None:
         start, end = self._range()
@@ -3495,7 +3654,10 @@ class MainWindow(QMainWindow):
             self._seek(end)
             return
 
-        self._seek(t)
+        # Al cuadro exacto: los cuadros adelantados se encargan en múltiplos
+        # del cuadro, y un instante suelto nunca daría con ellos en el búfer.
+        fps = self.sequence.fps
+        self._seek(int(t * fps + 1e-6) / fps if fps > 0 else t)
 
     def set_speed(self, speed: float) -> None:
         # Reanclar el reloj: sin esto, cambiar de velocidad reinterpreta
@@ -3587,6 +3749,15 @@ class MainWindow(QMainWindow):
         self._close_sources()
         self.frames.close()
         super().closeEvent(event)
+
+
+def open_error_text(error) -> str:
+    """El error de FFmpeg en palabras: «moov atom not found» no le dice nada a nadie."""
+    texto = str(error)
+    if "moov atom" in texto or "Invalid data found" in texto:
+        return ("El archivo parece incompleto o dañado; pasa cuando una descarga se "
+                "cortó. Vuelve a bajarlo o revisa que abra en otro reproductor.")
+    return texto
 
 
 class ExportDialog(QDialog):
