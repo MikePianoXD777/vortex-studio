@@ -15,7 +15,7 @@ Nothing yet.
 
 **An executables patch.** The `0.1.0b1` binaries were tested for bugs as
 packaged builds, and one turned up that kept the editor from opening on Linux
-under X11. It passes 1149 automated tests, and the full suite ran three
+under X11. It passes 1152 automated tests, and the full suite ran three
 times in a row before publishing.
 
 ### Fixed

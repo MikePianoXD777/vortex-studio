@@ -9,7 +9,7 @@ easy to use. The capability, yes; the complexity, no.
 
 > ### 🧪 Beta — `0.1.0b2`
 >
-> **It's usable now, but it's a beta.** It passes 1149 automated tests
+> **It's usable now, but it's a beta.** It passes 1152 automated tests
 > and left pre-alpha with a new design and executables, but it still needs
 > real footage to find what the tests don't see.
 >

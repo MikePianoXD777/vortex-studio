@@ -58,7 +58,9 @@ jobs:
           # Las de X11 que van dentro del paquete (ver empaquetado/bibliotecas_linux.py)
           # y un X virtual para probar que el editor abre sin ellas en el sistema.
           sudo apt-get install -y libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
-            libxcb-render-util0 libxcb-util1 libxkbcommon-x11-0 xvfb xauth
+            libxcb-render-util0 libxcb-util1 libxkbcommon-x11-0 \
+            libxcb-randr0 libxcb-render0 libxcb-shape0 libxcb-shm0 libxcb-sync1 \
+            libxcb-xfixes0 libxcb-xkb1 xvfb xauth
           python -m pip install --upgrade pip
           pip install ".[dev,pro]"
 
@@ -92,10 +94,12 @@ jobs:
           echo "== copias en el paquete"
           find dist/vortex-studio/_internal -name "libxcb-cursor.so*" -o -name "libQt6XcbQpa.so*"
           sudo dpkg -r --force-depends libxcb-cursor0 libxcb-icccm4 libxcb-image0 \
-            libxcb-keysyms1 libxcb-render-util0 libxcb-util1 libxkbcommon-x11-0
+            libxcb-keysyms1 libxcb-render-util0 libxcb-util1 libxkbcommon-x11-0 \
+            libxcb-randr0 libxcb-render0 libxcb-shape0 libxcb-shm0 libxcb-sync1 \
+            libxcb-xfixes0 libxcb-xkb1
           echo "== cómo resuelve el cargador, ya sin las del sistema"
           for lib in $(find dist/vortex-studio/_internal -name "libQt6XcbQpa.so.6" -o -name "libqxcb.so"); do
-            echo "-- $lib"; ldd "$lib" | grep -E "not found|xcb-(cursor|icccm|image|keysyms|render-util|util)|xkbcommon-x11" || true
+            echo "-- $lib"; ldd "$lib" | grep -E "not found|libxcb-|xkbcommon-x11" || true
           done
           if ! xvfb-run -a env QT_QPA_PLATFORM=xcb ./dist/vortex-studio/vortex-studio --smoke-test; then
             echo "== el error de verdad, con QT_DEBUG_PLUGINS"

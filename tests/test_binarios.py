@@ -477,6 +477,27 @@ def test_la_cursor_de_xcb_esta_en_la_lista():
     assert "libxcb-cursor.so.0" in _bibliotecas().X11
 
 
+def test_la_shape_de_xcb_esta_en_la_lista():
+    """La que de verdad faltaba en el Ubuntu limpio, detrás del aviso engañoso de Qt."""
+    assert "libxcb-shape.so.0" in _bibliotecas().X11
+
+
+def test_cada_biblioteca_tiene_su_paquete():
+    modulo = _bibliotecas()
+    assert set(modulo.PAQUETES) == set(modulo.X11)
+    assert all(paquete.startswith(("libxcb", "libxkbcommon")) for paquete in modulo.PAQUETES.values())
+
+
+def test_la_compilacion_instala_y_quita_cada_paquete():
+    """Si el workflow no quita un paquete, la prueba de X11 pasaría aunque no viajara."""
+    linux = _linux()
+    instalar = linux[linux.index("libxcb-cursor0"):linux.index("pip install")]
+    quitar = linux[linux.index("dpkg -r --force-depends"):linux.index("echo \"== cómo resuelve")]
+    for paquete in _bibliotecas().PAQUETES.values():
+        assert paquete in instalar, f"no se instala {paquete}"
+        assert paquete in quitar, f"no se quita {paquete}"
+
+
 def test_en_modo_estricto_una_que_falta_truena(tmp_path):
     modulo = _bibliotecas()
     carpeta = _carpeta_con(tmp_path, modulo.X11[1:])
