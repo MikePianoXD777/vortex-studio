@@ -440,12 +440,13 @@ def _carpeta_con(tmp_path, nombres):
     return carpeta
 
 
-def test_encuentra_las_bibliotecas_y_las_manda_junto_a_qt(tmp_path):
+def test_encuentra_las_bibliotecas_y_las_manda_junto_a_las_dos_copias_de_qt(tmp_path):
     modulo = _bibliotecas()
     carpeta = _carpeta_con(tmp_path, modulo.X11)
     binarios = modulo.binarios_x11(estricto=True, carpetas=[carpeta], plataforma="linux")
-    assert [Path(ruta).name for ruta, _ in binarios] == list(modulo.X11)
-    assert {destino for _, destino in binarios} == {"PySide6/Qt/lib"}
+    for destino in ("PySide6/Qt/lib", "."):
+        assert [Path(r).name for r, d in binarios if d == destino] == list(modulo.X11)
+    assert len(binarios) == 2 * len(modulo.X11)
 
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="solo el paquete de Linux")
@@ -487,7 +488,7 @@ def test_sin_modo_estricto_solo_avisa(tmp_path, capsys):
     modulo = _bibliotecas()
     carpeta = _carpeta_con(tmp_path, modulo.X11[1:])
     binarios = modulo.binarios_x11(estricto=False, carpetas=[carpeta], plataforma="linux")
-    assert len(binarios) == len(modulo.X11) - 1
+    assert len(binarios) == 2 * (len(modulo.X11) - 1)
     assert "libxcb-cursor" in capsys.readouterr().out
 
 

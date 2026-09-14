@@ -89,9 +89,20 @@ jobs:
         # carga su plugin de X11 y esto truena, igual que en el escritorio de
         # alguien que no las tiene.
         run: |
+          echo "== copias en el paquete"
+          find dist/vortex-studio/_internal -name "libxcb-cursor.so*" -o -name "libQt6XcbQpa.so*"
           sudo dpkg -r --force-depends libxcb-cursor0 libxcb-icccm4 libxcb-image0 \
             libxcb-keysyms1 libxcb-render-util0 libxcb-util1 libxkbcommon-x11-0
-          xvfb-run -a env QT_QPA_PLATFORM=xcb ./dist/vortex-studio/vortex-studio --smoke-test
+          echo "== cómo resuelve el cargador, ya sin las del sistema"
+          for lib in $(find dist/vortex-studio/_internal -name "libQt6XcbQpa.so.6" -o -name "libqxcb.so"); do
+            echo "-- $lib"; ldd "$lib" | grep -E "not found|xcb-(cursor|icccm|image|keysyms|render-util|util)|xkbcommon-x11" || true
+          done
+          if ! xvfb-run -a env QT_QPA_PLATFORM=xcb ./dist/vortex-studio/vortex-studio --smoke-test; then
+            echo "== el error de verdad, con QT_DEBUG_PLUGINS"
+            xvfb-run -a env QT_QPA_PLATFORM=xcb QT_DEBUG_PLUGINS=1 \
+              ./dist/vortex-studio/vortex-studio --smoke-test 2>&1 | grep -iE "cannot|not found|no such|failed|xcb" | head -40 || true
+            exit 1
+          fi
 
       - name: Empaquetar
         run: |

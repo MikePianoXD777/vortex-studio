@@ -33,13 +33,15 @@ X11 = (
 
 CARPETAS = ("/usr/lib/x86_64-linux-gnu", "/lib/x86_64-linux-gnu", "/usr/lib64", "/usr/lib")
 
-# Dentro del paquete van junto a las bibliotecas de Qt, no en la raíz. Quien
-# las pide es `libQt6XcbQpa.so.6`, y esa solo busca en su propia carpeta
-# (RUNPATH `$ORIGIN`). El ejecutable no agrega la raíz del paquete a la ruta
-# de bibliotecas: en la raíz las copias estaban, pero nadie las encontraba, y
-# en un Ubuntu sin ellas el editor seguía sin abrir en X11. La compilación de
-# prueba lo destapó al quitarlas del sistema.
+# Dentro del paquete van en dos lugares. Quien las pide es `libQt6XcbQpa.so.6`,
+# que solo busca en su propia carpeta (RUNPATH `$ORIGIN`), y PyInstaller deja
+# DOS copias de ella: una junto a las demás de Qt y otra en la raíz del
+# paquete. Cuál carga el ejecutable depende de la ruta de bibliotecas de cada
+# máquina: aquí cargaba la de Qt, en el Ubuntu de la compilación seguía
+# tronando. Con las bibliotecas junto a las dos copias, cualquiera que se
+# cargue las encuentra. Pesan unos cientos de KB.
 DESTINO = "PySide6/Qt/lib"
+DESTINOS = (DESTINO, ".")
 
 
 class Falta(RuntimeError):
@@ -58,9 +60,9 @@ def binarios_x11(estricto: bool | None = None, carpetas=CARPETAS,
                  plataforma: str = sys.platform) -> list[tuple[str, str]]:
     """Las entradas de `binaries` para el `.spec`: (ruta, carpeta de destino).
 
-    Van a `DESTINO`, junto a las bibliotecas de Qt que las piden. La ruta es
-    la del nombre corto (`.so.0`), no la del archivo real, para que la copia
-    quede con el nombre que pide Qt.
+    Van a cada carpeta de `DESTINOS`, junto a las copias de la biblioteca de
+    Qt que las pide. La ruta es la del nombre corto (`.so.0`), no la del
+    archivo real, para que la copia quede con el nombre que pide Qt.
     """
     if not plataforma.startswith("linux"):
         return []
@@ -72,7 +74,7 @@ def binarios_x11(estricto: bool | None = None, carpetas=CARPETAS,
         if ruta is None:
             faltan.append(nombre)
         else:
-            encontradas.append((str(ruta), DESTINO))
+            encontradas.extend((str(ruta), destino) for destino in DESTINOS)
     if faltan:
         mensaje = f"Faltan bibliotecas de X11 para empacar: {', '.join(faltan)}"
         if estricto:
