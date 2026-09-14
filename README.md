@@ -9,7 +9,7 @@ fáciles de usar. La capacidad sí; la complejidad no.
 
 > ### 🧪 Beta — `0.1.0b2`
 >
-> **Ya se puede usar, pero es una beta.** Pasa 1146 pruebas automáticas
+> **Ya se puede usar, pero es una beta.** Pasa 1149 pruebas automáticas
 > y salió de la pre-alfa con un diseño nuevo y ejecutables, pero todavía hay
 > que usarlo con material de verdad para encontrar lo que las pruebas no
 > ven.

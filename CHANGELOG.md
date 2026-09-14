@@ -16,7 +16,7 @@ Nada todavía.
 
 **Parche de los ejecutables.** Se buscaron bugs en los binarios de la
 `0.1.0b1` usándolos ya empacados, y apareció uno que impedía abrir el editor
-en Linux con X11. Pasa 1146 pruebas automáticas y el banco completo
+en Linux con X11. Pasa 1149 pruebas automáticas y el banco completo
 corrió tres veces seguidas antes de publicar.
 
 ### Arreglado
