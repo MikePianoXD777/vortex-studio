@@ -146,8 +146,11 @@ jobs:
 
       - name: Revisión a fondo
         shell: pwsh
+        # Con la plataforma real de Windows y no con offscreen: offscreen en
+        # Windows no ve las fuentes del sistema, y así además se prueba el
+        # plugin de pantalla que usa quien abre el .exe.
         env:
-          QT_QPA_PLATFORM: offscreen
+          QT_QPA_PLATFORM: windows
           VORTEX_SELFCHECK_LOG: ${{ runner.temp }}\revision.log
         run: |
           $p = Start-Process -FilePath "dist\vortex-studio\vortex-studio.exe" `

@@ -440,12 +440,35 @@ def _carpeta_con(tmp_path, nombres):
     return carpeta
 
 
-def test_encuentra_las_bibliotecas_y_las_manda_a_la_raiz(tmp_path):
+def test_encuentra_las_bibliotecas_y_las_manda_junto_a_qt(tmp_path):
     modulo = _bibliotecas()
     carpeta = _carpeta_con(tmp_path, modulo.X11)
     binarios = modulo.binarios_x11(estricto=True, carpetas=[carpeta], plataforma="linux")
     assert [Path(ruta).name for ruta, _ in binarios] == list(modulo.X11)
-    assert {destino for _, destino in binarios} == {"."}
+    assert {destino for _, destino in binarios} == {"PySide6/Qt/lib"}
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="solo el paquete de Linux")
+def test_el_destino_es_donde_vive_la_biblioteca_de_qt_que_las_pide():
+    """Si PySide6 mueve sus bibliotecas, las copias quedarían donde nadie las busca."""
+    import PySide6
+
+    qt = Path(PySide6.__file__).parent
+    pide = qt / Path(_bibliotecas().DESTINO).relative_to("PySide6") / "libQt6XcbQpa.so.6"
+    assert pide.exists(), pide
+
+
+@pytest.mark.skipif(not shutil.which("readelf") or not sys.platform.startswith("linux"),
+                    reason="hace falta readelf")
+def test_la_biblioteca_de_qt_solo_busca_en_su_carpeta():
+    """Por eso las copias van ahí: RUNPATH `$ORIGIN` y ninguna otra ruta."""
+    import PySide6
+
+    qpa = Path(PySide6.__file__).parent / "Qt" / "lib" / "libQt6XcbQpa.so.6"
+    salida = subprocess.run(["readelf", "-d", str(qpa)], capture_output=True, text=True,
+                            env={**os.environ, "LC_ALL": "C"}, check=True).stdout
+    assert "[$ORIGIN]" in salida
+    assert "libxcb-cursor.so.0" in salida
 
 
 def test_la_cursor_de_xcb_esta_en_la_lista():

@@ -33,6 +33,14 @@ X11 = (
 
 CARPETAS = ("/usr/lib/x86_64-linux-gnu", "/lib/x86_64-linux-gnu", "/usr/lib64", "/usr/lib")
 
+# Dentro del paquete van junto a las bibliotecas de Qt, no en la raíz. Quien
+# las pide es `libQt6XcbQpa.so.6`, y esa solo busca en su propia carpeta
+# (RUNPATH `$ORIGIN`). El ejecutable no agrega la raíz del paquete a la ruta
+# de bibliotecas: en la raíz las copias estaban, pero nadie las encontraba, y
+# en un Ubuntu sin ellas el editor seguía sin abrir en X11. La compilación de
+# prueba lo destapó al quitarlas del sistema.
+DESTINO = "PySide6/Qt/lib"
+
 
 class Falta(RuntimeError):
     """Una biblioteca que tiene que ir en el paquete no está en la máquina."""
@@ -50,9 +58,9 @@ def binarios_x11(estricto: bool | None = None, carpetas=CARPETAS,
                  plataforma: str = sys.platform) -> list[tuple[str, str]]:
     """Las entradas de `binaries` para el `.spec`: (ruta, carpeta de destino).
 
-    Van a la raíz del paquete, que es donde el ejecutable busca bibliotecas.
-    La ruta es la del nombre corto (`.so.0`), no la del archivo real, para
-    que la copia quede con el nombre que pide el plugin.
+    Van a `DESTINO`, junto a las bibliotecas de Qt que las piden. La ruta es
+    la del nombre corto (`.so.0`), no la del archivo real, para que la copia
+    quede con el nombre que pide Qt.
     """
     if not plataforma.startswith("linux"):
         return []
@@ -64,7 +72,7 @@ def binarios_x11(estricto: bool | None = None, carpetas=CARPETAS,
         if ruta is None:
             faltan.append(nombre)
         else:
-            encontradas.append((str(ruta), "."))
+            encontradas.append((str(ruta), DESTINO))
     if faltan:
         mensaje = f"Faltan bibliotecas de X11 para empacar: {', '.join(faltan)}"
         if estricto:

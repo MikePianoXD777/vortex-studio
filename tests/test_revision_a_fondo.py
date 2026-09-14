@@ -130,6 +130,14 @@ def test_la_bandera_lanza_la_revision(qapp, monkeypatch):
     assert app_module.main(["vortex-studio", app_module.SELF_CHECK_FLAG]) == 7
 
 
+def test_en_windows_la_revision_usa_la_plataforma_real():
+    """Offscreen en Windows no ve las fuentes del sistema: dio un falso "No hay fuentes"."""
+    texto = (RAIZ / ".github/workflows/binarios.yml").read_text(encoding="utf-8")
+    windows = texto.split("\n  windows:")[1]
+    paso = windows[windows.index("- name: Revisión a fondo"):windows.index("- name: Instalador")]
+    assert "QT_QPA_PLATFORM: windows" in paso
+
+
 def test_la_compilacion_corre_la_revision_antes_de_subir():
     texto = (RAIZ / ".github/workflows/binarios.yml").read_text(encoding="utf-8")
     linux, windows = texto.split("\n  windows:")
