@@ -147,3 +147,85 @@ def sin_dialogos_modales(monkeypatch, request):
             monkeypatch.setattr(clase, metodo,
                                 staticmethod(prohibido(f"{clase.__name__}.{metodo}")),
                                 raising=False)
+
+
+@pytest.fixture(scope="session")
+def dificil(tmp_path_factory) -> dict[str, Path]:
+    """Material incómodo, del que sí hay en la calle.
+
+    El banco pasaba con material demasiado cómodo —30 fps exactos, keyframes
+    seguidos, 48 kHz— y por eso no vio la reproducción cortada de la beta.
+    Aquí va lo que rompe cuentas: NTSC, keyframes lejanos, vertical, HEVC,
+    44.1 kHz, resolución impar y un archivo que no empieza en cero.
+    """
+    if FFMPEG is None:
+        pytest.skip("Hace falta ffmpeg en el PATH para generar el material de prueba")
+
+    base = tmp_path_factory.mktemp("dificil")
+
+    # Como un celular: vertical, 29.97, keyframe cada 3 s, audio a 44.1 kHz.
+    celular = base / "celular.mp4"
+    _ffmpeg("-f", "lavfi", "-i", "testsrc2=size=270x480:rate=30000/1001:duration=5",
+            "-f", "lavfi", "-i", "sine=frequency=440:duration=5,volume=6dB",
+            "-c:v", "libx264", "-preset", "ultrafast", "-g", "90", "-keyint_min", "90",
+            "-sc_threshold", "0", "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-ar", "44100", "-b:a", "96k", "-shortest", str(celular))
+
+    # HEVC: lo que sale de un celular reciente o de una cámara moderna.
+    hevc = base / "hevc.mp4"
+    _ffmpeg("-f", "lavfi", "-i", "testsrc2=size=320x180:rate=25:duration=3",
+            "-c:v", "libx265", "-preset", "ultrafast", "-x265-params", "log-level=none",
+            "-pix_fmt", "yuv420p", "-tag:v", "hvc1", str(hevc))
+
+    # Resolución impar: al exportar hay que emparejarla o H.264 truena.
+    impar = base / "impar.mp4"
+    _ffmpeg("-f", "lavfi", "-i", "testsrc2=size=321x181:rate=30:duration=2",
+            "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", str(impar))
+
+    # El tiempo del archivo no empieza en cero: pasa con material de cámara.
+    corrido = base / "corrido.mp4"
+    _ffmpeg("-f", "lavfi", "-i", "testsrc2=size=160x90:rate=30:duration=3",
+            "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+            "-output_ts_offset", "3.5", str(corrido))
+
+    # Audio suelto a 44.1 kHz y mono: el mezclador trabaja a 48 kHz estéreo.
+    mono441 = base / "mono441.wav"
+    _ffmpeg("-f", "lavfi", "-i", "sine=frequency=330:duration=3,volume=6dB",
+            "-ac", "1", "-ar", "44100", str(mono441))
+
+    # Celular grabando vertical: la imagen va acostada con una marca de giro.
+    rotado = base / "rotado.mp4"
+    acostado = base / "acostado.mp4"
+    _ffmpeg("-f", "lavfi", "-i", "testsrc2=size=320x180:rate=30:duration=2",
+            "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", str(acostado))
+    _ffmpeg("-display_rotation", "90", "-i", str(acostado), "-c", "copy", str(rotado))
+
+    # Cuadros que no van parejos: pasa con grabaciones de pantalla y celulares.
+    vfr = base / "vfr.mp4"
+    _ffmpeg("-f", "lavfi", "-i", "testsrc2=size=160x90:rate=30:duration=3",
+            "-vf", "select='not(mod(n,3))+not(mod(n,7))'", "-fps_mode", "vfr",
+            "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", str(vfr))
+
+    # Foto de celular: guardada acostada, con la marca EXIF que dice girarla.
+    foto = base / "foto.jpg"
+    _ffmpeg("-f", "lavfi", "-i", "testsrc2=size=320x180:rate=1:duration=1",
+            "-frames:v", "1", str(foto))
+    foto_exif = base / "foto-vertical.jpg"
+    foto_exif.write_bytes(_con_orientacion(foto.read_bytes(), 6))
+
+    return {"celular": celular, "hevc": hevc, "impar": impar, "corrido": corrido,
+            "mono441": mono441, "rotado": rotado, "acostado": acostado, "vfr": vfr,
+            "foto": foto, "foto_exif": foto_exif}
+
+
+def _con_orientacion(jpeg: bytes, valor: int = 6) -> bytes:
+    """Le mete al JPEG una marca EXIF de orientación, como la de un celular."""
+    import struct
+
+    tiff = b"II" + struct.pack("<HI", 42, 8)
+    tiff += (struct.pack("<H", 1)
+             + struct.pack("<HHIHH", 0x0112, 3, 1, valor, 0)
+             + struct.pack("<I", 0))
+    app1 = b"Exif\x00\x00" + tiff
+    segmento = b"\xff\xe1" + struct.pack(">H", len(app1) + 2) + app1
+    return jpeg[:2] + segmento + jpeg[2:]

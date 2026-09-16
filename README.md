@@ -7,23 +7,28 @@ Editor de video no lineal. Parte de Vortex Suite.
 Las funciones de DaVinci Resolve, CapCut, Premiere Pro y After Effects, pero
 fáciles de usar. La capacidad sí; la complejidad no.
 
-> ### 🧪 Beta — `0.1.0b3`
+> ### ✅ Estable — `0.1.0`
 >
-> **Ya se puede usar, pero es una beta.** Pasa 1225 pruebas automáticas
-> y salió de la pre-alfa con un diseño nuevo y ejecutables, pero todavía hay
-> que usarlo con material de verdad para encontrar lo que las pruebas no
-> ven.
+> **Ya salió de la beta.** Pasa 1305 pruebas automáticas y antes de esta
+> versión se revisó el editor completo —modelo, medios, ventana, paneles y
+> empaquetado— y se probó con material del mundo real: video vertical de
+> celular, 29.97 fps, keyframes lejanos, HEVC, 44.1 kHz y fps variable.
 >
-> Lo que puedes esperar:
+> Qué significa estable aquí:
 >
-> - Cosas que fallan de formas que no hemos visto: guarda seguido
-> - La numeración volvió a empezar: la `0.1.0b3` es más nueva que la
->   `0.6.0a1` y abre todos sus proyectos
+> - El formato de proyecto `.vortex` se queda como está: lo que guardes hoy
+>   abre en las versiones que vienen
+> - Ninguna acción se lleva por delante tu material sin preguntar
+> - Sigue siendo la versión 0.1: hay mucho por crecer, y el roadmap manda
+>
+> Lo que todavía conviene saber:
+>
 > - El flujo óptico tarda más de un segundo por cuadro: renderiza su zona
 >   con `Enter` antes de reproducir
 > - La caché de render y los análisis de estabilización ocupan disco en la
 >   caché del sistema; se pueden borrar sin perder nada
 > - En las transiciones de video, el audio sigue cortando seco
+> - El timeline no tiene barra de desplazamiento: para ver todo, `Shift+Z`
 >
 > Reporta lo que se rompa en
 > [Issues](https://github.com/MikePianoXD777/vortex-studio/issues).
@@ -35,9 +40,9 @@ están los ejecutables de cada versión.
 
 **Windows** (64 bits):
 
-- `VortexStudio-0.1.0b3-windows-x64-instalador.exe` lo instala y lo agrega al
+- `VortexStudio-0.1.0-windows-x64-instalador.exe` lo instala y lo agrega al
   menú Inicio. No pide permisos de administrador.
-- `VortexStudio-0.1.0b3-windows-x64-portable.zip` es la versión portátil:
+- `VortexStudio-0.1.0-windows-x64-portable.zip` es la versión portátil:
   descomprime y abre `vortex-studio.exe`.
 
 Los ejecutables no están firmados, así que Windows puede avisar con
@@ -47,8 +52,8 @@ SmartScreen: **Más información → Ejecutar de todas formas**.
 o posteriores; con PulseAudio o PipeWire, que traen todos los escritorios):
 
 ```bash
-tar xzf VortexStudio-0.1.0b3-linux-x86_64.tar.gz
-cd VortexStudio-0.1.0b3-linux-x86_64
+tar xzf VortexStudio-0.1.0-linux-x86_64.tar.gz
+cd VortexStudio-0.1.0-linux-x86_64
 ./instalar.sh
 ```
 
@@ -187,6 +192,9 @@ abrir ventanas, así que funciona por SSH o en una máquina sin pantalla.
 | `test_binarios.py` | Ícono, prueba de humo, instaladores de Linux y Windows, bibliotecas de X11 y la compilación automática |
 | `test_revision_a_fondo.py` | La revisión a fondo del editor empacado (`--self-check`) |
 | `test_reproduccion_fluida.py` | Que la reproducción no vuelva a buscar keyframes ni repita cuadros |
+| `test_material_dificil.py` | Material del mundo real: vertical de celular, 29.97, HEVC, 44.1 kHz, fps variable |
+| `test_repaso_estable.py` | Las fallas del repaso a fondo previo a la 0.1.0 |
+| `test_arranque_seguro.py` | Que un error al arrancar deje rastro en vez de morir callado |
 | `test_parche_b3.py` | Las fallas que salieron en el QA a mano de la beta |
 | `test_portabilidad.py` | Que funcione igual en Linux y Windows |
 

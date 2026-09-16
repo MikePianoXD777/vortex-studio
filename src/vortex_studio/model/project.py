@@ -185,7 +185,10 @@ class Clip:
         speed = max(SPEED_MIN, min(SPEED_MAX, speed))
         material = self.duration * self.speed      # segundos de archivo que usa
         self.speed = speed
-        self.duration = material / speed
+        # Un clip congelado (velocidad 0) no consume material: la regla de
+        # tres daba duración cero y el clip desaparecía del timeline.
+        if material > 0:
+            self.duration = material / speed
 
 
 def accepts(track, item) -> bool:
@@ -501,7 +504,11 @@ class Sequence:
         secuencia. Si no se sabe la proporción del material se supone que
         coincide, que es el caso común.
         """
-        transform = clip.transform
+        transform = getattr(clip, "transform", None)
+        if transform is None:
+            # Un texto, una imagen o una capa de ajuste no tapan por sí solos:
+            # antes esto tronaba en cada cuadro de una transición a negro.
+            return False
         if transform.has_crop or transform.has_perspective:
             return False
         if getattr(getattr(clip, "chroma", None), "is_on", False):
@@ -598,14 +605,21 @@ def _shifted_into(clip, anidada: "NestedClip"):
     """Copia de un clip de la secuencia hija, puesta en el tiempo de la madre."""
     import copy as _copy
 
-    inicio = anidada.start + (clip.start - anidada.in_point)
-    fin = inicio + clip.duration
+    # La anidada puede ir a otra velocidad: un segundo de la hija dura menos
+    # —o más— en la madre. Antes la resta era pelada y el sonido se quedaba a
+    # velocidad normal mientras la imagen corría al doble.
+    velocidad = max(float(getattr(anidada, "speed", 1.0) or 0.0), 1e-6)
+    if (getattr(anidada, "anim", None) or {}).get("time"):
+        return None         # con remapeo el audio va mudo, como en los clips
+    inicio = anidada.start + (clip.start - anidada.in_point) / velocidad
+    fin = inicio + clip.duration / velocidad
     if fin <= anidada.start + 1e-9 or inicio >= anidada.end - 1e-9:
         return None
     copia = _copy.copy(clip)
+    copia.speed = max(0.0, getattr(clip, "speed", 1.0)) * velocidad
     if inicio < anidada.start:
         recorte = anidada.start - inicio
-        copia.in_point = clip.in_point + recorte * max(clip.speed, 0.0)
+        copia.in_point = clip.in_point + recorte * copia.speed
         inicio = anidada.start
     copia.start = inicio
     copia.duration = min(fin, anidada.end) - inicio

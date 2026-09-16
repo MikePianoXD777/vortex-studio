@@ -22,7 +22,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
 
-from vortex_studio.media.encoder import Cancelled, image_to_frame
+from vortex_studio.media.encoder import frame_rate, Cancelled, image_to_frame
 from vortex_studio.media.waveform import cache_dir as _waves_dir
 
 try:
@@ -62,7 +62,7 @@ def render_zone(renderer, zone, fps: float, width: int, height: int,
     cuadros = max(1, int(round(zone.duration * fps)))
     try:
         with av.open(str(temporal), mode="w") as salida:
-            flujo = salida.add_stream("libx264", rate=round(fps))
+            flujo = salida.add_stream("libx264", rate=frame_rate(fps))
             flujo.width, flujo.height, flujo.pix_fmt = ancho, alto, "yuv420p"
             flujo.options = {"crf": "12", "preset": "veryfast", "g": "15", "bf": "0"}
             for indice in range(cuadros):

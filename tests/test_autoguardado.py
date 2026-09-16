@@ -249,7 +249,7 @@ def test_recuperar_trae_el_trabajo(datos, qapp, media, monkeypatch):
 
 
 @pytest.mark.permite_dialogos
-def test_no_recuperar_tira_la_copia(datos, qapp, media, monkeypatch):
+def test_no_recuperar_conserva_la_copia(datos, qapp, media, monkeypatch):
     from vortex_studio.ui import MainWindow
 
     ruta = simular_cierre_de_golpe(qapp, media)
@@ -258,7 +258,8 @@ def test_no_recuperar_tira_la_copia(datos, qapp, media, monkeypatch):
     w = MainWindow()
     try:
         assert not w.offer_recovery()
-        assert not ruta.exists()
+        # La copia se queda: un "no ahorita" no es "bórrala para siempre".
+        assert ruta.exists()
         assert not w.sequence.video_tracks()[-1].clips
     finally:
         w._dirty = False

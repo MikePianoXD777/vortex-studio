@@ -25,6 +25,7 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Callable
 
+from vortex_studio.media.decoder import rotation_of
 from vortex_studio.media.encoder import Cancelled
 from vortex_studio.media.waveform import cache_dir as _waves_dir
 
@@ -106,6 +107,10 @@ def make_proxy(path: str | Path,
             origen = entrada.streams.video[0]
             origen.thread_type = "AUTO"
             ancho, alto = proxy_size(origen.codec_context.width, origen.codec_context.height)
+            # Un vertical de celular viene acostado con una marca de giro. El
+            # proxy se hace igual de acostado, así que hay que copiarle la
+            # marca: sin ella el proxy se vería de lado y el original derecho.
+            giro = rotation_of(entrada, origen)
             total = max(1, int((entrada.duration or 0) / av.time_base * 1000))
             base = origen.time_base or Fraction(1, 1000)
 
@@ -117,6 +122,8 @@ def make_proxy(path: str | Path,
                 flujo.codec_context.time_base = base
                 flujo.options = {"preset": "veryfast", "crf": "23", "g": str(GOP),
                                  "bf": "0"}
+                if giro:
+                    flujo.set_display_rotation(giro)
 
                 ultimo = -1
                 for frame in entrada.decode(origen):

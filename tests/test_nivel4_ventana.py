@@ -135,6 +135,7 @@ def test_volver_a_una_version(ventana, media, tmp_path):
     version = ventana.save_version("antes")
     ventana.sequence.track_named("V1").clips[0].start = 5.0
     ventana._commit("Mover")
+    ventana.save()          # sin cambios pendientes no hay pregunta que salga
     assert ventana.restore_version(version)
     assert ventana.sequence.track_named("V1").clips[0].start == 0.0
     assert ventana._dirty and "antes" in ventana.statusBar().currentMessage()
@@ -182,6 +183,7 @@ def test_fusionar_con_la_copia_de_otro(ventana, media, tmp_path):
     save_project(otro, copia)
     ventana.sequence.track_named("V1").clips[0].fade_in = 0.5
     ventana._commit("Fundido")
+    ventana.save()
     assert ventana.merge_with(copia) == []
     clip = ventana.sequence.track_named("V1").clips[0]
     assert clip.fade_in == 0.5 and clip.color.saturation == 160
@@ -204,6 +206,7 @@ def test_fusionar_con_conflicto_reporta_y_gana_lo_tuyo(ventana, media, tmp_path)
     save_project(otro, copia)
     ventana.sequence.track_named("V1").clips[0].color.exposure = 70
     ventana._commit("Exposición")
+    ventana.save()
     conflictos = ventana.merge_with(copia)
     assert len(conflictos) == 1 and "exposure" in conflictos[0]
     assert ventana.sequence.track_named("V1").clips[0].color.exposure == 70

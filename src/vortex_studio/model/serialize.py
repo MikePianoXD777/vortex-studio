@@ -174,6 +174,8 @@ def _write_path(path: Path, base: Path | None) -> str:
 
 
 def _read_path(texto: str, base: Path | None) -> Path:
+    if "\x00" in str(texto):
+        raise ProjectError("El proyecto trae una ruta de archivo imposible.")
     path = Path(texto)
     if not path.is_absolute() and base is not None:
         return (base / path).resolve()
@@ -529,7 +531,11 @@ def save_project(project: Project, path: str | Path) -> Path:
     Un archivo de solo lectura se respeta: renombrar encima lo sobrescribiría
     igual, así que se revisa antes.
     """
-    path = Path(path).with_suffix(EXTENSION)
+    # No `with_suffix`: se come lo que va tras el último punto, y
+    # «Entrevista v1.2» y «Entrevista v1.3» terminaban en el mismo archivo.
+    path = Path(path)
+    if path.suffix.lower() != EXTENSION:
+        path = Path(f"{path}{EXTENSION}")
     if path.exists() and not os.access(path, os.W_OK):
         raise PermissionError(f"«{path.name}» es de solo lectura.")
     # `encoding="utf-8"` explícito: en Windows el valor por omisión suele ser

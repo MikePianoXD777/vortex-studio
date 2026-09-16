@@ -10,6 +10,7 @@ arme la imagen.
 from __future__ import annotations
 
 import math
+import struct
 from collections import OrderedDict
 from dataclasses import dataclass
 from fractions import Fraction
@@ -118,6 +119,38 @@ def flow_frame(a: Frame, b: Frame, amount: float) -> Frame:
 TOLERANCIA = 1e-4
 
 
+def frame_rotation(frame) -> int:
+    """Cuánto hay que girar el cuadro para verlo derecho, en grados.
+
+    Un celular grabando vertical guarda la imagen acostada y aparte una
+    matriz que dice cómo girarla. Quien no la lee muestra el video de lado;
+    los reproductores y `ffmpeg` la aplican solos. FFmpeg la entrega cruda
+    —nueve enteros en coma fija— y de ahí sale el ángulo.
+    """
+    datos = None
+    for parte in getattr(frame, "side_data", None) or ():
+        if getattr(getattr(parte, "type", None), "name", "") == "DISPLAYMATRIX":
+            datos = bytes(parte)
+            break
+    if not datos or len(datos) < 36:
+        return 0
+    matriz = struct.unpack("<9i", datos[:36])
+    grados = round(-math.degrees(math.atan2(matriz[1] / 65536.0, matriz[0] / 65536.0)))
+    return grados % 360 if grados % 90 == 0 else 0
+
+
+def rotate_rgb(datos: np.ndarray, grados: int) -> np.ndarray:
+    """Gira el arreglo de pixeles para que quede como lo muestra ffmpeg.
+
+    El lado se comprobó contra el propio ffmpeg, que aplica el giro solo al
+    exportar un cuadro: con la marca de 90 el cuadro coincide exacto.
+    """
+    vueltas = {90: 1, 180: 2, 270: 3}.get(grados % 360)
+    if not vueltas:
+        return datos
+    return np.ascontiguousarray(np.rot90(datos, vueltas))
+
+
 class VideoSource:
     """Lee frames de un archivo de video por tiempo, no por orden.
 
@@ -138,6 +171,7 @@ class VideoSource:
         self.width = self._stream.codec_context.width
         self.height = self._stream.codec_context.height
         self.fps = float(self._stream.average_rate or 30)
+        self.rotation = 0               # lo dice el primer cuadro que se decodifique
         self.duration = float(self._container.duration / av.time_base) if self._container.duration else 0.0
         inicio = self._stream.start_time
         self._origin = float(inicio * self._stream.time_base) if inicio is not None else 0.0
@@ -165,6 +199,11 @@ class VideoSource:
             entre = self._between(t, adjust, key, sampling)
             if entre is not None:
                 return entre
+        # De aquí para abajo se trabaja con los tiempos del archivo, que no
+        # siempre empiezan en cero: mucho material de cámara trae su primer
+        # cuadro en otro segundo. Sin sumar ese arranque, todo lo que se pedía
+        # caía antes del primer cuadro y el clip se veía congelado.
+        t += self._origin
         self._key = key
         settings = self._settings(adjust) + (key.signature if key is not None else (),)
 
@@ -265,7 +304,8 @@ class VideoSource:
         último cuadro, no salía ninguno, y el servidor daba el cuadro por
         perdido. Ahora se sostiene el último, como un cuadro congelado.
         """
-        self._container.seek(int(max(0.0, self.duration - 2.0) / self._stream.time_base),
+        final = self._origin + max(0.0, self.duration - 2.0)
+        self._container.seek(int(final / self._stream.time_base),
                              stream=self._stream, backward=True, any_frame=False)
         self._gen = None
         self._pending = None
@@ -294,7 +334,7 @@ class VideoSource:
         entre los mismos dos, y sin recordarlos cada cuadro volvería a buscar
         hacia atrás en el archivo.
         """
-        posicion = (t - self._origin) * self.fps
+        posicion = t * self.fps          # `t` ya viene contado desde el material
         n = math.floor(posicion + 1e-6)
         fraccion = posicion - n
         if n < 0 or fraccion < 0.02 or fraccion > 0.98:
@@ -316,7 +356,7 @@ class VideoSource:
         listo = self._recent.get(clave)
         if listo is not None:
             return listo
-        cuadro = self.frame_at(self._origin + n / self.fps, adjust, key)
+        cuadro = self.frame_at(n / self.fps, adjust, key)
         if cuadro is not None:
             self._recent[clave] = cuadro
             while len(self._recent) > 4:
@@ -354,15 +394,35 @@ class VideoSource:
         self._gen = None
         self._cached = None
 
-    @staticmethod
-    def _to_rgb(frame) -> Frame:
-        """Convierte a RGB —o RGBA si trae alfa— leyendo el plano directo."""
+    def _to_rgb(self, frame) -> Frame:
+        """Convierte a RGB —o RGBA si trae alfa— y lo deja derecho."""
+        giro = frame_rotation(frame)
+        if giro:
+            self.rotation = giro
+            if giro % 180:
+                self.width, self.height = self.height, self.width
+
         if frame.format.name == "rgba":
             plane = frame.planes[0]
-            return Frame(bytes(plane), frame.width, frame.height, plane.line_size, True)
+            if not self.rotation:
+                return Frame(bytes(plane), frame.width, frame.height, plane.line_size, True)
+            crudo = np.frombuffer(bytes(plane), dtype=np.uint8).reshape(
+                frame.height, plane.line_size)[:, :frame.width * 4].reshape(
+                frame.height, frame.width, 4)
+            girado = rotate_rgb(crudo, self.rotation)
+            return Frame(girado.tobytes(), girado.shape[1], girado.shape[0],
+                         girado.shape[1] * 4, True)
+
         rgb = frame.reformat(format="rgb24")
         plane = rgb.planes[0]
-        return Frame(bytes(plane), rgb.width, rgb.height, plane.line_size)
+        if not self.rotation:
+            return Frame(bytes(plane), rgb.width, rgb.height, plane.line_size)
+        crudo = np.frombuffer(bytes(plane), dtype=np.uint8).reshape(
+            rgb.height, plane.line_size)[:, :rgb.width * 3].reshape(
+            rgb.height, rgb.width, 3)
+        girado = rotate_rgb(crudo, self.rotation)
+        return Frame(girado.tobytes(), girado.shape[1], girado.shape[0],
+                     girado.shape[1] * 3)
 
     def close(self) -> None:
         self._container.close()
@@ -417,6 +477,10 @@ def probe_media(path: str | Path):
             info.width = video.codec_context.width
             info.height = video.codec_context.height
             info.fps = float(video.average_rate or 0) or 30.0
+            # Vertical de celular: la imagen viene acostada con una marca de
+            # giro. El tamaño que importa es el que se ve.
+            if rotation_of(container, video) % 180:
+                info.width, info.height = info.height, info.width
             info.color_transfer = _transfer_name(video)
             info.kind = IMAGE if codec in STILL_CODECS and (video.frames or 0) <= 1 else VIDEO
         else:
@@ -428,6 +492,21 @@ def probe_media(path: str | Path):
             info.sample_rate = audio.codec_context.sample_rate or 0
 
     return info
+
+
+def rotation_of(container, stream) -> int:
+    """El giro del archivo, del primer cuadro que se pueda decodificar."""
+    try:
+        for cuadro in container.decode(stream):
+            return frame_rotation(cuadro)
+    except Exception:
+        return 0
+    finally:
+        try:
+            container.seek(0, stream=stream)
+        except Exception:
+            pass
+    return 0
 
 
 _TRANSFERS = {16: "smpte2084", 18: "arib-std-b67"}

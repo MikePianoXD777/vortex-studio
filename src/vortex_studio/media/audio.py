@@ -253,6 +253,40 @@ class AudioRenderer:
         graph, entrada = self._speed_graph(velocidad, modo)
         salida = AudioFifo()
 
+        # El filtro de velocidad trabaja por ventanas y su salida arranca
+        # atrasada respecto de lo que se le mete: medido, 40 ms a 0.5× y
+        # 101 ms a 0.25×, o sea el audio adelantándose a la imagen. Se le da
+        # un colchón de material de ANTES del punto de entrada y se tira de la
+        # salida la parte que le toca: lo que queda empieza en el cuadro justo.
+        colchon = min(0.5, max(0.0, source_start))
+        extra = int(round(colchon * self.rate))
+        # Del colchón se descuenta lo que el filtro ya se come solo.
+        retraso = self._speed_delay(velocidad, modo)
+        sobran = (int(round((colchon / max(velocidad, 1e-6) - retraso) * self.rate))
+                  if extra else 0)
+        sobran = max(0, sobran)
+        source_start -= colchon
+        necesarias += extra
+
+        # Sin material antes del punto de entrada no hay colchón: el hueco que
+        # deja el filtro se rellena con ese mismo silencio, para que el sonido
+        # no se adelante a la imagen.
+        if not extra and retraso > 0:
+            hueco = int(round(retraso * self.rate))
+            if hueco > 0:
+                for cuadro in self._silence(min(hueco, faltan) / self.rate):
+                    faltan -= cuadro.samples
+                    yield cuadro
+
+        def recortar():
+            """Se traga el colchón antes de entregar nada."""
+            nonlocal sobran
+            while sobran > 0 and salida.samples > 0:
+                basura = salida.read(min(sobran, salida.samples))
+                if basura is None:
+                    return
+                sobran -= basura.samples
+
         def jalar():
             while True:
                 try:
@@ -266,6 +300,7 @@ class AudioRenderer:
             frame.pts = None
             entrada.push(frame)
             jalar()
+            recortar()
             while salida.samples >= self.rate and faltan > 0:
                 trozo = salida.read(min(self.rate, faltan))
                 faltan -= trozo.samples
@@ -278,6 +313,7 @@ class AudioRenderer:
         except Exception:
             pass
         jalar()
+        recortar()
         while faltan > 0 and salida.samples > 0:
             trozo = salida.read(min(self.rate, faltan, salida.samples))
             if trozo is None:
@@ -351,6 +387,56 @@ class AudioRenderer:
         if faltan > 0:
             yield from self._silence(faltan / self.rate)
 
+    # Cuánto se come el filtro al arrancar, por (velocidad, modo). Se mide una
+    # vez y se guarda: es una propiedad del filtro, no del material.
+    _RETRASOS: dict = {}
+
+    def _speed_delay(self, velocidad: float, modo: str) -> float:
+        """Segundos que el filtro pierde al principio de su salida.
+
+        `atempo` trabaja por ventanas y su salida arranca recortada —unos
+        37 ms a 0.5× y 76 ms a 0.25×—, sin que los tiempos de salida lo
+        digan. Se mide pasándole un golpe seco en un instante conocido y
+        viendo dónde sale.
+        """
+        clave = (round(float(velocidad), 6), modo, self.rate, self.layout)
+        if clave in self._RETRASOS:
+            return self._RETRASOS[clave]
+
+        retraso = 0.0
+        try:
+            import numpy as np
+
+            graph, entrada = self._speed_graph(velocidad, modo)
+            canales = 2 if self.layout == "stereo" else 1
+            largo = self.rate // 2                      # medio segundo basta
+            golpe = self.rate // 4                      # con el golpe a la mitad
+            datos = np.zeros((canales, largo), dtype=np.float32)
+            datos[:, golpe:golpe + 240] = 0.9
+
+            frame = av.AudioFrame.from_ndarray(datos, format="fltp", layout=self.layout)
+            frame.sample_rate = self.rate
+            frame.pts = None
+            entrada.push(frame)
+            entrada.push(None)
+
+            salidas = []
+            while True:
+                try:
+                    salidas.append(graph.pull())
+                except (av.error.BlockingIOError, av.error.EOFError, EOFError):
+                    break
+            if salidas:
+                sonido = np.concatenate([b.to_ndarray()[0] for b in salidas]).astype("float32")
+                donde = int(np.argmax(np.abs(sonido))) / self.rate
+                esperado = (golpe / self.rate) / max(velocidad, 1e-6)
+                retraso = max(0.0, esperado - donde)
+        except Exception:
+            retraso = 0.0       # sin medición, se queda como estaba
+
+        self._RETRASOS[clave] = retraso
+        return retraso
+
     def _speed_graph(self, velocidad: float, modo: str):
         """abuffer → (atempo… | asetrate, aresample) → aformat → sink.
 
@@ -401,6 +487,11 @@ class AudioRenderer:
         resampler = AudioResampler(format=self.format, layout=self.layout, rate=self.rate)
         fifo = AudioFifo()
         faltan = limite
+        # El cuadro donde cae el punto de entrada empieza antes que él: hay
+        # que tirar las muestras de más. Saltarse el cuadro entero deja hasta
+        # 32 ms de error, y en cámara lenta ese error se multiplica por la
+        # velocidad: a 0.25× son 124 ms de audio adelantado a la imagen.
+        sobran = -1
 
         try:
             if source_start > 0:
@@ -412,9 +503,18 @@ class AudioRenderer:
                 if cuando + frame.samples / max(1, frame.sample_rate) < source_start:
                     continue    # todavía vamos antes del punto de entrada
 
+                if sobran < 0:
+                    sobran = max(0, int(round((source_start - cuando) * self.rate)))
+
                 for chunk in resampler.resample(frame):
                     chunk.pts = None
                     fifo.write(chunk)
+
+                while sobran > 0 and fifo.samples > 0:
+                    basura = fifo.read(min(sobran, fifo.samples))
+                    if basura is None:
+                        break
+                    sobran -= basura.samples
 
                 while fifo.samples >= self.rate and faltan > 0:
                     salida = fifo.read(min(self.rate, faltan))

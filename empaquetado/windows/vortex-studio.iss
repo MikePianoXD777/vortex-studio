@@ -41,6 +41,14 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
+[InstallDelete]
+; Al actualizar se borra lo de la versión anterior antes de copiar. Con todo
+; dentro de una carpeta, mezclar DLLs de dos versiones de Qt deja el editor
+; sin abrir: es el mismo error que en Linux se cuida con `rm -rf` en
+; instalar.sh. Los proyectos y ajustes del usuario viven en otro lado.
+Type: filesandordirs; Name: "{app}\_internal"
+Type: files; Name: "{app}\vortex-studio.exe"
+
 [Files]
 Source: "..\..\dist\vortex-studio\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 

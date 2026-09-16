@@ -1031,7 +1031,10 @@ class TimelineWidget(QWidget):
         drag = self._drag
         item = drag["item"]
         minimum = self.sequence.frame_duration
-        edge = self._snap(self.time_for(pos.x()), ignore=item)
+        # Se ignoran también los compañeros enlazados: se recortan junto con
+        # este, y el imán se pegaba a ellos dejando el recorte a trinquete.
+        ignorar = [item] + [otro for otro, *_ in drag.get("partners", ())]
+        edge = self._snap_many(self.time_for(pos.x()), ignorar)
 
         if zone == "inicio":
             from vortex_studio.model.commands import restore_head, trim_head
@@ -1070,7 +1073,9 @@ class TimelineWidget(QWidget):
                 track = self.sequence.tracks[self._drag["track"]]
                 self._resolve_overlap(track, self._drag["item"])
                 track.clips.sort(key=lambda c: c.start)
-                if self._drag["zone"] == "cuerpo":
+                # También al recortar, no solo al mover: recortar un par
+                # V+A encima de otro dejaba el audio traslapado y desfasado.
+                if True:
                     for otro, *_ in self._drag.get("partners", ()):
                         pista = self.sequence.track_of(otro)
                         if pista is not None:

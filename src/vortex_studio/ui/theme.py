@@ -7,6 +7,7 @@ cada zona tome los mismos valores y no un gris parecido.
 
 from __future__ import annotations
 
+import os
 import tempfile
 from pathlib import Path
 
@@ -37,13 +38,25 @@ def _flecha() -> str:
     svg = ('<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 10 10">'
            f'<path d="M2 3.5 L5 6.5 L8 3.5" fill="none" stroke="{TENUE}" stroke-width="1.4" '
            'stroke-linecap="round" stroke-linejoin="round"/></svg>')
-    ruta = Path(tempfile.gettempdir()) / "vortex-studio-flecha.svg"
+    # En la caché del usuario y no en /tmp con nombre fijo: ahí cualquiera
+    # puede dejar otra cosa con ese nombre, y leerla tumbaba el arranque antes
+    # de que se viera nada.
     try:
-        if not ruta.exists() or ruta.read_text() != svg:
-            ruta.write_text(svg)
-    except OSError:
+        base = Path(os.environ.get("VORTEX_CACHE_DIR")
+                    or os.environ.get("XDG_CACHE_HOME")
+                    or (Path.home() / ".cache")) / "vortex-studio"
+        base.mkdir(parents=True, exist_ok=True)
+        ruta = base / "flecha.svg"
+        try:
+            actual = ruta.read_text(encoding="utf-8")
+        except Exception:
+            actual = None       # no existe, o alguien dejó basura con ese nombre
+        if actual != svg:
+            ruta.write_text(svg, encoding="utf-8")
+        return ruta.as_posix()
+    except Exception:
+        # Sin flechita se ve un combo sin adorno; el editor abre igual.
         return ""
-    return ruta.as_posix()
 
 
 FLECHA = _flecha()

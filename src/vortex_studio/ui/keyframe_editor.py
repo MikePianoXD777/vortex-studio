@@ -77,7 +77,14 @@ class CurveGraph(QWidget):
         return max(0.04, getattr(self.item, "duration", 1.0)) if self.item else 1.0
 
     def value_range(self) -> tuple[float, float]:
-        """El rango visible: el de los keyframes con aire, dentro del parámetro."""
+        """El rango visible: el de los keyframes con aire, dentro del parámetro.
+
+        Mientras se arrastra un punto, el rango se congela. Si se recalcula
+        con el valor que se acaba de poner, la escala crece, el punto se
+        escapa del cursor y el valor se dispara solo.
+        """
+        if self._drag is not None and self._drag.get("rango") is not None:
+            return self._drag["rango"]
         param = animate.PARAMS.get(self.path)
         valores = [kf.value_of(k) for k in self.points]
         if self.item is not None and self.path:
@@ -206,11 +213,13 @@ class CurveGraph(QWidget):
             self.selection_changed.emit()
             self.update()
             return
+        rango = self.value_range()
         if golpe[0] == "key":
             self.selected = golpe[1]
-            self._drag = {"kind": "key", "time": golpe[1], "moved": False}
+            self._drag = {"kind": "key", "time": golpe[1], "moved": False, "rango": rango}
         else:
-            self._drag = {"kind": "handle", "time": golpe[1], "which": golpe[2], "moved": False}
+            self._drag = {"kind": "handle", "time": golpe[1], "which": golpe[2],
+                          "moved": False, "rango": rango}
         self.selection_changed.emit()
         self.update()
 

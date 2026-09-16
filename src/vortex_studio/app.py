@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import sys
 import traceback
+from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtGui import QColor, QIcon, QPalette
@@ -88,7 +89,58 @@ def _dark_palette() -> QPalette:
     return palette
 
 
+def error_log() -> Path:
+    """Dónde se apunta un error que tumbó el arranque."""
+    base = Path(os.environ.get("VORTEX_CACHE_DIR")
+                or os.environ.get("XDG_CACHE_HOME")
+                or (Path.home() / ".cache")) / "vortex-studio"
+    base.mkdir(parents=True, exist_ok=True)
+    return base / "error.log"
+
+
+def report_crash(error: BaseException) -> Path | None:
+    """Apunta el error en un archivo y lo dice también por la salida de errores.
+
+    El ejecutable de Windows va sin consola: sin esto, un error antes de la
+    ventana era doble clic y nada, sin manera de saber qué pasó.
+    """
+    detalle = "".join(traceback.format_exception(error))
+    sys.stderr.write(detalle)
+    try:
+        ruta = error_log()
+        with ruta.open("a", encoding="utf-8") as archivo:
+            archivo.write(f"\n=== {datetime.now():%Y-%m-%d %H:%M:%S} — "
+                          f"Vortex Studio {__version__} ===\n{detalle}")
+        return ruta
+    except Exception:
+        return None
+
+
 def main(argv: list[str] | None = None) -> int:
+    try:
+        return _main(argv)
+    except Exception as error:
+        ruta = report_crash(error)
+        _show_crash(error, ruta)
+        return 1
+
+
+def _show_crash(error: BaseException, ruta: Path | None) -> None:
+    """Un aviso con lo que pasó, si es que alcanza a haber ventanas."""
+    try:
+        from PySide6.QtWidgets import QApplication, QMessageBox
+
+        if QApplication.instance() is None:
+            return
+        texto = f"{type(error).__name__}: {error}"
+        if ruta is not None:
+            texto += f"\n\nEl detalle quedó en:\n{ruta}"
+        QMessageBox.critical(None, "Vortex Studio no pudo abrir", texto)
+    except Exception:
+        pass
+
+
+def _main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv if argv is None else argv)
     humo = SMOKE_FLAG in argv
     revision = SELF_CHECK_FLAG in argv

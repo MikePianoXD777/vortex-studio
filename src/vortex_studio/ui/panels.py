@@ -288,6 +288,14 @@ class ColorPanel(Page):
         self._adjust = adjust
         self._target.setText(f"Clip: {name}" if adjust else "Ningún clip bajo el playhead")
 
+        # Los looks no se guardan en el clip: son un atajo que aplica valores.
+        # Sin reponerlos, el panel decía "Cálido" sobre un clip neutro y, peor,
+        # volver a elegir ese mismo look ya no hacía nada.
+        for combo in (self._look, self._curve_look):
+            combo.blockSignals(True)
+            combo.setCurrentIndex(0)
+            combo.blockSignals(False)
+
         for row in self._rows():
             row.setEnabled(adjust is not None)
         self._look.setEnabled(adjust is not None)
@@ -922,6 +930,10 @@ class ClipPanel(Page):
             # Velocidad y transición cambian la duración o piden decodificar
             # de nuevo: se aplican al soltar, no en cada pixel del arrastre.
             row._slider.sliderReleased.connect(self._commit_heavy)
+            # Y también cuando el valor no viene de un arrastre: escribir el
+            # número, las flechas del teclado o un clic en el riel. Antes el
+            # número cambiaba y el clip se quedaba igual.
+            row.changed.connect(self._heavy_changed)
 
         self._transition = QComboBox()
         self._transition.addItems(TRANSITIONS)
@@ -1074,6 +1086,14 @@ class ClipPanel(Page):
         # La ventana lo aplica también al audio enlazado: el panel no sabe de
         # enlaces, y con el video seleccionado su audio seguía igual.
         self.committed.emit(f"__audio_mode__{nombre}")
+
+    def _heavy_changed(self) -> None:
+        """Lo pesado se aplica solo si el cambio no viene de un arrastre."""
+        if self._loading:
+            return
+        if self._speed._slider.isSliderDown() or self._dissolve._slider.isSliderDown():
+            return
+        self._commit_heavy()
 
     def _commit_heavy(self) -> None:
         """Velocidad y transición, al soltar el deslizador."""

@@ -56,6 +56,7 @@ from vortex_studio.model.media import AUDIO, IMAGE, VIDEO
 from vortex_studio.ui import theme
 from vortex_studio.ui.compositor import frame_to_image
 from vortex_studio.ui.timeline import MEDIA_MIME
+from vortex_studio.ui.imagenes import load_image
 from vortex_studio.ui.widgets import FlowLayout, draw_icon, make_icon, style_dock
 
 ICON = QSize(128, 72)
@@ -141,9 +142,9 @@ class _Miniatura(QRunnable):
         guardada = thumbnail_path(self.path)
         try:
             if guardada is not None and guardada.exists():
-                imagen = QImage(str(guardada))
+                imagen = load_image(guardada)
             elif self.kind == IMAGE:
-                imagen = QImage(str(self.path)).scaledToWidth(192, Qt.SmoothTransformation)
+                imagen = load_image(self.path).scaledToWidth(192, Qt.SmoothTransformation)
             else:
                 frame = extract(self.path)
                 if frame is not None:
@@ -399,6 +400,10 @@ class MediaBin(QDockWidget):
                                       "También puedes arrastrarlo.")
         self.insert_button.setCursor(Qt.PointingHandCursor)
         self.insert_button.clicked.connect(self._insert_selected)
+        # Sin esto el botón quedaba prendido sin nada seleccionado y no hacía nada.
+        self.list.itemSelectionChanged.connect(
+            lambda: self.insert_button.setEnabled(bool(self.list.selectedItems())))
+        self.insert_button.setEnabled(False)
 
         pie = QHBoxLayout()
         pie.setSpacing(6)
@@ -542,7 +547,7 @@ class MediaBin(QDockWidget):
             self._count.setText(f"{total} archivo{'s' if total != 1 else ''}")
         else:
             self._count.setText(f"{visibles} de {total}")
-        self.insert_button.setEnabled(visibles > 0)
+        self.insert_button.setEnabled(bool(self.list.selectedItems()))
         self.insert_button.setVisible(total > 0 and self.pages.currentIndex() == 0)
 
     @staticmethod

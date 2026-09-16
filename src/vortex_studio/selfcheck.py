@@ -308,6 +308,9 @@ def paso_intercambio(ctx: Contexto) -> str:
     if not edl.read_text().startswith("TITLE") or "<xmeml" not in xml.read_text():
         raise Falla("EDL o XML mal escritos")
     if not aaf_export.available():
+        if getattr(sys, "frozen", False):
+            # En el ejecutable sí debería venir: la compilación instala .[pro].
+            raise Falla("El paquete salió sin AAF")
         return "EDL y XML; AAF no viene en este paquete"
     aaf = aaf_export.write_aaf(ctx.carpeta / "edicion.aaf", secuencia)
     if not aaf_export.read_aaf(aaf):
@@ -323,6 +326,8 @@ def paso_color(ctx: Contexto) -> str:
     if lut is None or not Path(lut).exists():
         raise Falla("No se horneó el LUT de HDR")
     if not colorspace.has_ocio():
+        if getattr(sys, "frozen", False):
+            raise Falla("El paquete salió sin OCIO")
         return "HDR; OCIO no viene en este paquete"
     espacios = colorspace.ocio_spaces()
     if not espacios:

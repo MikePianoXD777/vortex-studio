@@ -90,6 +90,14 @@ def trim_head(item, amount: float) -> None:
         return
     remapeo = timeremap.keys(item)
     desplazo = 0.0
+    if isinstance(item, Clip) and not remapeo and item.speed > 0:
+        # Estirar la cabeza más allá del primer cuadro del archivo alargaba el
+        # clip sin material nuevo y corría todo su contenido.
+        tope = -item.in_point / item.speed
+        if amount < tope:
+            amount = tope
+            if abs(amount) < 1e-12:
+                return
     if isinstance(item, Clip):
         entrada = item.source_time(item.start + amount)
         desplazo = entrada - item.in_point
@@ -533,6 +541,9 @@ def paste_attributes(source, target, groups) -> bool:
         target.blend = source.blend
         cambio = True
     if "Velocidad" in groups and isinstance(source, Clip) and isinstance(target, Clip):
+        # Con remapeo puesto, la velocidad no manda: hay que quitarlo primero,
+        # igual que hace `SetSpeed`. Si no, el clip se acortaba y seguía igual.
+        timeremap.disable(target)
         if source.speed == 0:
             target.speed = 0.0
         else:

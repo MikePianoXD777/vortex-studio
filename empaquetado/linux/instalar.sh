@@ -24,6 +24,16 @@ if [ ! -x "$aqui/vortex-studio/vortex-studio" ]; then
     exit 1
 fi
 
+# Si el paquete está dentro de la carpeta destino, borrarla se llevaría el
+# propio instalador y no quedaría nada que copiar.
+case "$aqui/" in
+    "$programa"/*)
+        echo "Estás corriendo el instalador desde dentro de $programa." >&2
+        echo "Descomprime el .tar.gz en otro lado (por ejemplo ~/Descargas) y córrelo desde ahí." >&2
+        exit 1
+        ;;
+esac
+
 echo "Instalando Vortex Studio en $programa…"
 # Se reemplaza la carpeta completa: así una actualización no deja bibliotecas
 # viejas mezcladas con las nuevas. Los proyectos, ajustes y autoguardados
@@ -46,7 +56,9 @@ done
 
 # La ruta del programa se escribe en la entrada del menú; con una ruta
 # relativa el menú no lo encontraría.
-escapada="$(printf '%s' "$programa/vortex-studio" | sed 's/[\/&|]/\\&/g')"
+# El % se duplica: en un .desktop es el inicio de un código (%U, %f) y una
+# ruta con % dejaba la entrada del menú sin abrir.
+escapada="$(printf '%s' "$programa/vortex-studio" | sed 's/%/%%/g; s/[\/&|]/\\&/g')"
 sed "s|@EXEC@|$escapada|g" "$aqui/vortex-studio.desktop" > "$menu/vortex-studio.desktop"
 chmod 644 "$menu/vortex-studio.desktop"
 

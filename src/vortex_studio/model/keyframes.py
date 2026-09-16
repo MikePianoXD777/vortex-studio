@@ -171,7 +171,9 @@ def set_key(points, local: float, value: float, interp: str | None = None,
     return _sorted(quedan + [nuevo])
 
 
-def remove_key(points, local: float, tolerance: float = 0.05) -> list:
+# Medio cuadro a 120 fps: lo justo para reconocer "este mismo keyframe" sin
+# llevarse el de junto. Con 0.05 s, a 60 fps se borraban tres de un jalón.
+def remove_key(points, local: float, tolerance: float = 4e-3) -> list:
     return [k for k in points if abs(time_of(k) - local) > tolerance]
 
 

@@ -255,7 +255,10 @@ def clean_effects(raw) -> list[dict]:
     for crudo in raw if isinstance(raw, list) else []:
         if not isinstance(crudo, dict) or not _NAME.match(str(crudo.get("plugin", ""))):
             continue
-        valores = {str(k): float(v) for k, v in (crudo.get("values") or {}).items()
+        crudos = crudo.get("values") or {}
+        if not isinstance(crudos, dict):
+            continue        # un proyecto editado a mano: el efecto se ignora
+        valores = {str(k): float(v) for k, v in crudos.items()
                    if isinstance(v, (int, float)) and not isinstance(v, bool) and v == v}
         salida.append({"plugin": str(crudo["plugin"]), "values": valores,
                        "enabled": bool(crudo.get("enabled", True))})

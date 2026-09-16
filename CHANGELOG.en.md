@@ -11,6 +11,96 @@ While we're on `0.x`, any minor version may break compatibility.
 
 Nothing yet.
 
+## [0.1.0] — 2026-09-15
+
+**Out of beta.** Before calling it stable, the whole editor was reviewed
+—model, media, window, panels and packaging— and the test suite got
+real-world footage, the kind that doesn't behave: vertical phone video,
+29.97 fps with keyframes seconds apart, HEVC, 44.1 kHz, variable frame rate,
+odd resolutions and files whose timeline doesn't start at zero. Everything
+below came out of that. It passes 1305 automated tests, and the full suite
+ran three times in a row before publishing.
+
+### No more lost work
+
+- **Cancelling an export deleted the file already at the destination.**
+  Exporting over yesterday's delivery and changing your mind took the old one
+  with it. It now writes alongside and moves at the end.
+- **Exporting over the project's own footage** destroyed the original and
+  produced a damaged export. It now warns and refuses.
+- **Restoring a saved version, or merging with another copy**, replaced the
+  project without asking and without undo. It asks now, like Open does.
+- **Duplicate (Ctrl+D)** ate the next clip. It now ripples.
+- **Freeze frame** ate the rest of the clip; it keeps it now.
+- **File › Import** dropped the video's audio on top of whatever was on the
+  first track; it now finds a free one or adds another.
+- **Dropping footage on a locked track** put it on a different track and split
+  what was there. It now warns and touches nothing.
+- **A failed "Save as"** left the project pointing at the impossible path.
+- **A name with dots** ("Interview v1.2") was saved to a different file, and
+  two different names could end up in the same one.
+- **Declining recovery** deleted the autosave for good; it now stays until you
+  save.
+- **The track lock** didn't protect against the panels on the right or the
+  delete-text button.
+
+### It looks and sounds right
+
+- **Vertical phone video** showed up sideways. The file's rotation flag is now
+  read —in proxies too— and the frame comes out upright.
+- **Phone photos** came in sideways; their orientation is applied now.
+- **Files whose timeline doesn't start at zero** (camera footage, `.ts`,
+  capture cards) showed frozen on their first frame.
+- **In slow motion the audio ran ahead of the picture** by up to 101 ms; it's
+  now within 7 ms.
+- **Exporting at 29.97** was already fixed in 0.1.0b3; now the render cache is
+  too — it drifted a frame every 33 seconds.
+- **Trimming a linked clip** left its audio overlapping the next clip and out
+  of sync.
+- **Snapping** stuck to the clip's own linked audio, making trims ratchet.
+- **A nested sequence's audio** ignored the nested clip's speed.
+
+### Controls that do what they say
+
+- **Typing the speed or the transition length** in its box did nothing: only
+  dragging the handle worked.
+- **The keyframe editor** ran away while dragging a point: the scale
+  recalculated itself and the value escaped the cursor.
+- **The Look combo** kept the previous clip's look, and picking that same look
+  again did nothing.
+- **The media panel's Add button** was enabled with nothing selected.
+- **Deleting the selection** left the panels editing a clip that no longer
+  existed.
+- **In and out marks** survived switching sequences or projects, and exporting
+  produced black.
+- **Each sequence keeps its own undo**: switching used to wipe it.
+- **Removing a keyframe** took its neighbours with it at 60 fps.
+- **Paste attributes › Speed** on a time-remapped clip shortened it without
+  changing its speed.
+- **Removing time remapping, freezing and changing speed** no longer leave
+  zero-length clips.
+- **Stretching a clip's head** past the first frame of its footage shifted all
+  of its content.
+- **The EDL timecode** didn't match the editor's at 29.97.
+- **Normalize, multicam and proxies** now behave as advertised (from 0.1.0b3).
+
+### Startup, install and build
+
+- **If something breaks before the window shows**, it's written to
+  `~/.cache/vortex-studio/error.log` and a notice appears. On Windows it used
+  to be a double click and nothing.
+- **The Windows installer** now removes the previous install before copying:
+  mixing libraries from two versions kept the editor from opening.
+- **The Linux installer** no longer deletes itself when run from the
+  destination folder, and the menu entry survives a `%` in the path.
+- **The automated build** publishes nothing until the tag matches the version
+  in the code and the full suite passes.
+- **The packaged editor's thorough check** now fails if the build came out
+  without OCIO or AAF, instead of reporting all clear.
+- A hand-edited project with impossible data is rejected with a clear notice
+  instead of a raw error.
+
+
 ## [0.1.0b3] — 2026-09-13
 
 **The hands-on QA patch.** `0.1.0b2` was tested on Linux against a

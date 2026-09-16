@@ -8,6 +8,7 @@ completo de un jalón produce la imagen inclinada clásica.
 
 from __future__ import annotations
 
+import os
 from fractions import Fraction
 from pathlib import Path
 from typing import Callable, Iterator
@@ -104,7 +105,11 @@ def export_video(
     if width < 2 or height < 2:
         raise ValueError(f"El cuadro de salida es demasiado chico ({width}×{height}).")
 
-    container = av.open(str(path), mode="w")
+    # Se escribe a un archivo aparte y se mueve al final: cancelar o tronar a
+    # medias no debe llevarse el archivo que ya estaba ahí, que bien puede ser
+    # la entrega anterior.
+    temporal = path.with_name(f"{path.stem}.{os.getpid()}.parte{path.suffix}")
+    container = av.open(str(temporal), mode="w")
     closed = False
     try:
         rate = frame_rate(fps)
@@ -135,17 +140,24 @@ def export_video(
             if progress is not None and not progress(index + 1, total):
                 container.close()
                 closed = True
-                path.unlink(missing_ok=True)
+                temporal.unlink(missing_ok=True)
                 raise Cancelled()
 
         if sound is not None:
             sound.finish()
         for packet in stream.encode():   # vaciar lo que quede en el buffer
             container.mux(packet)
+    except BaseException:
+        if not closed:
+            container.close()
+            closed = True
+        temporal.unlink(missing_ok=True)
+        raise
     finally:
         if not closed:
             container.close()
 
+    os.replace(temporal, path)
     return path
 
 
@@ -171,7 +183,11 @@ def export_audio(
 
     path = Path(path)
     total = max(1, int(round(seconds * 1000)))
-    container = av.open(str(path), mode="w")
+    # Se escribe a un archivo aparte y se mueve al final: cancelar o tronar a
+    # medias no debe llevarse el archivo que ya estaba ahí, que bien puede ser
+    # la entrega anterior.
+    temporal = path.with_name(f"{path.stem}.{os.getpid()}.parte{path.suffix}")
+    container = av.open(str(temporal), mode="w")
     closed = False
     try:
         sound = _AudioWriter(container, audio, rate, layout)
@@ -182,12 +198,19 @@ def export_audio(
             if progress is not None and not progress(hecho, total):
                 container.close()
                 closed = True
-                path.unlink(missing_ok=True)
+                temporal.unlink(missing_ok=True)
                 raise Cancelled()
         sound.finish()
+    except BaseException:
+        if not closed:
+            container.close()
+            closed = True
+        temporal.unlink(missing_ok=True)
+        raise
     finally:
         if not closed:
             container.close()
+    os.replace(temporal, path)
     return path
 
 

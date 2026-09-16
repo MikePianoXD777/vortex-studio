@@ -33,9 +33,14 @@ def _frames(seconds: float, fps: float) -> int:
 
 
 def tc(seconds: float, fps: float) -> str:
-    """Código de tiempo sin drop frame, con base entera de fps."""
+    """Código de tiempo sin drop frame, con base entera de fps.
+
+    Los cuadros se cuentan con los fps reales y solo el reloj usa la base
+    entera: contándolos con la base, a 29.97 el EDL se iba 18 cuadros a los
+    diez minutos respecto del XML y de la barra de estado.
+    """
     base = max(1, round(fps))
-    total = _frames(seconds, base)
+    total = _frames(seconds, fps if fps and fps > 0 else base)
     return (f"{total // (3600 * base):02d}:{total // (60 * base) % 60:02d}:"
             f"{total // base % 60:02d}:{total % base:02d}")
 

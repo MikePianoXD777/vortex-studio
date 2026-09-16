@@ -67,7 +67,15 @@ def test_el_dialogo_guarda_y_borra(ventana, media):
     otro._preset.setCurrentText("Revisión")
     assert otro.quality() == "Borrador" and otro.fps() == 24.0
     assert otro.save_current_as("H.264 4K") is None and "fábrica" in otro._preset_msg.text()
-    assert otro.delete_current() and by_name("Revisión").name == PRESETS[0].name
+    from PySide6.QtWidgets import QMessageBox
+
+    otro_si = staticmethod(lambda *a, **k: QMessageBox.Yes)
+    monkeypatch_local = pytest.MonkeyPatch()
+    monkeypatch_local.setattr(QMessageBox, "question", otro_si)
+    try:
+        assert otro.delete_current() and by_name("Revisión").name == PRESETS[0].name
+    finally:
+        monkeypatch_local.undo()
 
 
 def test_los_cuadros_por_segundo_del_preset_llegan_al_archivo(tmp_path, ventana, media):

@@ -175,9 +175,10 @@ def test_un_nombre_que_no_existe_sigue_fallando():
 
 # --- la versión ---------------------------------------------------------------
 
-def test_es_la_beta():
-    assert vortex_studio.__version__.startswith("0.1.0b")
-    assert "Development Status :: 4 - Beta" in (RAIZ / "pyproject.toml").read_text(
+def test_es_una_version_estable():
+    """Fuera de la beta: sin sufijo en el número y anunciada como estable."""
+    assert vortex_studio.__version__ == "0.1.0"
+    assert "Development Status :: 5 - Production/Stable" in (RAIZ / "pyproject.toml").read_text(
         encoding="utf-8")
 
 
@@ -409,7 +410,7 @@ def test_la_compilacion_prueba_antes_de_subir():
 
 def test_la_maquina_de_linux_tiene_la_biblioteca_de_sonido():
     """Sin libpulse la prueba de humo truena al importar el reproductor de audio."""
-    linux = _flujo().split("\n  windows:")[0]
+    linux = _flujo().split("\n  linux:")[1].split("\n  windows:")[0]
     instalacion = next(l for l in linux.splitlines() if "apt-get install" in l)
     assert "libpulse0" in instalacion
     # El paso de la prueba, no la mención en el comentario de arriba del archivo.
@@ -531,7 +532,8 @@ def test_la_receta_usa_las_bibliotecas():
 
 
 def _linux() -> str:
-    return _flujo().split("\n  windows:")[0]
+    """Solo el trabajo de Linux: antes va el de revisión, que también instala."""
+    return _flujo().split("\n  linux:")[1].split("\n  windows:")[0]
 
 
 def test_la_compilacion_instala_y_exige_las_bibliotecas():
@@ -554,8 +556,45 @@ def test_la_compilacion_abre_en_x11_sin_las_del_sistema_antes_de_subir():
 def test_sin_tag_la_compilacion_no_toca_ninguna_release():
     texto = _flujo()
     assert "REF: ${{ github.event.release.tag_name || inputs.tag || github.sha }}" in texto
-    assert texto.count("ref: ${{ env.REF }}") == 2
+    # Cada trabajo saca el mismo commit: revisar, Linux y Windows.
+    assert texto.count("ref: ${{ env.REF }}") == texto.count("uses: actions/checkout@v4")
     for trabajo in texto.split("\n  windows:"):
         subir = trabajo[trabajo.index("- name: Subir a la release"):]
         assert subir.splitlines()[1].strip() == "if: env.TAG != ''"
         assert "if: env.TAG == ''" in subir and "actions/upload-artifact" in subir
+
+
+# --- lo que salió del repaso antes de la estable ------------------------------------
+
+def test_la_compilacion_revisa_el_tag_y_el_banco():
+    """Publicar binarios que dicen otra versión es peor que no publicarlos."""
+    texto = _flujo()
+    assert "revisar:" in texto
+    assert "El tag coincide con la versión del código" in texto
+    assert "python -m pytest" in texto
+    assert texto.count("needs: revisar") == 2      # Linux y Windows esperan
+
+
+def test_el_instalador_de_windows_borra_lo_viejo():
+    iss = (RAIZ / "empaquetado/windows/vortex-studio.iss").read_text(encoding="utf-8")
+    assert "[InstallDelete]" in iss
+    assert "_internal" in iss.split("[InstallDelete]")[1].split("[Files]")[0]
+
+
+def test_el_instalador_de_linux_no_se_borra_a_si_mismo():
+    script = (RAIZ / "empaquetado/linux/instalar.sh").read_text(encoding="utf-8")
+    assert '"$programa"/*)' in script
+    assert "Descomprime el .tar.gz en otro lado" in script
+
+
+def test_la_entrada_del_menu_aguanta_un_porcentaje_en_la_ruta():
+    script = (RAIZ / "empaquetado/linux/instalar.sh").read_text(encoding="utf-8")
+    assert "s/%/%%/g" in script
+
+
+def test_la_revision_a_fondo_es_estricta_en_el_binario():
+    """Empacado, que falten OCIO o AAF es falla, no un aviso."""
+    fuente = (RAIZ / "src/vortex_studio/selfcheck.py").read_text(encoding="utf-8")
+    assert fuente.count('getattr(sys, "frozen", False)') >= 2
+    assert "El paquete salió sin AAF" in fuente
+    assert "El paquete salió sin OCIO" in fuente

@@ -528,7 +528,9 @@ def test_una_url_de_internet_o_un_archivo_que_no_existe_no_se_aceptan(tmp_path):
 def test_soltar_un_archivo_del_gestor_lo_pone_en_el_timeline(ventana, media):
     datos = QMimeData()
     datos.setUrls([QUrl.fromLocalFile(str(media["mudo"]))])
-    evento = QDropEvent(QPointF(400, 60), Qt.CopyAction, datos, Qt.LeftButton, Qt.NoModifier)
+    pista = ventana.sequence.video_tracks()[-1]
+    y = ventana.timeline._track_top(ventana.sequence.tracks.index(pista)) + 20
+    evento = QDropEvent(QPointF(400, y), Qt.CopyAction, datos, Qt.LeftButton, Qt.NoModifier)
     ventana.timeline.dropEvent(evento)
     assert any(isinstance(c, Clip) for t in ventana.sequence.tracks for c in t.clips)
 

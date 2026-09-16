@@ -12,6 +12,100 @@ puede romper compatibilidad.
 
 Nada todavía.
 
+## [0.1.0] — 2026-09-15
+
+**Sale de la beta.** Antes de decirle estable se revisó el editor completo
+—modelo, medios, ventana, paneles y empaquetado— y se le metió al banco de
+pruebas material del mundo real, del que no se porta bien: video vertical de
+celular, 29.97 fps con keyframes cada varios segundos, HEVC, 44.1 kHz, fps
+variable, resolución impar y archivos cuyo tiempo no empieza en cero. De ahí
+salió todo lo de abajo. Pasa 1305 pruebas automáticas y el banco completo
+corrió tres veces seguidas antes de publicar.
+
+### Ya no se pierde trabajo
+
+- **Cancelar una exportación borraba el archivo que ya estaba en el destino.**
+  Si exportabas encima de la entrega anterior y te arrepentías, se iba la
+  vieja también. Ahora se escribe aparte y se mueve al final: lo que había
+  solo se reemplaza cuando el archivo nuevo está completo.
+- **Exportar encima del material del proyecto** destruía el original y sacaba
+  la exportación dañada. Ahora avisa y no deja.
+- **Volver a una versión guardada, o fusionar con otra copia**, reemplazaba el
+  proyecto sin preguntar y sin dejar deshacer. Ahora pregunta, como Abrir.
+- **Duplicar (Ctrl+D)** se llevaba el clip de junto. Ahora lo recorre.
+- **Congelar cuadro** se comía el resto del clip; ya lo conserva.
+- **Archivo › Importar** metía el audio del video encima de lo que hubiera en
+  la primera pista; ahora busca una libre o agrega otra.
+- **Soltar material sobre una pista bloqueada** lo metía en otra pista y
+  partía lo que hubiera ahí. Ahora avisa y no toca nada.
+- **Un «Guardar como» que falla** dejaba el proyecto apuntando a la ruta
+  imposible.
+- **Un nombre con puntos** («Entrevista v1.2») se guardaba en otro archivo, y
+  dos nombres distintos podían terminar en el mismo.
+- **Decir que no a recuperar** borraba la copia automática para siempre; ahora
+  se queda hasta que guardes.
+- **El candado de la pista** no protegía contra los paneles de la derecha ni
+  contra el botón de borrar texto.
+
+### Se ve y suena como debe
+
+- **Video vertical de celular**: se veía acostado. Ahora se lee la marca de
+  giro del archivo —también en los proxies— y el cuadro sale derecho.
+- **Fotos de celular**: entraban acostadas; ahora se aplica su orientación.
+- **Archivos cuyo tiempo no empieza en cero** (material de cámara, `.ts`,
+  capturadoras) se veían congelados en su primer cuadro.
+- **En cámara lenta el audio se adelantaba a la imagen** hasta 101 ms; ahora
+  queda dentro de 7 ms.
+- **Exportar a 29.97** ya salía bien desde la 0.1.0b3; ahora la caché de
+  render también, que se corría un cuadro cada 33 segundos.
+- **Recortar un clip enlazado** dejaba su audio encimado con el clip de junto
+  y desfasado.
+- **El imán** se pegaba al propio audio enlazado y el recorte iba a trinquete.
+- **El audio de una secuencia anidada** ignoraba la velocidad de la anidada.
+
+### Controles que hacen lo que dicen
+
+- **Escribir la velocidad o la duración de la transición** en su casilla no se
+  aplicaba: solo servía arrastrar la manija.
+- **El editor de keyframes** se disparaba al arrastrar un punto: la escala se
+  recalculaba sola y el valor se escapaba del cursor.
+- **El combo de Look** conservaba el del clip anterior, y volver a elegir ese
+  mismo look no hacía nada.
+- **El botón Agregar del panel de medios** estaba prendido sin selección.
+- **Borrar la selección** dejaba los paneles editando un clip que ya no
+  existía.
+- **Las marcas de entrada y salida** se quedaban al cambiar de secuencia o de
+  proyecto, y exportar sacaba negro.
+- **Cada secuencia conserva su deshacer**: antes cambiar de secuencia lo
+  borraba.
+- **Quitar un keyframe** se llevaba a los vecinos a 60 fps.
+- **Pegar atributos › Velocidad** sobre un clip con remapeo lo acortaba sin
+  cambiarle la velocidad.
+- **Quitar remapeo, congelar y cambiar de velocidad** ya no dejan clips de
+  duración cero.
+- **Estirar la cabeza de un clip** más allá del primer cuadro del material
+  corría todo su contenido.
+- **El código de tiempo del EDL** no cuadraba con el del editor en 29.97.
+- **Normalizar, la multicámara y los proxies** ya se comportan como dicen
+  (viene de la 0.1.0b3).
+
+### Arranque, instalación y compilación
+
+- **Si algo truena antes de que salga la ventana**, queda apuntado en
+  `~/.cache/vortex-studio/error.log` y sale un aviso. En Windows era doble
+  clic y nada.
+- **El instalador de Windows** ahora borra la instalación anterior antes de
+  copiar: mezclar bibliotecas de dos versiones dejaba el editor sin abrir.
+- **El instalador de Linux** ya no se borra a sí mismo si lo corres desde la
+  carpeta de destino, y la entrada del menú aguanta un `%` en la ruta.
+- **La compilación automática** no publica nada sin antes comprobar que el tag
+  y la versión del código coinciden y que el banco completo pasa.
+- **La revisión a fondo del binario** marca falla si el paquete salió sin OCIO
+  o sin AAF, en vez de decir que todo bien.
+- Un proyecto editado a mano con datos imposibles ahora se rechaza con un
+  aviso claro en vez de un error crudo.
+
+
 ## [0.1.0b3] — 2026-09-13
 
 **El parche del QA a mano.** La `0.1.0b2` se probó en Linux con una hoja de

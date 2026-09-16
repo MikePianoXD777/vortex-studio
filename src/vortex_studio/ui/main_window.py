@@ -89,6 +89,7 @@ from vortex_studio.model.serialize import EXTENSION, load_project, save_project
 from vortex_studio.ui.audio_player import AudioPlayer
 from vortex_studio.ui.compositor import Layer, clear_mask_cache, compose
 from vortex_studio.ui.dialogs import MarkerDialog, PasteAttributesDialog
+from vortex_studio.ui.imagenes import load_image
 from vortex_studio.ui.panels import PropertiesPanel
 from vortex_studio.ui import theme
 from vortex_studio.ui.timeline_tools import TimelineTools
@@ -213,6 +214,7 @@ class MainWindow(QMainWindow):
         self.sequence = self.project.active
         self.history = History()
         self.history.reset(self.sequence)
+        self._histories: dict[str, History] = {}    # uno por secuencia
 
         # Un decodificador por clip. Compartirlo por archivo hacía que una
         # transición entre dos mitades del mismo video saltara adelante y
@@ -813,6 +815,7 @@ class MainWindow(QMainWindow):
         versions.release(self._path, self._session)
         self.lock_holder = None
         self._clear_autosave()
+        self._stop_background()
         self._close_sources()
         self.project = Project()
         self._path = None
@@ -840,6 +843,7 @@ class MainWindow(QMainWindow):
         if nueva != self._path:
             versions.release(self._path, self._session)
         self._clear_autosave()
+        self._stop_background()
         self._close_sources()
         self.project = project
         self._path = nueva
@@ -848,6 +852,22 @@ class MainWindow(QMainWindow):
         self._update_title()
         self._announce_missing_media()
         self._take_lock()
+
+    def _stop_background(self) -> None:
+        """Corta lo que se esté cociendo del proyecto que se va.
+
+        La caché de render y los proxies seguían trabajando con el material
+        del proyecto anterior: puro CPU gastado en algo que ya nadie mira.
+        """
+        for trabajo, metodo in ((self.cache_worker, "cancel"),
+                                (self.proxies, "cancel_all")):
+            hacer = getattr(trabajo, metodo, None)
+            if hacer is not None:
+                try:
+                    hacer()
+                except Exception:
+                    pass
+        self.frames.reset()
 
     def _take_lock(self) -> None:
         """Deja el candado del proyecto, o avisa si alguien más lo tiene abierto."""
@@ -895,6 +915,10 @@ class MainWindow(QMainWindow):
         """Vuelve a una versión guardada. Queda sin guardar hasta que el usuario guarde."""
         if self._path is None:
             return False
+        # Reemplaza el proyecto entero y borra el historial: si hay cambios sin
+        # guardar, primero se pregunta, como en Nuevo y Abrir.
+        if not self._confirm_discard():
+            return False
         try:
             proyecto = versions.load_version(version, self._path)
         except Exception as error:
@@ -917,6 +941,8 @@ class MainWindow(QMainWindow):
 
         if self._path is None:
             self.statusBar().showMessage("Guarda el proyecto primero.", 5000)
+            return None
+        if not self._confirm_discard():     # reemplaza el proyecto entero
             return None
         if path is None:
             path, _ = QFileDialog.getOpenFileName(self, "La otra copia del proyecto", "",
@@ -1071,7 +1097,10 @@ class MainWindow(QMainWindow):
         if self._path is None:
             return self.save_as()
         try:
-            save_project(self.project, self._path)
+            # La ruta que devuelve manda: si el nombre no traía extensión, el
+            # archivo real es otro, y el candado, las versiones y el
+            # autoguardado tienen que apuntar ahí.
+            self._path = save_project(self.project, self._path)
         except OSError as error:
             QMessageBox.critical(self, "No se pudo guardar", str(error))
             return False
@@ -1087,9 +1116,18 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getSaveFileName(self, "Guardar proyecto", suggested, PROJECT_FILTER)
         if not path:
             return False
+        anterior, nombre_anterior = self._path, self.project.name
         self._path = Path(path)
         self.project.name = self._path.stem
-        return self.save()
+        if not self.save():
+            # Disco lleno, USB desconectado, carpeta sin permiso: el proyecto
+            # se queda apuntando a donde estaba, no a la ruta que falló.
+            self._path, self.project.name = anterior, nombre_anterior
+            self._update_title()
+            return False
+        if anterior is not None and anterior != self._path:
+            versions.release(anterior, self._session)   # soltar el candado del de antes
+        return True
 
     # --- autoguardado -----------------------------------------------------
 
@@ -1140,7 +1178,8 @@ class MainWindow(QMainWindow):
             QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
 
         if respuesta != QMessageBox.Yes:
-            discard(copia.path)
+            # La copia se queda: un "no ahorita" no es "bórrala para siempre".
+            # Se limpia sola al guardar o al cerrar bien el proyecto.
             return False
         return self.recover(copia)
 
@@ -1278,6 +1317,10 @@ class MainWindow(QMainWindow):
             self.project.active_id = sequence.id
         self.timeline.sequence = sequence
         self.timeline.selected = None
+        self.timeline.extra = []
+        # Las marcas son de la secuencia que se estaba viendo: con otra
+        # secuencia marcaban un tramo que ni existe, y exportar sacaba negro.
+        self.timeline.mark_in = self.timeline.mark_out = None
         self.timeline.refresh()
         self._title = None
         self.preview.set_canvas(sequence.width, sequence.height)
@@ -1409,8 +1452,14 @@ class MainWindow(QMainWindow):
             self._place_image(path)
             return
 
-        track = (self._target_track(track_index, "video")
-                 or self._free_track("video", last=True))   # V1, la de hasta abajo
+        track = self._target_track(track_index, "video")
+        if track is None and track_index >= 0:
+            # Se soltó sobre una pista que no acepta o está bloqueada: antes el
+            # clip aterrizaba en otra pista y partía lo que hubiera ahí.
+            self.statusBar().showMessage(
+                "Ahí no se puede: esa pista está bloqueada o no es de video.", 4000)
+            return
+        track = track or self._free_track("video", last=True)   # V1, la de hasta abajo
         if track is None:
             self._locked_notice("video")
             return
@@ -1429,8 +1478,7 @@ class MainWindow(QMainWindow):
         # desenlaza.
         audio = None
         if info.has_audio:
-            audio = self._free_audio_track(clip.start, clip.end) if at is not None \
-                else self._free_track("audio")
+            audio = self._free_audio_track(clip.start, clip.end, crear=True)
         if audio is not None:
             clip.link = new_link()
             sonido = Clip(source=path, start=clip.start, duration=duration, link=clip.link)
@@ -1564,15 +1612,27 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             f"Proxy de {Path(original).name}: {avance * 100:.0f} %", 2000)
 
-    def _free_audio_track(self, start: float, end: float):
-        """La primera pista de audio libre en ese tramo, o la primera sin bloquear."""
+    def _free_audio_track(self, start: float, end: float, crear: bool = False):
+        """La primera pista de audio libre en ese tramo.
+
+        Con `crear`, si no hay ninguna libre se agrega otra pista en vez de
+        pisar lo que ya estaba: importar una toma no debe comerse la música.
+        """
         pistas = [p for p in self.sequence.audio_tracks() if not p.locked]
         if not pistas:
             return None
-        return next(
+        libre = next(
             (p for p in pistas
              if all(c.end <= start + 1e-9 or c.start >= end - 1e-9 for c in p.clips)),
-            pistas[0])
+            None)
+        if libre is not None:
+            return libre
+        if not crear:
+            return pistas[0]
+        nueva = Track(f"A{len(self.sequence.audio_tracks()) + 1}", kind="audio")
+        self.sequence.tracks.append(nueva)
+        self.timeline.refresh()
+        return nueva
 
     def _place_audio(self, path: Path, at: float | None = None, track_index: int = -1) -> None:
         """Un archivo de solo audio entra en la primera pista de audio libre.
@@ -1595,6 +1655,10 @@ class MainWindow(QMainWindow):
         start = self.timeline.playhead if at is None else max(0.0, at)
         end = start + info.duration
         destino = self._target_track(track_index, "audio")
+        if destino is None and track_index >= 0:
+            self.statusBar().showMessage(
+                "Ahí no se puede: esa pista está bloqueada o no es de audio.", 4000)
+            return
         if destino is None:
             pistas = [p for p in self.sequence.audio_tracks() if not p.locked]
             destino = next(
@@ -1620,7 +1684,7 @@ class MainWindow(QMainWindow):
 
     def _place_image(self, path: Path, at: float | None = None, track_index: int = -1) -> None:
         """Las imágenes entran a V2, la pista de arriba: van sobre el video."""
-        image = QImage(str(path))
+        image = load_image(path)
         if image.isNull():
             QMessageBox.critical(self, "No se pudo abrir", path.name)
             return
@@ -1628,7 +1692,12 @@ class MainWindow(QMainWindow):
         self._images[path] = image
         overlay = ImageOverlay(start=self.timeline.playhead if at is None else max(0.0, at),
                                duration=DEFAULT_IMAGE_SECONDS, source=path)
-        pista = self._target_track(track_index, "video") or self._free_track("video")
+        pista = self._target_track(track_index, "video")
+        if pista is None and track_index >= 0:
+            self.statusBar().showMessage(
+                "Ahí no se puede: esa pista está bloqueada o no es de video.", 4000)
+            return
+        pista = pista or self._free_track("video")
         if pista is None:
             self._locked_notice("video")
             return
@@ -1684,9 +1753,35 @@ class MainWindow(QMainWindow):
         if not path:
             return
 
-        self.queue_export(Path(path).with_suffix(preset.extension), start, end,
+        destino = _con_extension(Path(path), preset.extension)
+        if self._media_in_use(destino):
+            QMessageBox.warning(
+                self, "Ese archivo lo usa el proyecto",
+                f"«{destino.name}» es material de esta secuencia. Exportar encima lo "
+                f"destruiría y la exportación saldría dañada.\n\nElige otro nombre.")
+            return
+        self.queue_export(destino, start, end,
                           options.quality(), options.with_audio(), preset,
                           parallel=options.parallel())
+
+    def _media_in_use(self, destino: Path) -> bool:
+        """¿Ese archivo es material de algún clip del proyecto?"""
+        try:
+            salida = destino.resolve()
+        except OSError:
+            return False
+        for secuencia in self.project.sequences:
+            for track in secuencia.tracks:
+                for item in track.clips:
+                    fuente = getattr(item, "source", None)
+                    if not fuente or str(fuente) in ("", "."):
+                        continue
+                    try:
+                        if Path(fuente).resolve() == salida:
+                            return True
+                    except OSError:
+                        continue
+        return False
 
     def queue_export(self, path: Path, start: float, end: float, quality: str = "Normal",
                      with_audio: bool = True, preset=DEFAULT_PRESET,
@@ -2055,15 +2150,35 @@ class MainWindow(QMainWindow):
         return True
 
     def duplicate_selected(self) -> None:
-        """Pega una copia justo después de lo seleccionado, sin dejar hueco."""
+        """Pega una copia justo después de lo seleccionado y recorre lo que sigue.
+
+        Antes la copia pisaba al clip de junto: "Duplicar" se llevaba el
+        siguiente sin avisar.
+        """
         items = self.timeline.selected_items(with_links=False)
         if not items:
             return
+        grupo = self.sequence.with_linked(items)
+        if any(getattr(self._track_of(i), "locked", False) for i in grupo):
+            self.statusBar().showMessage("Está en una pista bloqueada.", 4000)
+            return
         entradas = copy_items(self.sequence, items, with_links=not self.timeline.ignore_link)
-        fin = max(i.end for i in self.sequence.with_linked(items))
+        inicio = min(i.start for i in grupo)
+        fin = max(i.end for i in grupo)
+        largo = fin - inicio
+
+        for pista in {id(self._track_of(i)): self._track_of(i) for i in grupo}.values():
+            if pista is None or pista.locked:
+                continue
+            for otro in pista.clips:
+                if otro.start >= fin - 1e-9:
+                    otro.start += largo
+            pista.clips.sort(key=lambda c: c.start)
+
         comando = Paste(entries=entradas, time=fin, name="Duplicar")
         if self._run(comando):
             self._select_many(comando.created)
+            self._fit_zoom()
 
     def set_fade(self, entrada: float | None = None, salida: float | None = None) -> None:
         """Fundidos del elemento seleccionado, o del que esté bajo el playhead."""
@@ -2468,7 +2583,9 @@ class MainWindow(QMainWindow):
         audio seguía sonando sin imagen.
         """
         t = self.timeline.playhead
-        clip = self.sequence.top_clip_at(t)
+        seleccion = self.timeline.selected
+        clip = (seleccion if isinstance(seleccion, Clip) and seleccion.contains(t)
+                else self.sequence.top_clip_at(t))
         if clip is None or not self._can_edit(clip):
             return
 
@@ -2843,6 +2960,11 @@ class MainWindow(QMainWindow):
                                self.mask_panel.target is not None)
 
     def _follow_selection(self, item) -> None:
+        if item is None:
+            # Sin esto los paneles seguían editando el clip recién borrado:
+            # no cambiaba nada en el timeline y sí ensuciaba el historial.
+            self._sync_panels(self.timeline.playhead)
+            return
         if isinstance(item, AdjustmentLayer):
             self.color_panel.set_target(item.color, item.name)
             self.mask_panel.set_target(item)
@@ -3043,14 +3165,21 @@ class MainWindow(QMainWindow):
         return nueva
 
     def switch_sequence(self, ident: str) -> bool:
-        """Edita otra secuencia del proyecto. El historial arranca de nuevo."""
+        """Edita otra secuencia del proyecto, cada una con su propio deshacer."""
         destino = self.project.sequence_by_id(ident)
         if destino is None or destino is self.sequence:
             return False
         self._flush()
         self._pause()
+        # El historial se guarda por secuencia: antes, ir a otra y volver
+        # dejaba sin deshacer todo lo que llevabas hecho.
+        self._histories[self.sequence.id] = self.history
         self.project.active_id = ident
-        self._adopt(destino, reset_history=True)
+        previo = self._histories.get(ident)
+        # Un objeto por secuencia: reusar el mismo y reiniciarlo borraba
+        # también el de la secuencia que se acababa de guardar.
+        self.history = previo if previo is not None else History()
+        self._adopt(destino, reset_history=previo is None)
         self._update_title()
         self.statusBar().showMessage(f"Editando «{destino.name}».", 4000)
         return True
@@ -3121,7 +3250,10 @@ class MainWindow(QMainWindow):
         for item in items:
             pista = self._track_of(item)
             pista.clips = [c for c in pista.clips if c is not item]
-        destino = destino or madre.video_tracks()[-1]
+        destino = destino or self._free_track("video", last=True)
+        if destino is None:
+            self.statusBar().showMessage("Todas las pistas de video están bloqueadas.", 4000)
+            return None
 
         self.project.sequences.append(hija)
         anidada = NestedClip(source=Path(""), start=inicio, duration=fin - inicio,
@@ -3162,7 +3294,7 @@ class MainWindow(QMainWindow):
         return capa
 
     def delete_title(self, title: Title | None) -> None:
-        if title is None:
+        if title is None or not self._can_edit(title):
             return
         for track in self.sequence.text_tracks():
             if title in track.clips:
@@ -3235,6 +3367,11 @@ class MainWindow(QMainWindow):
         seleccion = self.timeline.selected
         objetivo = seleccion if isinstance(seleccion, Clip) else clip
         pista = self._track_of(objetivo) if objetivo else None
+        # Una pista bloqueada no se edita ni desde los paneles: los menús ya lo
+        # respetaban y los deslizadores de la derecha no.
+        if pista is not None and pista.locked:
+            objetivo = None
+            pista = None
         es_audio = bool(pista and pista.kind == "audio")
         self.clip_panel.set_target(objetivo, es_audio)
         # Un clip de una pista de audio no tiene imagen que transformar: la
@@ -3429,6 +3566,8 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(
                 f"Renderizando {len(pendientes)} zona{'s' if len(pendientes) != 1 else ''}…", 5000)
             return len(pendientes)
+        self.statusBar().showMessage(
+            "Ya hay un render en curso: espera a que termine.", 4000)
         return 0
 
     def _cache_finished(self, hechas: int) -> None:
@@ -3500,7 +3639,7 @@ class MainWindow(QMainWindow):
         """Las imágenes se cargan una vez y se guardan: el preview redibuja
         muchas veces por segundo y no puede volver a leer del disco."""
         if path not in self._images:
-            self._images[path] = QImage(str(path))
+            self._images[path] = load_image(path)
         return self._images[path]
 
     def _close_sources(self) -> None:
@@ -3751,6 +3890,15 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
 
+def _con_extension(path: Path, extension: str) -> Path:
+    """Le pone la extensión sin comerse el nombre.
+
+    `with_suffix` toma todo lo que va tras el último punto como extensión:
+    «corte final v1.2» salía como «corte final v1.mp4», otro archivo.
+    """
+    return path if path.suffix.lower() == extension.lower() else Path(f"{path}{extension}")
+
+
 def open_error_text(error) -> str:
     """El error de FFmpeg en palabras: «moov atom not found» no le dice nada a nadie."""
     texto = str(error)
@@ -3898,6 +4046,11 @@ class ExportDialog(QDialog):
 
     def delete_current(self) -> bool:
         nombre = self._preset.currentText()
+        if QMessageBox.question(self, "Borrar preset",
+                                f"¿Borrar el preset «{nombre}»? No se puede deshacer.",
+                                QMessageBox.Yes | QMessageBox.No,
+                                QMessageBox.No) != QMessageBox.Yes:
+            return False
         if not delete_user_preset(nombre):
             return False
         self._fill_presets(DEFAULT_PRESET.name)

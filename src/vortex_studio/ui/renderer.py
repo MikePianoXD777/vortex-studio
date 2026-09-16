@@ -26,6 +26,7 @@ from vortex_studio.model.media import lookup
 from vortex_studio.model.overlays import AdjustmentLayer
 from vortex_studio.model.multicam import MulticamClip, angle_at, angle_count, angle_view
 from vortex_studio.model.project import SAMPLE_NEAREST, Fill, NestedClip
+from vortex_studio.ui.imagenes import load_image
 from vortex_studio.ui.compositor import Layer, compose, framing_of
 
 
@@ -139,7 +140,7 @@ class SequenceRenderer:
 
     def image_for(self, path: Path) -> QImage:
         if path not in self.images:
-            self.images[path] = QImage(str(path))
+            self.images[path] = load_image(path)
         return self.images[path]
 
     def nested_frame(self, clip, t: float):

@@ -200,7 +200,10 @@ class Stabilizer:
         destino = analysis_path(path)
         if destino is None or not destino.exists():
             return None
-        clave = (str(destino), round(float(strength), 2))
+        # Los fps entran en la llave: la misma fuerza en una secuencia a 30 y
+        # en otra a 60 da correcciones distintas, y antes se reusaba la
+        # primera que se hubiera calculado.
+        clave = (str(destino), round(float(strength), 2), round(float(fps), 3))
         with self._lock:
             listo = self._datos.get(clave)
         if listo is None:
@@ -212,6 +215,10 @@ class Stabilizer:
             listo = (trayectoria[:, 0], corr, zoom_for(corr))
             with self._lock:
                 self._datos[clave] = listo
+                # Mover el deslizador de fuerza calcula una tabla por posición:
+                # en un clip largo eso se comía cientos de megas.
+                while len(self._datos) > 4:
+                    self._datos.pop(next(iter(self._datos)))
         tiempos, corr, zoom = listo
         if len(tiempos) == 0:
             return None
