@@ -177,7 +177,8 @@ def test_un_nombre_que_no_existe_sigue_fallando():
 
 def test_es_una_version_estable():
     """Fuera de la beta: sin sufijo en el número y anunciada como estable."""
-    assert vortex_studio.__version__ == "0.1.0"
+    version = vortex_studio.__version__
+    assert version.startswith("0.1.") and version[4:].isdigit()   # sin sufijo de beta
     assert "Development Status :: 5 - Production/Stable" in (RAIZ / "pyproject.toml").read_text(
         encoding="utf-8")
 

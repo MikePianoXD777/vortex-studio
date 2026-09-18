@@ -12,6 +12,21 @@ puede romper compatibilidad.
 
 Nada todavía.
 
+## [0.1.1] — 2026-09-18
+
+**Arregla la compilación de la `0.1.0`**, que se quedó sin ejecutables. El
+editor no cambia: los dos arreglos son del banco de pruebas corriendo en la
+máquina que compila.
+
+### Arreglado
+
+- El material de prueba con marca de giro se generaba con una opción de
+  ffmpeg que existe desde la versión 6; la máquina de compilación trae la
+  4.4. Ahora se intenta también la forma vieja y, si ninguna sirve, esas
+  pruebas se saltan en vez de tronar.
+- Una prueba del monitor con máscara medía los pixeles sin esperar al cuadro:
+  en una máquina lenta leía la pantalla vacía.
+
 ## [0.1.0] — 2026-09-15
 
 **Sale de la beta.** Antes de decirle estable se revisó el editor completo

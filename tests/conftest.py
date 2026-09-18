@@ -149,6 +149,34 @@ def sin_dialogos_modales(monkeypatch, request):
                                 raising=False)
 
 
+def _girar(origen: Path, destino: Path, grados: int) -> bool:
+    """Copia el video marcándolo para verse girado. Dice si lo logró.
+
+    Cada ffmpeg lo pide a su manera, y el de la máquina de compilación no es
+    el mismo que el de aquí: se intentan las dos y se comprueba que la marca
+    haya quedado de verdad.
+    """
+    intentos = (
+        ("-display_rotation", str(grados), "-i", str(origen), "-c", "copy", str(destino)),
+        ("-i", str(origen), "-c", "copy", "-metadata:s:v:0", f"rotate={grados}", str(destino)),
+    )
+    for argumentos in intentos:
+        destino.unlink(missing_ok=True)
+        try:
+            _ffmpeg(*argumentos)
+        except subprocess.CalledProcessError:
+            continue
+        try:
+            from vortex_studio.media.decoder import probe_media
+
+            info = probe_media(destino)
+            if (info.width, info.height) == (info.height, info.width) or info.width < info.height:
+                return True
+        except Exception:
+            continue
+    return False
+
+
 @pytest.fixture(scope="session")
 def dificil(tmp_path_factory) -> dict[str, Path]:
     """Material incómodo, del que sí hay en la calle.
@@ -194,11 +222,14 @@ def dificil(tmp_path_factory) -> dict[str, Path]:
             "-ac", "1", "-ar", "44100", str(mono441))
 
     # Celular grabando vertical: la imagen va acostada con una marca de giro.
+    # `-display_rotation` existe desde ffmpeg 6; las máquinas de compilación
+    # traen la 4.4, así que hay que intentar también la forma vieja.
     rotado = base / "rotado.mp4"
     acostado = base / "acostado.mp4"
     _ffmpeg("-f", "lavfi", "-i", "testsrc2=size=320x180:rate=30:duration=2",
             "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", str(acostado))
-    _ffmpeg("-display_rotation", "90", "-i", str(acostado), "-c", "copy", str(rotado))
+    if not _girar(acostado, rotado, 90):
+        pytest.skip("Este ffmpeg no sabe marcar el giro de un video")
 
     # Cuadros que no van parejos: pasa con grabaciones de pantalla y celulares.
     vfr = base / "vfr.mp4"

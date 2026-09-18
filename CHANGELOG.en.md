@@ -11,6 +11,20 @@ While we're on `0.x`, any minor version may break compatibility.
 
 Nothing yet.
 
+## [0.1.1] — 2026-09-18
+
+**Fixes the `0.1.0` build**, which ended up with no executables. The editor
+itself doesn't change: both fixes are in the test suite as it runs on the
+build machine.
+
+### Fixed
+
+- The rotated test footage was generated with an ffmpeg option that only
+  exists from version 6 on; the build machine ships 4.4. It now tries the
+  older form too, and skips those tests if neither works instead of failing.
+- A masked-preview test measured pixels without waiting for the frame: on a
+  slow machine it read the empty viewer.
+
 ## [0.1.0] — 2026-09-15
 
 **Out of beta.** Before calling it stable, the whole editor was reviewed

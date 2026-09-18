@@ -207,6 +207,10 @@ def test_el_preview_se_pinta_con_mascara(ventana, media):
     clip.mask.shape = "Círculo"
     clip.mask.feather = 0.06
     ventana._seek(0.5)
+    # En una máquina lenta el cuadro puede no haber llegado: sin esperarlo se
+    # mide el mensaje vacío del monitor y no la imagen.
+    ventana._settle_preview()
+    ventana._render(0.5)
 
     lienzo = QPixmap(ventana.preview.size())
     ventana.preview.render(lienzo)              # dispara paintEvent de verdad
