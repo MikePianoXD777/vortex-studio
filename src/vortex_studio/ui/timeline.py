@@ -245,6 +245,9 @@ class TimelineWidget(QWidget):
         return hasta * self.pixels_per_second + self.view_width() * 0.5
 
     def max_scroll(self) -> float:
+        hasta = max(self.sequence.duration, self.playhead)
+        if hasta * self.pixels_per_second <= self.view_width() - 8:
+            return 0.0      # todo cabe: no hay nada que recorrer
         return max(0.0, self.content_width() - self.view_width())
 
     def set_scroll(self, pixels: float) -> None:

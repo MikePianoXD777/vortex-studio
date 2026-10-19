@@ -18,7 +18,12 @@ from pathlib import Path
 import pytest
 
 # Debe quedar puesto ANTES de que cualquier import cree la QApplication.
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+# Se impone y no se deja «por omisión»: los escritorios con Wayland ya traen
+# `QT_QPA_PLATFORM=wayland;xcb`, y con `setdefault` el banco abría cientos de
+# ventanas de verdad encima de lo que uno estuviera haciendo. Para verlas a
+# propósito: `VORTEX_TEST_VENTANAS=1 ./probar.sh`.
+if not os.environ.get("VORTEX_TEST_VENTANAS"):
+    os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
 # Las ondas de los videos de prueba van a una caché desechable: sin esto, el
 # banco llenaría la carpeta de caché real del usuario.
