@@ -7,19 +7,19 @@ Editor de video no lineal. Parte de Vortex Suite.
 Las funciones de DaVinci Resolve, CapCut, Premiere Pro y After Effects, pero
 fáciles de usar. La capacidad sí; la complejidad no.
 
-> ### ✅ Estable — `0.1.1`
+> ### ✅ Versión 1.0 — `1.0.0`
 >
-> **Ya salió de la beta.** Pasa 1305 pruebas automáticas y antes de esta
-> versión se revisó el editor completo —modelo, medios, ventana, paneles y
-> empaquetado— y se probó con material del mundo real: video vertical de
+> **La 1.0.** Se cerró todo lo que se sentía roto: el audio sigue a las
+> transiciones, la mezcla ya no recorta y tiene medidor, el timeline se
+> recorre a los lados y se selecciona con rectángulo. Pasa 1427 pruebas
+> automáticas, también con material del mundo real: video vertical de
 > celular, 29.97 fps, keyframes lejanos, HEVC, 44.1 kHz y fps variable.
 >
-> Qué significa estable aquí:
+> Qué significa la 1.0:
 >
 > - El formato de proyecto `.vortex` se queda como está: lo que guardes hoy
->   abre en las versiones que vienen
+>   abre en todas las `1.x`, y los proyectos de la `0.1` abren igual
 > - Ninguna acción se lleva por delante tu material sin preguntar
-> - Sigue siendo la versión 0.1: hay mucho por crecer, y el roadmap manda
 >
 > Lo que todavía conviene saber:
 >
@@ -27,8 +27,6 @@ fáciles de usar. La capacidad sí; la complejidad no.
 >   con `Enter` antes de reproducir
 > - La caché de render y los análisis de estabilización ocupan disco en la
 >   caché del sistema; se pueden borrar sin perder nada
-> - En las transiciones de video, el audio sigue cortando seco
-> - El timeline no tiene barra de desplazamiento: para ver todo, `Shift+Z`
 >
 > Reporta lo que se rompa en
 > [Issues](https://github.com/MikePianoXD777/vortex-studio/issues).
@@ -40,9 +38,9 @@ están los ejecutables de cada versión.
 
 **Windows** (64 bits):
 
-- `VortexStudio-0.1.1-windows-x64-instalador.exe` lo instala y lo agrega al
+- `VortexStudio-1.0.0-windows-x64-instalador.exe` lo instala y lo agrega al
   menú Inicio. No pide permisos de administrador.
-- `VortexStudio-0.1.1-windows-x64-portable.zip` es la versión portátil:
+- `VortexStudio-1.0.0-windows-x64-portable.zip` es la versión portátil:
   descomprime y abre `vortex-studio.exe`.
 
 Los ejecutables no están firmados, así que Windows puede avisar con
@@ -52,8 +50,8 @@ SmartScreen: **Más información → Ejecutar de todas formas**.
 o posteriores; con PulseAudio o PipeWire, que traen todos los escritorios):
 
 ```bash
-tar xzf VortexStudio-0.1.1-linux-x86_64.tar.gz
-cd VortexStudio-0.1.1-linux-x86_64
+tar xzf VortexStudio-1.0.0-linux-x86_64.tar.gz
+cd VortexStudio-1.0.0-linux-x86_64
 ./instalar.sh
 ```
 
@@ -116,7 +114,11 @@ virtual solos si no existe.
 ```
 
 El banco genera su propio material con ffmpeg la primera vez y corre sin
-abrir ventanas, así que funciona por SSH o en una máquina sin pantalla.
+abrir ventanas, así que funciona por SSH o en una máquina sin pantalla. Para
+verlas a propósito: `VORTEX_TEST_VENTANAS=1 ./probar.sh`.
+
+Para revisar la interfaz sin abrirla, `herramientas/capturas.py carpeta`
+saca capturas de la ventana en varios tamaños, con material generado.
 
 | Archivo | Qué cubre |
 |---|---|
@@ -197,6 +199,13 @@ abrir ventanas, así que funciona por SSH o en una máquina sin pantalla.
 | `test_arranque_seguro.py` | Que un error al arrancar deje rastro en vez de morir callado |
 | `test_parche_b3.py` | Las fallas que salieron en el QA a mano de la beta |
 | `test_portabilidad.py` | Que funcione igual en Linux y Windows |
+| `test_transicion_audio.py` | El audio enlazado sigue a la transición de su video |
+| `test_desplazamiento.py` | Recorrer el timeline: barra, rueda y zoom anclado |
+| `test_limitador.py` | El limitador de la mezcla: nada pasa del tope y nada se retrasa |
+| `test_medidor.py` | El medidor de audio junto al timeline |
+| `test_deshacer_anidar.py` | Deshacer «Anidar» quita la secuencia que creó |
+| `test_salir_con_cola.py` | Cerrar el editor con exportaciones en curso |
+| `test_rectangulo.py` | Seleccionar con rectángulo |
 
 ## Atajos
 
@@ -251,13 +260,17 @@ Estos son los de fábrica:
 | `1` `2` `3` `4` | Cortar a esa cámara en una multicámara |
 | `Shift+↓` `Shift+↑` | Marcador siguiente / anterior |
 | `F` | Pantalla completa |
+| `=` / `-` / `Shift+Z` | Acercar / alejar / ajustar el timeline |
 
-En el timeline: `Ctrl`+rueda hace zoom, arrastrar un clip lo mueve, arrastrar
+En el timeline: la rueda lo recorre a los lados y `Ctrl`+rueda hace zoom sin
+mover lo que está bajo el cursor; abajo hay una barra para recorrerlo y en la
+fila de herramientas, botones de zoom. Arrastrar un clip lo mueve, arrastrar
 sus bordes lo recorta, y todo se imanta a los cortes vecinos, al playhead y
 a los marcadores. Con la herramienta slip (`Y`), arrastrar dentro de un clip
-cambia qué pedazo del archivo se ve sin moverlo. `Ctrl`+clic suma clips a la
-selección, `Alt`+clic agarra un solo lado de un par enlazado, y doble clic
-en un marcador lo abre.
+cambia qué pedazo del archivo se ve sin moverlo. Arrastrar en un hueco
+selecciona con un rectángulo todo lo que toque; `Ctrl`+clic o `Ctrl`+rectángulo
+suman a la selección, `Alt`+clic agarra un solo lado de un par enlazado, y
+doble clic en un marcador lo abre.
 
 ## Estructura
 
@@ -508,10 +521,20 @@ clips encimados no se podían oír juntos: el segundo se perdía sin ningún
 aviso. Los carriles no son las pistas del timeline a propósito, así también
 se resuelve el caso de dos clips encimados dentro de la misma pista.
 
-La suma puede pasarse y recortar, igual que en Premiere. Se deja recortar en
-vez de meter un limitador porque un limitador necesita mirar hacia adelante,
-y ese adelanto desfasaría el sonido de la imagen. Para eso está el volumen
-por clip.
+**La suma ya no recorta.** Todo sale por un limitador de picos a −0.3 dBFS
+(`media/limiter.py`). Los limitadores de siempre miran unos milisegundos
+hacia adelante, y ese adelanto desfasaría el sonido de la imagen; este no
+mira adelante —sigue cada pico al instante y suelta despacio—, así que no
+retrasa nada. Por debajo del tope no toca el sonido.
+
+**Medidor** a la derecha del timeline: picos en dB por canal, con la rayita
+del pico más alto y una luz **LIM** que se queda prendida si el limitador
+tuvo que bajar el volumen —señal de que la mezcla va demasiado fuerte—. Un
+clic la apaga.
+
+**En las transiciones**, el audio enlazado sigue al video: en la cruzada los
+dos sonidos se enciman con curvas de potencia constante, que suman la misma
+energía en todo el cruce; a negro o a blanco, el sonido pasa por silencio.
 
 **A otra velocidad**, cada clip elige qué hace su sonido: *Mantener tono*
 (como Premiere: la voz se oye natural), *Cambiar tono* (como una cinta: más
@@ -632,25 +655,24 @@ editor. Hay una prueba que lo vigila.
 - Exportar a MP4 en el tamaño de la secuencia, 1080p o 4K, solo audio, y el
   cuadro actual a PNG
 - Guardar y abrir proyectos, portables entre carpetas y sistemas
+- Audio que sigue a las transiciones de video
+- Limitador en la mezcla y medidor de audio
+- Timeline con barra de desplazamiento, zoom anclado y selección con rectángulo
+- Salir con exportaciones en curso y dejar que terminen
 
 ## Licencia
 
 [MIT](LICENSE). Puedes usarlo, modificarlo y distribuirlo, incluso en algo
 comercial; lo único que se pide es conservar el aviso de copyright. Sin
-garantía de ninguna clase — y en beta eso no es una fórmula legal, es una
-advertencia literal.
+garantía de ninguna clase.
 
 ## Pendiente
 
-- En las transiciones de video, el audio corta seco: no hay fundido cruzado
-  de audio.
 - El sonido solo acompaña al reproducir con el transporte a velocidad normal
   (J-K-L); la velocidad de cada clip sí se oye.
-- La selección múltiple es con `Ctrl`+clic; no hay selección con rectángulo.
 - El desfase en rojo solo se calcula entre clips enlazados del mismo archivo.
-- La cola exporta un trabajo a la vez, y salir del editor la cancela.
-- La mezcla de audio recorta si la suma se pasa de 1.0, y no hay medidores
-  para verlo venir.
+- La cola exporta un trabajo a la vez: dos codificaciones en paralelo no
+  terminan antes y gastan el doble de memoria.
 - No hay cortinillas ni efectos de transición más allá de cruzada, a negro y
   a blanco.
 - La viñeta es el ajuste más caro que hay: unos 12 ms por cuadro en 1080p.
@@ -661,7 +683,5 @@ advertencia literal.
   por voz— llega cuando se integre un LLM.
 - La fusión junta por elemento; dos clips que quedan encimados se reportan
   pero no se acomodan solos.
-- Cambiar de secuencia reinicia el deshacer, y deshacer no quita la
-  secuencia que creó un "Anidar".
 - La estabilización corrige desplazamiento, no giro ni zoom de la cámara.
 - La barra de zonas solo mide la imagen; el audio no se renderiza a caché.

@@ -39,6 +39,7 @@ from vortex_studio.media.encoder import Cancelled, export_audio, export_video
 from vortex_studio.media.mixer import AudioMixer
 from vortex_studio.media.presets import AUDIO as AUDIO_PRESET
 from vortex_studio.media.presets import output_size
+from vortex_studio.model.media import duration_in
 
 WAITING = "En cola"
 RUNNING = "Exportando"
@@ -230,7 +231,10 @@ class RenderQueue(QObject):
         if job._cancel.is_set():
             raise Cancelled()
 
-        clips = secuencia.audio_clips(resolver)
+        # Con la duración de cada archivo, igual que el play: sin ella el audio
+        # de una transición se alargaba más allá del final de su archivo y el
+        # archivo exportado sonaba distinto a lo que se oyó al editar.
+        clips = secuencia.audio_clips(resolver, lambda ruta: duration_in(job.media, ruta))
         if job.is_audio:
             if not clips:
                 raise RuntimeError("La secuencia no tiene audio que exportar.")

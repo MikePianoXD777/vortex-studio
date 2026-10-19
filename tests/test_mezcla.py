@@ -120,3 +120,16 @@ def test_tres_carriles_tambien_mezclan(media):
     frames = list(mixer.stream(0.0, 4.0))
     assert abs(sum(f.samples for f in frames) - 4 * RATE) < RATE * 0.03
     assert energia(frames, 1.5, 2.5) > 0.05
+
+
+def test_en_s16_la_cola_de_la_mezcla_no_truena(media):
+    """Un carril puede quedar una muestra corto, porque cada pedazo —hueco,
+    clip, silencio del final— se redondea por su lado. La mezcla rellena esa
+    muestra con silencio, y el silencio salía ya en `s16` hacia el
+    convertidor de `_finish`, que esperaba flotante: «Frame does not match
+    AudioResampler setup» al final del play, con dos clips encimados."""
+    uno = clip(media, 0.0, 2.0)
+    otro = clip(media, 24000.4 / RATE, 48000.4 / RATE)
+    frames = list(AudioMixer([uno, otro], fmt="s16").stream(0.0, 2.0))
+    assert {f.format.name for f in frames} == {"s16"}
+    assert sum(f.samples for f in frames) == 2 * RATE

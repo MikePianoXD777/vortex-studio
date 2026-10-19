@@ -142,6 +142,11 @@ QSpinBox:hover {{ border-color: {theme.BORDE}; }}
 QSpinBox:focus {{ border-color: {theme.BORDE_FUERTE}; color: {theme.TEXTO};
     background: {theme.CAMPO}; }}
 QSpinBox:disabled {{ color: {theme.APAGADO}; }}
+/* Sin flechas, Qt 6.12 igual les guarda lugar y el campo de texto se
+   queda en 1 px: el valor se veía como «⋮». Con origen y tamaño cero, no. */
+QSpinBox::up-button, QSpinBox::down-button {{
+    subcontrol-origin: border; width: 0px; height: 0px; image: none; border: none;
+}}
 """
 
 
@@ -157,17 +162,31 @@ class _ValueSpin(QSpinBox):
             return f"{value}{self._sufijo}"
         return f"{value / self._scale:.{self._decimals}f}{self._sufijo}"
 
+    def _numero(self, text: str) -> str:
+        """El texto sin la unidad, aunque venga a medias o escrita a mano.
+
+        Antes solo se quitaba la unidad completa. Al teclear «3:1» en la
+        relación del compresor, «3:» no era número y Qt tiraba el «:»; el 1 se
+        pegaba al 3, y 31:1 se iba al tope, 20:1. Ahora «3:», «-12 d» o
+        «-12 dB» valen lo mismo que el número solo.
+        """
+        limpio = text.strip()
+        unidad = self._sufijo.strip()
+        for n in range(len(unidad), 0, -1):
+            if limpio.endswith(unidad[:n]):
+                limpio = limpio[:-n].strip()
+                break
+        return limpio
+
     def valueFromText(self, text: str) -> int:
-        limpio = text.replace(self._sufijo, "").replace(",", ".").strip() if self._sufijo \
-            else text.replace(",", ".").strip()
         try:
-            return int(round(float(limpio) * self._scale))
+            return int(round(float(self._numero(text).replace(",", ".")) * self._scale))
         except ValueError:
             return self.value()
 
     def validate(self, text, pos):
         from PySide6.QtGui import QValidator
-        limpio = text.replace(self._sufijo, "").strip() if self._sufijo else text.strip()
+        limpio = self._numero(text)
         if limpio in ("", "-", ".", "-."):
             return QValidator.Intermediate, text, pos
         try:
@@ -368,6 +387,17 @@ def draw_icon(painter, nombre: str, rect, color) -> None:
     elif nombre == "mas":
         painter.drawLine(P(0, -5), P(0, 5))
         painter.drawLine(P(-5, 0), P(5, 0))
+    elif nombre == "menos":
+        painter.drawLine(P(-5, 0), P(5, 0))
+    elif nombre == "ajustar":
+        # Dos topes y una flecha de lado a lado: «que quepa todo».
+        painter.drawLine(P(-7, -5), P(-7, 5))
+        painter.drawLine(P(7, -5), P(7, 5))
+        painter.drawLine(P(-4.5, 0), P(4.5, 0))
+        painter.drawLine(P(-4.5, 0), P(-2, -2.5))
+        painter.drawLine(P(-4.5, 0), P(-2, 2.5))
+        painter.drawLine(P(4.5, 0), P(2, -2.5))
+        painter.drawLine(P(4.5, 0), P(2, 2.5))
 
 
 def make_icon(nombre: str, color: str = theme.TENUE, size: int = 16):

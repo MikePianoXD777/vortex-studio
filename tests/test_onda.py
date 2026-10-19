@@ -55,6 +55,85 @@ def test_los_picos_de_siempre_salen_de_la_onda(media):
     assert max(picos) == pytest.approx(max(-datos[0].min(), datos[1].max()), abs=1e-5)
 
 
+@pytest.fixture(scope="module")
+def desfasados(tmp_path_factory):
+    """Videos cuyo audio no arranca junto con la imagen, con un tono de 1 s.
+
+    En uno el sonido empieza 1 s después que la imagen; en el otro la imagen
+    empieza 0.5 s después que el sonido. Pasa con material de cámara y `.ts`.
+    """
+    import subprocess
+
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        pytest.skip("hace falta ffmpeg")
+    base = tmp_path_factory.mktemp("desfasados")
+    tono = "aevalsrc='if(between(t,1,2),0.5*sin(2*PI*440*t),0)':s=48000:d=3.5"
+    imagen = "testsrc2=size=160x90:rate=30:duration=4"
+    comunes = ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k"]
+    rutas = {"audio_tarde": base / "audio_tarde.mp4", "video_tarde": base / "video_tarde.mp4"}
+    for argumentos in (
+        ["-f", "lavfi", "-i", imagen, "-itsoffset", "1.0", "-f", "lavfi", "-i", tono,
+         *comunes, str(rutas["audio_tarde"])],
+        ["-itsoffset", "0.5", "-f", "lavfi", "-i", imagen, "-f", "lavfi", "-i", tono,
+         *comunes, str(rutas["video_tarde"])],
+    ):
+        subprocess.run([ffmpeg, "-y", "-loglevel", "error", *argumentos], check=True)
+    return rutas
+
+
+def _desfase(ruta) -> float:
+    """Cuánto después que el audio empieza la imagen, según el archivo."""
+    import av
+
+    with av.open(str(ruta)) as contenedor:
+        inicio = {}
+        for flujo in (contenedor.streams.video[0], contenedor.streams.audio[0]):
+            inicio[flujo.type] = float((flujo.start_time or 0) * flujo.time_base)
+    return inicio["video"] - inicio["audio"]
+
+
+def _sonido(niveles: np.ndarray, por_segundo: float) -> tuple[float, float]:
+    """De dónde a dónde se oye algo, en segundos."""
+    fuerte = np.where(niveles > 0.1)[0]
+    return fuerte[0] / por_segundo, (fuerte[-1] + 1) / por_segundo
+
+
+@pytest.mark.parametrize("cual, desde", [("audio_tarde", 2.0), ("video_tarde", 0.5)])
+def test_la_onda_cuenta_desde_la_imagen(desfasados, cual, desde):
+    """El render cuenta el segundo 0 del clip desde el primer cuadro del
+    video. La onda contaba desde la primera muestra de audio: se dibujaba
+    corrida de lo que se oye, y «Quitar silencios» cortaba donde sí había
+    sonido."""
+    from vortex_studio.media.audio import RATE, AudioRenderer
+    from vortex_studio.model import Clip
+
+    ruta = desfasados[cual]
+    pedido = {"audio_tarde": -1.0, "video_tarde": 0.5}[cual]
+    if abs(_desfase(ruta) - pedido) > 0.05:
+        # El ffmpeg 4.4 de la máquina que compila no escribe el `-itsoffset`
+        # de la imagen como lo hacen los nuevos: sin el desfase, esta prueba no
+        # prueba nada.
+        pytest.skip(f"Este ffmpeg no escribió el desfase pedido ({_desfase(ruta):+.2f} s)")
+    datos = compute(ruta, 100)
+    onda = _sonido(np.maximum(np.abs(datos[0]), np.abs(datos[1])), 100)
+
+    clip = Clip(source=ruta, start=0.0, duration=3.5)
+    render = np.concatenate([f.to_ndarray()[0] for f in AudioRenderer([clip]).stream(0.0, 3.5)])
+    suena = _sonido(np.abs(render), RATE)
+
+    assert suena[0] == pytest.approx(desde, abs=0.03)
+    assert onda == pytest.approx(suena, abs=0.03)
+
+
+def test_la_version_nueva_no_usa_las_ondas_viejas(media, monkeypatch):
+    """Las ondas guardadas antes de contar desde la imagen están corridas:
+    con otra versión se dejan de encontrar y se calculan de nuevo."""
+    nueva = cache_path(media["sonoro"], 60)
+    monkeypatch.setattr(waveform, "VERSION", 1)
+    assert cache_path(media["sonoro"], 60) != nueva
+
+
 # --- la caché en disco ----------------------------------------------------
 
 def test_se_guarda_en_disco(cache, media):
@@ -189,3 +268,18 @@ def test_la_onda_se_dibuja_en_la_pista(ventana, media, qapp, monkeypatch):
 
     distintos = sum(1 for a, b in zip(con_onda, sin_onda) if a != b)
     assert distintos > 1500, f"la onda casi no cambia la pista ({distintos} pixeles)"
+
+
+def test_la_onda_se_dibuja_en_decibeles():
+    """En amplitud, una voz a −18 dB ocupaba el 12 % del clip y se veía plana."""
+    import math
+
+    from vortex_studio.ui.timeline import WAVE_FLOOR_DB, _wave_level
+
+    assert _wave_level(1.0) == pytest.approx(1.0)
+    assert _wave_level(0.0) == 0.0
+    assert _wave_level(10 ** (-WAVE_FLOOR_DB / 2 / 20)) == pytest.approx(0.5)
+    assert _wave_level(10 ** (-60 / 20)) == 0.0
+    voz = 10 ** (-18 / 20)
+    assert _wave_level(voz) > 0.6 > voz
+    assert math.isfinite(_wave_level(1e-30))

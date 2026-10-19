@@ -26,6 +26,9 @@ class TimelineTools(QWidget):
     split_requested = Signal()
     snap_toggled = Signal(bool)
     link_toggled = Signal(bool)
+    zoom_in = Signal()
+    zoom_out = Signal()
+    zoom_fit = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -75,6 +78,20 @@ class TimelineTools(QWidget):
         self.count.setStyleSheet(
             f"color:{theme.MUY_TENUE}; font-family:{theme.MONO}; font-size:11px;")
         layout.addWidget(self.count)
+        layout.addSpacing(10)
+
+        # Zoom a la vista: antes solo existía Ctrl + rueda y Shift+Z, y nada
+        # en pantalla decía que el timeline se podía acercar. Las teclas son
+        # las de `ver.alejar` y `ver.acercar`: el de acercar decía «+», y con
+        # «+» —tecla propia en el teclado latinoamericano— no pasaba nada.
+        self.zoom_out_button = self._icon_pill("menos", "Alejar el timeline  ·  -")
+        self.zoom_out_button.clicked.connect(self.zoom_out.emit)
+        self.zoom_in_button = self._icon_pill("mas", "Acercar el timeline  ·  =")
+        self.zoom_in_button.clicked.connect(self.zoom_in.emit)
+        self.fit_button = self._icon_pill("ajustar", "Que quepa toda la secuencia  ·  Shift+Z")
+        self.fit_button.clicked.connect(self.zoom_fit.emit)
+        for boton in (self.zoom_out_button, self.zoom_in_button, self.fit_button):
+            layout.addWidget(boton)
 
         self._group.idClicked.connect(self._chosen)
         self.set_tool(TOOL_SELECT)
@@ -88,6 +105,12 @@ class TimelineTools(QWidget):
         boton.setToolTip(tip)
         boton.setCursor(Qt.PointingHandCursor)
         boton.setFocusPolicy(Qt.NoFocus)
+        return boton
+
+    def _icon_pill(self, icono: str, tip: str) -> QToolButton:
+        boton = self._pill("", icono, tip)
+        boton.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        boton.setStyleSheet("QToolButton { padding: 5px 7px; }")
         return boton
 
     def _tool(self, tool: str, texto: str, icono: str, tip: str) -> QToolButton:

@@ -5,12 +5,69 @@
 Todo lo que cambia en Vortex Studio, de lo más nuevo a lo más viejo.
 
 Las versiones siguen [versionado semántico](https://semver.org/lang/es/):
-`MAYOR.MENOR.PARCHE`. Mientras estemos en `0.x`, cualquier versión menor
-puede romper compatibilidad.
+`MAYOR.MENOR.PARCHE`. Desde la `1.0`, solo una versión mayor puede romper
+compatibilidad: lo que guardes en un `.vortex` abre en todas las `1.x`.
 
 ## [Sin publicar]
 
 Nada todavía.
+
+## [1.0.0] — 2026-10-19
+
+**La 1.0.** Se cierra todo lo que se sentía roto de la lista de pendientes,
+se pule la interfaz y se arreglan tres fallas que solo aparecían con las
+versiones nuevas de las bibliotecas. El formato `.vortex` no cambia: los
+proyectos de la `0.1` abren igual.
+
+### Nuevo
+
+- **El audio sigue a las transiciones.** Una transición de video ya no deja
+  el sonido cortando seco: en la cruzada los dos audios se enciman con curvas
+  de potencia constante, y a negro o a blanco el sonido pasa por silencio.
+- **Limitador en la mezcla.** Sumar pistas ya no recorta: la salida pasa por
+  un limitador de picos a −0.3 dBFS que no retrasa el sonido. Por debajo del
+  tope no toca nada.
+- **Medidor de audio** a la derecha del timeline, en dB, con retención del
+  pico y una luz **LIM** que avisa si el limitador tuvo que actuar.
+- **El timeline se recorre a los lados**: barra de desplazamiento, rueda del
+  mouse, zoom con Ctrl + rueda que deja quieto lo que está bajo el cursor,
+  botones − / + / ajustar, y atajos `=` y `-`. Al reproducir, la vista pasa
+  de página sola.
+- **Selección con rectángulo**: arrastrar en un hueco del timeline selecciona
+  todo lo que toque; con Ctrl, lo suma.
+- **Salir al terminar**: cerrar el editor con exportaciones en curso ya no
+  obliga a cancelarlas; se puede dejar que terminen y el editor se cierra solo.
+
+### Mejorado
+
+- La onda de audio se dibuja en decibeles y debajo del nombre del clip: una
+  voz normal ya no se ve como una línea punteada.
+- El ecualizador, el compresor y el ducking muestran unidades reales
+  («+3.5 dB», «4.0:1», «10 ms») en vez de números multiplicados por diez.
+- Un timeline vacío dice qué hacer.
+- La regla del timeline ya no deja etiquetas cortadas en la orilla.
+
+### Arreglado
+
+- **Deshacer «Anidar»** (o una multicámara) dejaba la secuencia nueva en el
+  proyecto, huérfana, y se guardaba con él. Ahora se va con la edición y
+  regresa al rehacer, con lo editado adentro.
+- **El audio de los MP4 salía corrido hasta 23 ms** cuando un clip empezaba a
+  media pista: el AAC arranca con relleno y el salto caía después del punto
+  pedido. Se notaba al cruzar dos pedazos del mismo archivo, que se
+  cancelaban entre sí.
+- En archivos cuyo tiempo no empieza en cero, el audio no contaba desde el
+  mismo punto que la imagen.
+- **Con PyAV 19 el video vertical de celular volvía a verse acostado**: la
+  biblioteca cambió cómo entrega la marca de giro.
+- **Con Qt 6.12 los valores de los deslizadores se veían como «⋮»**: el
+  campo del número medía un pixel.
+- Un silencio de medio segundo justo no se cortaba con «Quitar silencios».
+- En archivos cuyo audio empieza después que la imagen, la onda, «Quitar
+  silencios» y la sincronía de la multicámara contaban desde otro punto que
+  lo que se oye.
+- «Ajustar» (`Shift+Z`) vuelve a hacer caber secuencias de horas.
+- El banco de pruebas abría ventanas de verdad en escritorios con Wayland.
 
 ## [0.1.1] — 2026-09-18
 

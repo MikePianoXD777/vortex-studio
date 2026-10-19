@@ -59,6 +59,32 @@ def test_sin_audio_el_desfase_es_cero_y_sin_confianza(media, camaras):
     assert audio_offset(media["mudo"], camaras[0]) == (0.0, 0.0)
 
 
+def test_el_desfase_cuenta_desde_la_imagen(tmp_path):
+    """Una cámara cuyo audio arranca medio segundo después que su imagen.
+
+    El clip cuenta su segundo 0 desde el primer cuadro del video, y el
+    sonido de esta cámara cae medio segundo adentro: hay que ponerla medio
+    segundo antes. La sincronía leía el audio desde su primera muestra, daba
+    cero, y la cámara quedaba desfasada de las demás lo que su audio y su
+    imagen estaban corridos.
+    """
+    from vortex_studio.media.sync import audio_offset
+
+    if FFMPEG is None:
+        pytest.skip("hace falta ffmpeg")
+    ruido = tmp_path / "ruido.wav"
+    _ffmpeg("-f", "lavfi", "-i", "anoisesrc=d=5:c=pink:r=48000:seed=3", str(ruido))
+    a, b = tmp_path / "a.mp4", tmp_path / "b.mp4"
+    imagen = "color=c=red:s=160x90:r=30:d=5"
+    _ffmpeg("-f", "lavfi", "-i", imagen, "-i", str(ruido),
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(a))
+    _ffmpeg("-f", "lavfi", "-i", imagen, "-itsoffset", "0.5", "-i", str(ruido),
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(b))
+
+    desfase, confianza = audio_offset(a, b)
+    assert desfase == pytest.approx(-0.5, abs=0.01) and confianza > 5
+
+
 def test_codigo_de_tiempo_de_los_metadatos(camaras):
     from vortex_studio.media.sync import timecode_seconds
 
@@ -223,3 +249,23 @@ def test_la_ventana_corta_al_angulo_en_el_playhead_y_se_ve(ventana, camaras):
     assert not ventana.switch_angle(5)
     ventana.undo()
     assert mc.cuts(ventana.sequence.track_named("V1").clips[0]) == []
+
+
+def test_deshacer_la_multicamara_la_aparta_y_rehacer_la_regresa(ventana, camaras):
+    clip = ventana.create_multicam(list(camaras), method="timecode")
+    multi = ventana.project.sequence_by_id(clip.sequence_id)
+    ventana.undo()
+    assert ventana.project.sequence_by_id(clip.sequence_id) is None
+    ventana.redo()
+    assert ventana.project.sequence_by_id(clip.sequence_id) is multi
+
+
+def test_borrar_el_clip_y_deshacer_otra_cosa_no_aparta_la_multicamara(ventana, camaras, media):
+    """Antes cualquier deshacer se llevaba la multicámara que ya nadie usaba,
+    aunque lo deshecho no tuviera nada que ver con ella."""
+    clip = ventana.create_multicam(list(camaras), method="timecode")
+    ventana.timeline.select(clip)
+    ventana.delete_selected()
+    ventana._place_video(media["gris"], at=20.0)
+    ventana.undo()
+    assert ventana.project.sequence_by_id(clip.sequence_id) is not None

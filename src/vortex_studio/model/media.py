@@ -95,3 +95,15 @@ def lookup(library: dict[str, MediaInfo], path: str | Path,
     info.size, info.mtime = stat.st_size, stat.st_mtime
     library[key] = info
     return info
+
+
+def duration_in(media: dict, path) -> float | None:
+    """Cuánto dura el archivo según el caché de sondeos, o None si no se sabe.
+
+    La usan la ventana y la cola de render: las dos tienen que alargar igual
+    el audio de una transición, o el play y el archivo exportado sonarían
+    distinto en el mismo corte.
+    """
+    info = media.get(library_key(path))
+    duracion = getattr(info, "duration", 0.0) or 0.0
+    return duracion if duracion > 0 else None

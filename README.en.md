@@ -7,20 +7,19 @@ A non-linear video editor. Part of Vortex Suite.
 The features of DaVinci Resolve, CapCut, Premiere Pro and After Effects, but
 easy to use. The capability, yes; the complexity, no.
 
-> ### ✅ Stable — `0.1.1`
+> ### ✅ Version 1.0 — `1.0.0`
 >
-> **It's out of beta.** It passes 1305 automated tests, and before this
-> release the whole editor was reviewed —model, media, window, panels and
-> packaging— and tested against real-world footage: vertical phone video,
-> 29.97 fps, distant keyframes, HEVC, 44.1 kHz and variable frame rate.
+> **1.0.** Everything that felt broken is closed: audio follows transitions,
+> the mix no longer clips and has a meter, the timeline scrolls sideways and
+> supports marquee selection. It passes 1427 automated tests, including
+> real-world footage: vertical phone video, 29.97 fps, distant keyframes,
+> HEVC, 44.1 kHz and variable frame rate.
 >
-> What stable means here:
+> What 1.0 means:
 >
 > - The `.vortex` project format stays as it is: what you save today opens in
->   the versions to come
+>   every `1.x`, and `0.1` projects open as before
 > - No action takes your footage away without asking
-> - It's still version 0.1: there's a lot of room to grow, and the roadmap
->   decides what comes next
 >
 > Still worth knowing:
 >
@@ -28,8 +27,6 @@ easy to use. The capability, yes; the complexity, no.
 >   before playing it back
 > - The render cache and stabilization analyses take disk space in the system
 >   cache; they can be deleted without losing anything
-> - During video transitions, audio still hard-cuts
-> - The timeline has no horizontal scrollbar: press `Shift+Z` to see it all
 >
 > Report what breaks in
 > [Issues](https://github.com/MikePianoXD777/vortex-studio/issues).
@@ -41,9 +38,9 @@ Every version's executables are in
 
 **Windows** (64-bit):
 
-- `VortexStudio-0.1.1-windows-x64-instalador.exe` installs it and adds it to
+- `VortexStudio-1.0.0-windows-x64-instalador.exe` installs it and adds it to
   the Start menu. No admin rights needed.
-- `VortexStudio-0.1.1-windows-x64-portable.zip` is the portable version:
+- `VortexStudio-1.0.0-windows-x64-portable.zip` is the portable version:
   unzip it and open `vortex-studio.exe`.
 
 The executables aren't signed, so Windows may warn through SmartScreen:
@@ -53,8 +50,8 @@ The executables aren't signed, so Windows may warn through SmartScreen:
 later; with PulseAudio or PipeWire, which every desktop ships):
 
 ```bash
-tar xzf VortexStudio-0.1.1-linux-x86_64.tar.gz
-cd VortexStudio-0.1.1-linux-x86_64
+tar xzf VortexStudio-1.0.0-linux-x86_64.tar.gz
+cd VortexStudio-1.0.0-linux-x86_64
 ./instalar.sh
 ```
 
@@ -162,6 +159,10 @@ environment if it doesn't exist.
 - Export to MP4 at sequence size, 1080p or 4K, audio only, and the current
   frame to PNG
 - Save and open projects, portable across folders and systems
+- Audio that follows video transitions
+- A limiter on the mix and an audio meter
+- A timeline with a scroll bar, anchored zoom and marquee selection
+- Quitting with exports running and letting them finish
 
 ## Tests
 
@@ -170,7 +171,11 @@ environment if it doesn't exist.
 ```
 
 The suite generates its own footage with ffmpeg the first time and runs
-without opening windows, so it works over SSH or on a headless machine.
+without opening windows, so it works over SSH or on a headless machine. To
+see them on purpose: `VORTEX_TEST_VENTANAS=1 ./probar.sh`.
+
+To review the interface without opening it, `herramientas/capturas.py folder`
+takes screenshots of the window at several sizes, with generated footage.
 
 | File | What it covers |
 |---|---|
@@ -251,6 +256,13 @@ without opening windows, so it works over SSH or on a headless machine.
 | `test_arranque_seguro.py` | That a startup error leaves a trace instead of dying silently |
 | `test_parche_b3.py` | The failures found during the beta's hands-on QA |
 | `test_portabilidad.py` | That it behaves the same on Linux and Windows |
+| `test_transicion_audio.py` | Linked audio follows its video's transition |
+| `test_desplazamiento.py` | Scrolling the timeline: scroll bar, wheel and anchored zoom |
+| `test_limitador.py` | The mix limiter: nothing goes past the ceiling, nothing is delayed |
+| `test_medidor.py` | The audio meter next to the timeline |
+| `test_deshacer_anidar.py` | Undoing "Nest" removes the sequence it created |
+| `test_salir_con_cola.py` | Closing the editor while exports are running |
+| `test_rectangulo.py` | Marquee selection |
 
 ## Shortcuts
 
@@ -305,12 +317,16 @@ These are the defaults:
 | `1` `2` `3` `4` | Cut to that camera in a multicam |
 | `Shift+↓` `Shift+↑` | Next / previous marker |
 | `F` | Fullscreen |
+| `=` / `-` / `Shift+Z` | Zoom the timeline in / out / to fit |
 
-On the timeline: `Ctrl`+wheel zooms, dragging a clip moves it, dragging its
-edges trims it, and everything snaps to neighbouring cuts, the playhead and
-markers. With the slip tool (`Y`), dragging inside a clip changes which part
-of the file is shown without moving it. `Ctrl`+click adds clips to the
-selection, `Alt`+click grabs just one side of a linked pair, and
+On the timeline: the wheel scrolls it sideways and `Ctrl`+wheel zooms
+without moving what's under the cursor; there's a scroll bar below and zoom
+buttons on the tools row. Dragging a clip moves it, dragging its edges trims
+it, and everything snaps to neighbouring cuts, the playhead and markers.
+With the slip tool (`Y`), dragging inside a clip changes which part of the
+file is shown without moving it. Dragging on an empty spot draws a marquee
+that selects everything it touches; `Ctrl`+click or `Ctrl`+marquee add to
+the selection, `Alt`+click grabs just one side of a linked pair, and
 double-clicking a marker opens it.
 
 ## Layout
@@ -558,10 +574,19 @@ clips couldn't be heard together: the second one was lost with no warning.
 The lanes deliberately aren't the timeline's tracks, so the case of two
 overlapping clips on the same track is solved too.
 
-The sum can go past full scale and clip, same as Premiere. It's allowed to
-clip rather than adding a limiter, because a limiter needs to look ahead and
-that lookahead would push the sound out of sync with the picture. Per-clip
-gain is there for that.
+**The sum no longer clips.** Everything goes through a −0.3 dBFS peak
+limiter (`media/limiter.py`). Usual limiters look a few milliseconds ahead,
+and that lookahead would push the sound out of sync with the picture; this
+one doesn't look ahead —it follows each peak instantly and releases
+slowly— so it adds no delay. Below the ceiling it leaves the sound alone.
+
+**Meter** to the right of the timeline: per-channel peaks in dB, with a
+peak-hold line and a **LIM** light that stays on if the limiter had to turn
+the volume down —a sign the mix is too loud—. A click turns it off.
+
+**In transitions**, linked audio follows the video: in a cross dissolve both
+sounds overlap with constant-power curves, which add up to the same energy
+across the whole crossfade; on a dip to black or white, the sound dips too.
 
 **At other speeds**, each clip chooses what its sound does: *Keep pitch* (like
 Premiere: a voice sounds natural), *Shift pitch* (like tape: higher when sped
@@ -638,20 +663,16 @@ commands. A test watches for it.
 
 [MIT](LICENSE). You can use, modify and distribute it, including in something
 commercial; all that's asked is that you keep the copyright notice. No
-warranty of any kind — and in beta that isn't legal boilerplate, it's a
-literal warning.
+warranty of any kind.
 
 ## Not there yet
 
-- During video transitions, audio hard-cuts: there's no audio crossfade.
 - Sound only follows playback with the transport at normal speed (J-K-L);
   each clip's own speed is heard.
-- Multi-selection is `Ctrl`+click only; no rubber-band selection.
 - The red drift badge is only computed between linked clips from the same
   file.
-- The queue exports one job at a time, and quitting the editor cancels it.
-- The audio mix clips when the sum goes past 1.0, and there are no meters to
-  see it coming.
+- The queue exports one job at a time: two encodes in parallel don't finish
+  sooner and use twice the memory.
 - No wipes or transition effects beyond cross, dip to black and dip to
   white.
 - The vignette is the most expensive adjustment there is: around 12 ms per
@@ -663,8 +684,6 @@ literal warning.
   speech subtitles — arrive once an LLM is integrated.
 - Merging works per item; two clips left overlapping are reported but not
   rearranged.
-- Switching sequences resets undo, and undo doesn't remove the sequence a
-  "Nest" created.
 - Stabilization corrects shifts, not camera rotation or zoom.
 - The zone bar only measures the picture; audio isn't rendered to cache.
 

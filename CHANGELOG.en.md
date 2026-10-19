@@ -5,11 +5,68 @@
 Everything that changes in Vortex Studio, newest first.
 
 Versions follow [semantic versioning](https://semver.org/): `MAJOR.MINOR.PATCH`.
-While we're on `0.x`, any minor version may break compatibility.
+Since `1.0`, only a major version may break compatibility: whatever you save
+in a `.vortex` file opens in every `1.x`.
 
 ## [Unreleased]
 
 Nothing yet.
+
+## [1.0.0] — 2026-10-19
+
+**1.0.** Everything that felt broken on the to-do list is closed, the
+interface gets a polish, and three bugs that only showed up with the newest
+library versions are fixed. The `.vortex` format doesn't change: `0.1`
+projects open as before.
+
+### New
+
+- **Audio follows transitions.** A video transition no longer leaves the
+  sound cutting hard: in a cross dissolve both clips' audio overlap with
+  constant-power curves, and a dip to black or white dips the sound too.
+- **Limiter on the mix.** Summing tracks no longer clips: the output goes
+  through a −0.3 dBFS peak limiter that adds no delay. Below the ceiling it
+  doesn't touch anything.
+- **Audio meter** to the right of the timeline, in dB, with peak hold and a
+  **LIM** light that tells you when the limiter had to step in.
+- **The timeline scrolls sideways**: scroll bar, mouse wheel, Ctrl + wheel
+  zoom that keeps what's under the cursor in place, − / + / fit buttons, and
+  `=` and `-` shortcuts. During playback the view pages along by itself.
+- **Marquee selection**: dragging on an empty part of the timeline selects
+  everything it touches; with Ctrl, it adds to the selection.
+- **Quit when done**: closing the editor while exports are running no longer
+  forces you to cancel them; you can let them finish and the editor closes
+  by itself.
+
+### Improved
+
+- The audio waveform is drawn in decibels and below the clip name: a normal
+  voice no longer looks like a dotted line.
+- The equalizer, compressor and ducking show real units ("+3.5 dB", "4.0:1",
+  "10 ms") instead of numbers multiplied by ten.
+- An empty timeline tells you what to do.
+- The timeline ruler no longer leaves labels cut off at the edge.
+
+### Fixed
+
+- **Undoing "Nest"** (or a multicam) left the new sequence in the project,
+  orphaned, and it got saved with it. Now it goes away with the edit and
+  comes back on redo, with whatever was edited inside.
+- **MP4 audio was off by up to 23 ms** when a clip started mid-file: AAC
+  starts with padding and the seek landed after the requested point. It
+  showed when crossfading two pieces of the same file, which cancelled out.
+- In files whose timestamps don't start at zero, the audio didn't count from
+  the same point as the picture.
+- **With PyAV 19, vertical phone video showed sideways again**: the library
+  changed how it hands over the rotation tag.
+- **With Qt 6.12, slider values showed as "⋮"**: the number field was one
+  pixel wide.
+- A silence of exactly half a second wasn't cut by "Remove silences".
+- In files whose audio starts after the picture, the waveform, "Remove
+  silences" and multicam sync counted from a different point than what you
+  hear.
+- "Fit" (`Shift+Z`) fits hours-long sequences again.
+- The test suite opened real windows on Wayland desktops.
 
 ## [0.1.1] — 2026-09-18
 

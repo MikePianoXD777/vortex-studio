@@ -128,9 +128,14 @@ def frame_rotation(frame) -> int:
     —nueve enteros en coma fija— y de ahí sale el ángulo.
     """
     datos = None
-    for parte in getattr(frame, "side_data", None) or ():
-        if getattr(getattr(parte, "type", None), "name", "") == "DISPLAYMATRIX":
-            datos = bytes(parte)
+    contenedor = getattr(frame, "side_data", None) or ()
+    for parte in contenedor:
+        # PyAV hasta la 18 entrega los pedazos al recorrer; desde la 19 el
+        # contenedor es un diccionario y al recorrerlo salen los tipos. Con
+        # la 19 ya no se leía ningún giro y el celular se veía acostado.
+        tipo = getattr(parte, "type", parte)
+        if getattr(tipo, "name", "") == "DISPLAYMATRIX":
+            datos = bytes(parte if hasattr(parte, "type") else contenedor[parte])
             break
     if not datos or len(datos) < 36:
         return 0

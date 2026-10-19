@@ -67,3 +67,23 @@ def test_no_crece_sin_limite(secuencia):
         secuencia.video_tracks()[-1].append(f"/tmp/{i}.mp4", 1.0)
         h.push(secuencia, f"Paso {i}")
     assert len(h._states) <= 5
+
+
+def test_cada_estado_recuerda_las_secuencias_que_creo(secuencia):
+    """Deshacer «Anidar» aparta la anidada y rehacer la regresa: el historial
+    dice qué secuencias nacieron con cada paso, y ningún otro paso las toca."""
+    h = History()
+    h.reset(secuencia)
+    v1 = secuencia.video_tracks()[-1]
+    v1.append("/tmp/a.mp4", 1.0)
+    h.push(secuencia, "Anidar", creates={"hija"})
+    v1.append("/tmp/b.mp4", 1.0)
+    h.push(secuencia, "Importar")
+    assert h.undo_creates == frozenset()
+    h.undo()
+    assert h.undo_creates == {"hija"}
+    h.undo()
+    assert not h.can_undo and h.undo_creates == frozenset()
+    assert h.redo_creates == {"hija"}
+    h.redo()
+    assert h.redo_creates == frozenset()

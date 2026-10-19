@@ -78,6 +78,29 @@ def test_sin_audio_no_hay_silencios(media):
     assert silent_ranges(media["tono"], threshold_db=-80) == []
 
 
+def test_los_silencios_cuentan_desde_la_imagen(tmp_path):
+    """Con el audio grabado un segundo después que la imagen, el render toca
+    el tono en 1–2 s y 3.5–4.5 s del clip. Los silencios se medían desde la
+    primera muestra de audio, un segundo corridos: «Quitar silencios» cortaba
+    justo el tono y dejaba el silencio de verdad."""
+    from vortex_studio.media.silence import silent_ranges
+
+    if FFMPEG is None:
+        pytest.skip("hace falta ffmpeg")
+    ruta = tmp_path / "corrida.mp4"
+    expresion = "if(lt(t,1)+between(t,2.5,3.5),0.5*sin(2*PI*440*t),0)"
+    subprocess.run([FFMPEG, "-y", "-loglevel", "error",
+                    "-f", "lavfi", "-i", "testsrc2=size=160x90:rate=30:duration=5",
+                    "-itsoffset", "1.0", "-f", "lavfi", "-i", f"aevalsrc='{expresion}':s=48000:d=4",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k",
+                    str(ruta)], check=True)
+
+    tramos = silent_ranges(ruta, padding=0.1)
+    assert not any(a < 1.5 < b for a, b in tramos)          # ahí suena el tono
+    assert any(a < 2.75 < b for a, b in tramos)             # y ahí no
+    assert not any(a < 4.0 < b for a, b in tramos)
+
+
 def test_los_tramos_del_archivo_se_pasan_a_la_linea_de_tiempo():
     clip = Clip("a.mp4", 10.0, 4.0, in_point=2.0, speed=2.0)
     # Archivo 3–4 s → pista 10.5–11; 8–20 s → recortado a 13–14.
