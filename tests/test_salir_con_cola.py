@@ -213,3 +213,24 @@ def test_no_se_cierra_debajo_de_un_dialogo_abierto(ventana, media, tmp_path, mon
     assert ventana.isVisible()
     dialogo.close()
     assert esperar(lambda: not ventana.isVisible(), 5), "al cerrar el diálogo sí se cierra"
+
+
+def test_un_modal_ajeno_no_detiene_el_cierre(ventana, media, tmp_path, monkeypatch):
+    """Solo cuentan los diálogos de esta ventana. Con cualquier modal abierto
+    —de otra ventana, o uno que quedó colgado—, el editor ya no se cerraba
+    nunca solo."""
+    from PySide6.QtWidgets import QDialog, QWidget
+
+    job = exportando(ventana, media, tmp_path)
+    monkeypatch.setattr(ventana, "_ask_quit_with_exports", lambda: "esperar")
+    ventana.close()
+    otra = QWidget()
+    ajeno = QDialog(otra)
+    ajeno.setModal(True)
+    ajeno.show()
+    try:
+        assert esperar(lambda: job.status == DONE, 60)
+        assert esperar(lambda: not ventana.isVisible(), 5), "un modal ajeno no lo detiene"
+    finally:
+        ajeno.close()
+        otra.close()

@@ -1095,6 +1095,18 @@ class MainWindow(QMainWindow):
         self._missing_notice = aviso
         aviso.open()            # sin detener nada: no es exec()
 
+    def _close_missing_notice(self) -> None:
+        """El aviso de archivos que faltan no detiene nada, así que puede
+        seguir abierto cuando se cierra la ventana: se quedaba flotando, sin
+        ventana detrás, y contaba como un modal abierto."""
+        aviso, self._missing_notice = getattr(self, "_missing_notice", None), None
+        if aviso is None:
+            return
+        try:
+            aviso.close()
+        except RuntimeError:
+            pass            # ya se había cerrado y Qt lo borró (WA_DeleteOnClose)
+
     def _pick_relink_folder(self) -> None:
         carpeta = QFileDialog.getExistingDirectory(self, "¿En qué carpeta están los archivos?")
         if carpeta:
@@ -1998,10 +2010,27 @@ class MainWindow(QMainWindow):
         """
         if not self._quit_after_render or self.render_queue.busy or not self.isVisible():
             return
-        if QApplication.activeModalWidget() is not None:
+        if self._own_modal_open():
             QTimer.singleShot(300, self._close_after_render)
             return
         self.close()
+
+    def _own_modal_open(self) -> bool:
+        """¿Hay un diálogo modal de esta ventana abierto?
+
+        Solo los suyos: con `activeModalWidget()` a secas, un modal de otra
+        ventana —o uno que quedó colgado de una ventana anterior— detenía el
+        cierre para siempre.
+        """
+        modal = QApplication.activeModalWidget()
+        if modal is None or not modal.isVisible():
+            return False
+        actual = modal
+        while actual is not None:
+            if actual is self:
+                return True
+            actual = actual.parentWidget()
+        return False
 
     def _ask_quit_with_exports(self) -> str:
         """«esperar», «cancelar» o «seguir». Aparte para poder probarlo."""
@@ -4074,6 +4103,7 @@ class MainWindow(QMainWindow):
                 return
         # Ya se cierra de verdad: que ningún aviso de la cola lo vuelva a pedir.
         self._quit_after_render = False
+        self._close_missing_notice()
         self.render_queue.shutdown()
         self.cache_worker.shutdown()
         self.proxies.shutdown()

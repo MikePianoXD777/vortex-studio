@@ -629,3 +629,23 @@ def test_el_servidor_saca_todos_los_cuadros_de_un_archivo_corto(corto):
         assert not any(servidor.failed(t) for t in trabajos)
     finally:
         servidor.close()
+
+
+def test_cerrar_la_ventana_cierra_el_aviso_de_faltantes(ventana, tmp_path, media, qapp):
+    """El aviso no detiene nada, así que seguía abierto al cerrar la ventana:
+    se quedaba flotando sin editor detrás y contaba como un modal abierto."""
+    from PySide6.QtWidgets import QApplication, QMessageBox
+
+    ruta = _proyecto_con_faltante(tmp_path, media)
+    ventana.adopt_project(load_project(ruta), ruta)
+
+    def avisos():
+        return [w for w in QApplication.topLevelWidgets()
+                if isinstance(w, QMessageBox) and w.isVisible()
+                and w.windowTitle() == "Faltan archivos del proyecto"]
+
+    assert avisos()
+    ventana._dirty = False
+    ventana.close()
+    qapp.processEvents()
+    assert not avisos()

@@ -82,6 +82,17 @@ def desfasados(tmp_path_factory):
     return rutas
 
 
+def _desfase(ruta) -> float:
+    """Cuánto después que el audio empieza la imagen, según el archivo."""
+    import av
+
+    with av.open(str(ruta)) as contenedor:
+        inicio = {}
+        for flujo in (contenedor.streams.video[0], contenedor.streams.audio[0]):
+            inicio[flujo.type] = float((flujo.start_time or 0) * flujo.time_base)
+    return inicio["video"] - inicio["audio"]
+
+
 def _sonido(niveles: np.ndarray, por_segundo: float) -> tuple[float, float]:
     """De dónde a dónde se oye algo, en segundos."""
     fuerte = np.where(niveles > 0.1)[0]
@@ -98,6 +109,12 @@ def test_la_onda_cuenta_desde_la_imagen(desfasados, cual, desde):
     from vortex_studio.model import Clip
 
     ruta = desfasados[cual]
+    pedido = {"audio_tarde": -1.0, "video_tarde": 0.5}[cual]
+    if abs(_desfase(ruta) - pedido) > 0.05:
+        # El ffmpeg 4.4 de la máquina que compila no escribe el `-itsoffset`
+        # de la imagen como lo hacen los nuevos: sin el desfase, esta prueba no
+        # prueba nada.
+        pytest.skip(f"Este ffmpeg no escribió el desfase pedido ({_desfase(ruta):+.2f} s)")
     datos = compute(ruta, 100)
     onda = _sonido(np.maximum(np.abs(datos[0]), np.abs(datos[1])), 100)
 
