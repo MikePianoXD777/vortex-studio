@@ -9,6 +9,7 @@ una terminal, por SSH o en un servidor sin pantalla.
 
 from __future__ import annotations
 
+import functools
 import os
 import shutil
 import subprocess
@@ -99,6 +100,11 @@ def ventana(qapp):
 
     Se marca como guardada antes de cerrar porque `closeEvent` pregunta si
     hay cambios pendientes, y un diálogo modal colgaría la prueba.
+
+    Por lo mismo, las exportaciones que sigan corriendo se cancelan sin
+    preguntar: pasa cuando el `wait` de una prueba se vence en una máquina
+    lenta. La prueba ya falló por eso; el cierre no debe preguntar qué hacer
+    con ellas ni dejar el hilo de render vivo para las que vienen atrás.
     """
     from vortex_studio.ui import MainWindow
 
@@ -109,6 +115,7 @@ def ventana(qapp):
     yield w
 
     w._dirty = False
+    w._ask_quit_with_exports = lambda: "cancelar"
     w.close()
     qapp.processEvents()
 
@@ -129,29 +136,86 @@ def sin_dialogos_modales(monkeypatch, request):
 
     Las pruebas que sí quieren verificar un diálogo pueden pedir el permiso
     marcándose con @pytest.mark.permite_dialogos.
+
+    Da la lista de los exec() que se intentaron: las pruebas del propio
+    candado la vacían para dar por visto el que provocaron a propósito.
     """
     if request.node.get_closest_marker("permite_dialogos"):
+        yield []
         return
 
-    from PySide6.QtWidgets import QFileDialog, QInputDialog, QMessageBox
+    from PySide6.QtWidgets import (
+        QColorDialog,
+        QFileDialog,
+        QFontDialog,
+        QInputDialog,
+        QMessageBox,
+    )
 
     def prohibido(nombre):
         def _falla(*args, **kwargs):
-            raise AssertionError(
-                f"{nombre} abrió un diálogo modal durante la prueba. "
-                f"Usa la barra de estado, o marca la prueba con "
-                f"@pytest.mark.permite_dialogos.")
+            raise AssertionError(_aviso_de_dialogo(nombre))
         return _falla
 
     for clase, metodos in (
         (QMessageBox, ("information", "warning", "critical", "question", "about")),
         (QInputDialog, ("getText", "getInt", "getDouble", "getItem")),
         (QFileDialog, ("getOpenFileName", "getSaveFileName", "getExistingDirectory")),
+        (QColorDialog, ("getColor",)),
+        (QFontDialog, ("getFont",)),
     ):
         for metodo in metodos:
             monkeypatch.setattr(clase, metodo,
                                 staticmethod(prohibido(f"{clase.__name__}.{metodo}")),
                                 raising=False)
+
+    # Los estáticos no son la única puerta: una caja armada a mano y abierta
+    # con exec() espera el mismo clic. El aviso de salir con exportaciones en
+    # curso era un `question` y el candado lo detenía; desde que se arma a
+    # mano, una prueba que cerraba la ventana a media exportación ya no
+    # fallaba: se quedaba congelada hasta que Actions la matara a las seis horas.
+    intentados: list[str] = []
+
+    def exec_prohibido(self, *args, **kwargs):
+        nombre = f"{type(self).__name__}.exec"
+        intentados.append(nombre)
+        prohibido(nombre)()
+
+    for clase in _dialogos():
+        for metodo in ("exec", "exec_"):
+            if metodo in vars(clase):
+                monkeypatch.setattr(clase, metodo, exec_prohibido)
+
+    yield intentados
+
+    # El error no siempre sube hasta la prueba: si la caja se abre dentro de
+    # un evento de Qt —el closeEvent al cerrar la ventana, una señal—, PySide
+    # lo imprime y sigue, y la prueba pasaba con la ventana a medio cerrar.
+    # Por eso un exec también se cobra al terminar. (Ninguna prueba que pase
+    # hoy llega a uno: se habría colgado. Hacer lo mismo con los estáticos
+    # pide revisar antes el banco entero.)
+    if intentados:
+        pytest.fail(_aviso_de_dialogo(intentados[0]), pytrace=False)
+
+
+def _aviso_de_dialogo(nombre: str) -> str:
+    return (f"{nombre} abrió un diálogo modal durante la prueba. "
+            f"Usa la barra de estado, o marca la prueba con "
+            f"@pytest.mark.permite_dialogos.")
+
+
+@functools.cache
+def _dialogos() -> tuple[type, ...]:
+    """QDialog y las de Qt que heredan de él con su propio exec.
+
+    Hoy solo QDialog lo trae y las demás lo heredan, pero no se puede contar
+    con eso: si una versión de PySide le da a QMessageBox el suyo, tapar
+    solo el de QDialog ya no la detendría.
+    """
+    from PySide6 import QtWidgets
+
+    return tuple(clase for clase in vars(QtWidgets).values()
+                 if isinstance(clase, type) and issubclass(clase, QtWidgets.QDialog))
 
 
 def _girar(origen: Path, destino: Path, grados: int) -> bool:
@@ -182,6 +246,56 @@ def _girar(origen: Path, destino: Path, grados: int) -> bool:
     return False
 
 
+def _disparejo(destino: Path) -> bool:
+    """Hace un video de cuadros que no van parejos. Dice si lo logró.
+
+    Igual que con el giro, cada ffmpeg lo pide a su manera: `-fps_mode` existe
+    desde la 5.1 y la 9 ya ni conoce `-vsync`, pero la máquina de compilación
+    trae la 4.4, que solo sabe `-vsync`. Con `-fps_mode` a secas la fixture
+    tronaba allá, y con ella todo el material difícil: la 0.1.1 arregló el
+    giro y aun así salió sin binarios, con los mismos 27 errores, por esto.
+    """
+    for opcion in ("-fps_mode", "-vsync"):
+        destino.unlink(missing_ok=True)
+        try:
+            _ffmpeg("-f", "lavfi", "-i", "testsrc2=size=160x90:rate=30:duration=3",
+                    "-vf", "select='not(mod(n,3))+not(mod(n,7))'", opcion, "vfr",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+                    str(destino))
+        except subprocess.CalledProcessError:
+            continue
+        # Que de verdad hayan quedado disparejos: si no, las pruebas de fps
+        # variable pasarían probando un video parejo.
+        try:
+            import av
+
+            with av.open(str(destino)) as contenedor:
+                tiempos = sorted(p.pts for p in contenedor.demux(video=0) if p.pts is not None)
+        except Exception:
+            continue
+        if len({b - a for a, b in zip(tiempos, tiempos[1:])}) > 1:
+            return True
+    return False
+
+
+class _Material(dict):
+    """El material que sí se pudo hacer. Pedir uno que no, salta esa prueba.
+
+    Antes, si este ffmpeg no sabía hacer una sola pieza, se saltaba o tronaba
+    el material difícil entero, y con él las 27 pruebas que lo usan. Ahora
+    solo se saltan las que piden esa pieza, y dicen por qué.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.faltan: dict[str, str] = {}
+
+    def __missing__(self, nombre):
+        if nombre in self.faltan:
+            pytest.skip(self.faltan[nombre])
+        raise KeyError(nombre)
+
+
 @pytest.fixture(scope="session")
 def dificil(tmp_path_factory) -> dict[str, Path]:
     """Material incómodo, del que sí hay en la calle.
@@ -195,6 +309,7 @@ def dificil(tmp_path_factory) -> dict[str, Path]:
         pytest.skip("Hace falta ffmpeg en el PATH para generar el material de prueba")
 
     base = tmp_path_factory.mktemp("dificil")
+    material = _Material()
 
     # Como un celular: vertical, 29.97, keyframe cada 3 s, audio a 44.1 kHz.
     celular = base / "celular.mp4"
@@ -233,14 +348,18 @@ def dificil(tmp_path_factory) -> dict[str, Path]:
     acostado = base / "acostado.mp4"
     _ffmpeg("-f", "lavfi", "-i", "testsrc2=size=320x180:rate=30:duration=2",
             "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", str(acostado))
-    if not _girar(acostado, rotado, 90):
-        pytest.skip("Este ffmpeg no sabe marcar el giro de un video")
+    if _girar(acostado, rotado, 90):
+        material["rotado"] = rotado
+    else:
+        material.faltan["rotado"] = "Este ffmpeg no sabe marcar el giro de un video"
 
     # Cuadros que no van parejos: pasa con grabaciones de pantalla y celulares.
     vfr = base / "vfr.mp4"
-    _ffmpeg("-f", "lavfi", "-i", "testsrc2=size=160x90:rate=30:duration=3",
-            "-vf", "select='not(mod(n,3))+not(mod(n,7))'", "-fps_mode", "vfr",
-            "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", str(vfr))
+    if _disparejo(vfr):
+        material["vfr"] = vfr
+    else:
+        material.faltan["vfr"] = ("Este ffmpeg no sabe hacer un video de cuadros disparejos "
+                                  "(ni con -fps_mode ni con -vsync)")
 
     # Foto de celular: guardada acostada, con la marca EXIF que dice girarla.
     foto = base / "foto.jpg"
@@ -249,9 +368,9 @@ def dificil(tmp_path_factory) -> dict[str, Path]:
     foto_exif = base / "foto-vertical.jpg"
     foto_exif.write_bytes(_con_orientacion(foto.read_bytes(), 6))
 
-    return {"celular": celular, "hevc": hevc, "impar": impar, "corrido": corrido,
-            "mono441": mono441, "rotado": rotado, "acostado": acostado, "vfr": vfr,
-            "foto": foto, "foto_exif": foto_exif}
+    material.update(celular=celular, hevc=hevc, impar=impar, corrido=corrido,
+                    mono441=mono441, acostado=acostado, foto=foto, foto_exif=foto_exif)
+    return material
 
 
 def _con_orientacion(jpeg: bytes, valor: int = 6) -> bytes:
