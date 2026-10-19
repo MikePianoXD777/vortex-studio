@@ -40,7 +40,11 @@ def silent_ranges(path: str | Path, threshold_db: float = -40.0,
     salida = []
     for a, b in zip(inicios, fines):
         inicio, fin = a / PER_SECOND, b / PER_SECOND
-        if fin - inicio < min_duration:
+        # Un cubo de tolerancia: el cubo donde el sonido se apaga cuenta entero
+        # como sonido aunque solo traiga la cola de 1 ms, así que el silencio
+        # medido puede quedar hasta 10 ms corto. Un silencio de medio segundo
+        # justo salía de 0.49 y no se cortaba.
+        if fin - inicio < min_duration - 1.0 / PER_SECOND - 1e-9:
             continue
         if inicio > 1e-9:
             inicio += padding
