@@ -14,8 +14,9 @@ from typing import Iterator
 import numpy as np
 
 from vortex_studio.media.waveform import compute as compute_waveform
+from vortex_studio.media.waveform import frame_time, origin as _origin
 from vortex_studio.model.keyframes import evaluate_many
-from vortex_studio.model.project import KEEP_PITCH, MUTE_AUDIO, SHIFT_PITCH
+from vortex_studio.model.project import KEEP_PITCH, MUTE_AUDIO, SHIFT_PITCH, level_span
 
 try:
     import av
@@ -77,6 +78,10 @@ def fade_envelope(clip, tiempos: np.ndarray) -> np.ndarray:
     Es la misma cuenta que `fade_at` del modelo, pero sobre un arreglo de
     tiempos en vez de un solo instante: si los dos fundidos no caben en el
     clip se reparten a prorrata, y cada uno es una rampa lineal.
+
+    Se mide contra el tramo del clip en el timeline (`level_span`), no contra
+    la copia que llega a la mezcla: la de una transición empieza antes o
+    acaba después, y el fundido se corría con ella.
     """
     alfa = np.ones_like(tiempos, dtype=np.float64)
     entrada = float(getattr(clip, "fade_in", 0.0))
@@ -84,13 +89,13 @@ def fade_envelope(clip, tiempos: np.ndarray) -> np.ndarray:
     if entrada <= 0 and salida <= 0:
         return alfa
 
-    duracion = float(clip.duration)
+    inicio, duracion = level_span(clip)
     total = entrada + salida
     if total > duracion > 0:
         factor = duracion / total
         entrada, salida = entrada * factor, salida * factor
 
-    dentro = tiempos - clip.start
+    dentro = tiempos - inicio
     if entrada > 0:
         alfa = np.minimum(alfa, np.clip(dentro / entrada, 0.0, 1.0))
     if salida > 0:
@@ -184,8 +189,11 @@ class AudioRenderer:
         puntos = (getattr(clip, "anim", None) or {}).get("gain")
         if puntos:
             # Volumen con keyframes: evaluado muestra por muestra, igual que
-            # los fundidos, para que una subida no se oiga en escalones.
-            ganancia = np.maximum(0.0, evaluate_many(puntos, tiempos - clip.start))
+            # los fundidos, para que una subida no se oiga en escalones. Desde
+            # el inicio del clip en el timeline, como los fundidos: contra la
+            # copia de una transición, que empieza antes, una bajada para tapar
+            # una tos se oía media transición antes de la tos.
+            ganancia = np.maximum(0.0, evaluate_many(puntos, tiempos - level_span(clip)[0]))
         else:
             ganancia = max(0.0, float(getattr(clip, "gain", 1.0)))
         nivel = ganancia * fade_envelope(clip, tiempos) * transition_envelope(clip, tiempos)
@@ -507,7 +515,8 @@ class AudioRenderer:
         # `VideoSource`: en material de cámara o `.ts` los tiempos del archivo
         # no empiezan en cero, y si el audio contara desde otro lado se
         # desfasaría de la imagen —o, si arranca después del video, se
-        # recorrería—. Sin video, cuenta desde su propio principio.
+        # recorrería—. Sin video, cuenta desde su propio principio. La onda y
+        # la sincronía cuentan desde el mismo lado: ver `waveform.origin`.
         source_start += _origin(container, stream)
 
         resampler = AudioResampler(format=self.format, layout=self.layout, rate=self.rate)
@@ -536,7 +545,7 @@ class AudioRenderer:
                                stream=stream, backward=True)
 
             for frame in container.decode(stream):
-                cuando = float(frame.pts * stream.time_base) if frame.pts is not None else 0.0
+                cuando = frame_time(frame, stream)
                 if cuando + frame.samples / max(1, frame.sample_rate) < source_start:
                     continue    # todavía vamos antes del punto de entrada
 
@@ -596,14 +605,6 @@ class AudioRenderer:
                 yield salida
         finally:
             container.close()
-
-
-def _origin(container, stream) -> float:
-    """Dónde cae el segundo 0 del material, en tiempos del archivo."""
-    referencia = next((v for v in container.streams.video
-                       if not (v.disposition & av.stream.Disposition.attached_pic)), stream)
-    inicio = referencia.start_time
-    return float(inicio * referencia.time_base) if inicio is not None else 0.0
 
 
 def frame_seconds(frame) -> float:

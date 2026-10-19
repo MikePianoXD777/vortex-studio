@@ -71,6 +71,40 @@ def test_el_reproductor_mide_por_ventanas(qapp):
     assert jugador.levels() == (0.0, 0.0, False)      # sin tarjeta sonando, nada
 
 
+def test_el_medidor_no_se_salta_ventanas_entre_lecturas(qapp):
+    """Cada lectura miraba solo la ventana de 20 ms donde cae la posición.
+    La tarjeta avanza a saltos de 21.3 ms y la interfaz a veces tarda más:
+    un golpe corto en una ventana que quedó entre dos lecturas nunca llegaba
+    a la barra ni a la rayita del pico."""
+    from types import SimpleNamespace
+
+    from vortex_studio.media.audio import RATE
+    from vortex_studio.ui.audio_player import METER_WINDOW, AudioPlayer
+
+    jugador = AudioPlayer()
+    muestras = np.zeros((METER_WINDOW * 4, 2), dtype=np.int16)
+    muestras[METER_WINDOW + 5, 0] = 29491              # 0.9, solo en la segunda ventana
+    muestras[2 * METER_WINDOW:3 * METER_WINDOW, 0] = 6554   # 0.2 parejo en la tercera
+    jugador._measure(muestras.tobytes())
+    # El limitador actuó 10 muestras, también solo en la segunda ventana.
+    jugador._mix = SimpleNamespace(reductions=[(METER_WINDOW + 5, 10, 0.5)])
+    posicion = [0.5 * METER_WINDOW / RATE]
+    jugador.position = lambda: posicion[0]
+    jugador._sink = object()                            # como si sonara
+    try:
+        assert jugador.levels() == (0.0, 0.0, False)
+        posicion[0] = 2.5 * METER_WINDOW / RATE          # la segunda quedó entre lecturas
+        izquierdo, _, limitado = jugador.levels()
+        assert izquierdo == pytest.approx(0.9, abs=1e-3) and limitado
+        # Sin avanzar, sigue diciendo lo que suena ahora; no se cae a cero.
+        izquierdo, _, limitado = jugador.levels()
+        assert izquierdo == pytest.approx(0.2, abs=1e-3) and not limitado
+        posicion[0] = 3.5 * METER_WINDOW / RATE          # lo de antes ya se contó
+        assert jugador.levels() == (0.0, 0.0, False)
+    finally:
+        jugador._sink = None
+
+
 def test_la_ventana_alimenta_el_medidor_al_reproducir(ventana, media):
     ventana._place_video(media["sonoro"])
     ventana._playing = True

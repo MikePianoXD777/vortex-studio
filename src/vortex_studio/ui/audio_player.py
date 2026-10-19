@@ -12,13 +12,14 @@ que la imagen lo siga es lo que mantiene la sincronía.
 
 from __future__ import annotations
 
+import traceback
 from collections import deque
 
 import numpy as np
 from PySide6.QtCore import QObject, QTimer, Signal
 from PySide6.QtMultimedia import QAudioFormat, QAudioSink, QMediaDevices
 
-from vortex_studio.media.audio import LAYOUT, RATE
+from vortex_studio.media.audio import LAYOUT, RATE, silence
 from vortex_studio.media.mixer import AudioMixer
 
 CHUNK_MS = 120          # cuánto audio se adelanta en cada empujón
@@ -43,6 +44,8 @@ class AudioPlayer(QObject):
         # de lo que ya se mandó a la tarjeta, en orden.
         self._levels: deque = deque(maxlen=50 * 20)
         self._queued = 0            # muestras mandadas desde el arranque
+        self._reported = -1         # hasta qué muestra ya se le contó al medidor
+        self._total = 0             # muestras que dura el tramo que se está tocando
 
         self._pump = QTimer(self)
         self._pump.setInterval(CHUNK_MS // 2)
@@ -90,6 +93,8 @@ class AudioPlayer(QObject):
         self._pending = b""
         self._levels.clear()
         self._queued = 0
+        self._reported = -1
+        self._total = int(round((hasta - desde) * RATE))
         self._push()                    # llenar antes de arrancar el reloj
         self._pump.start()
         return True
@@ -105,6 +110,7 @@ class AudioPlayer(QObject):
         self._pending = b""
         self._levels.clear()
         self._queued = 0
+        self._reported = -1
 
     def set_volume(self, volume: float) -> None:
         self._volume = max(0.0, min(1.0, volume))
@@ -123,18 +129,33 @@ class AudioPlayer(QObject):
         Los picos van de 0 a 1 y son de la mezcla, antes del volumen del
         monitor: lo que mide un medidor es lo que va a salir en el archivo,
         no cuánto le subiste a tus bocinas.
+
+        Es el más alto de **todo lo que sonó desde la lectura anterior**, no
+        solo de la ventana donde cae la posición. Antes era esa ventana y ya:
+        la tarjeta avanza a saltos de 21.3 ms —más que los 20 ms de una
+        ventana— y la interfaz a veces tarda más entre lectura y lectura, así
+        que un golpe corto en una ventana que quedaba en medio nunca llegaba a
+        la barra ni a la rayita del pico. Lo mismo para la luz del limitador.
         """
         if self._sink is None or not self._levels:
             return 0.0, 0.0, False
         ahora = int(self.position() * RATE)
+        # Lo que sonó en (previo, ahora]. Si no se avanzó, al menos la muestra
+        # de ahora: sin eso la barra se caería a cero entre salto y salto.
+        previo = min(self._reported, ahora - 1)
+        self._reported = ahora
         izquierdo = derecho = 0.0
+        actual = True
         for inicio, izq, der in reversed(self._levels):
-            if inicio <= ahora:
-                izquierdo, derecho = izq, der
-                break
+            if inicio > ahora:
+                continue        # ya se mandó a la tarjeta, pero todavía no suena
+            if inicio <= previo and not actual:
+                break           # esta ya se contó en la lectura anterior
+            izquierdo, derecho = max(izquierdo, izq), max(derecho, der)
+            actual = False
         limitado = False
         if self._mix is not None:
-            limitado = any(desde <= ahora < desde + largo
+            limitado = any(desde <= ahora and desde + largo > previo + 1
                            for desde, largo, _ in self._mix.reductions)
         return izquierdo, derecho, limitado
 
@@ -160,7 +181,10 @@ class AudioPlayer(QObject):
             libre -= escritos
 
     def _next_block(self) -> bytes | None:
-        frame = next(self._frames, None)
+        try:
+            frame = next(self._frames, None)
+        except Exception:
+            frame = self._mute_rest()
         if frame is None:
             return None
         # Con formato `s16` el plano ya viene entrelazado; hay que recortar
@@ -168,6 +192,22 @@ class AudioPlayer(QObject):
         datos = bytes(frame.planes[0])[: frame.samples * BYTES_PER_FRAME]
         self._measure(datos)
         return datos
+
+    def _mute_rest(self):
+        """La mezcla tronó a medio play: lo que falta del tramo va en silencio.
+
+        El error se escapaba por aquí hacia el temporizador o hacia `start()`,
+        y de ahí a `MainWindow._play`, que ya había puesto `_playing` y nunca
+        arrancaba su reloj: el playhead se quedaba quieto y la barra
+        espaciadora solo «pausaba». Cerrar la tarjeta tampoco sirve: la
+        ventana sigue tomando la posición de ella, y sin tarjeta el playhead
+        regresaría al principio. Con silencio la tarjeta sigue corriendo y el
+        play termina donde debía. El error se apunta igual, para saber qué fue.
+        """
+        traceback.print_exc()
+        faltan = max(0, self._total - self._queued)
+        self._frames = silence(faltan / RATE, RATE, LAYOUT, "s16")
+        return next(self._frames, None)
 
     def _measure(self, datos: bytes) -> None:
         """Picos por ventana de 20 ms, para el medidor."""

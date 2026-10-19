@@ -194,8 +194,15 @@ class AudioMixer:
         if pendientes > 0:
             # Alguno de los carriles se acabó antes: la salida sigue
             # durando lo que la imagen, aunque el resto vaya mudo.
+            #
+            # En el formato de trabajo, como todo lo que sale de aquí: este
+            # silencio también pasa por `_finish`. Iba en `self.format`, y en
+            # el play (`s16`) el convertidor —armado con los cuadros flotantes
+            # de antes— lo rechazaba: «Frame does not match AudioResampler
+            # setup» al final de casi cualquier play con dos clips encimados,
+            # porque basta que un carril salga una muestra corto al redondear.
             yield from silence(pendientes / self.rate, self.rate,
-                               self.layout, self.format)
+                               self.layout, WORK_FORMAT)
 
     def _graph(self, n: int):
         """Grafo de mezcla: n entradas, `amix`, salida.

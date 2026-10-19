@@ -2021,7 +2021,7 @@ class MainWindow(QMainWindow):
 
     def _audio_clips(self) -> list:
         """Lo que suena: respeta silencio y solo por pista, y el modo Silenciar."""
-        return self.sequence.audio_clips(self.project.sequence_by_id)
+        return self.sequence.audio_clips(self.project.sequence_by_id, self.project.source_duration)
 
     def _renderer(self) -> SequenceRenderer:
         """El armador de cuadros de la secuencia actual, con los

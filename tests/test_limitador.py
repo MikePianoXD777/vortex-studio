@@ -65,6 +65,24 @@ def test_los_dos_canales_bajan_igual():
     assert np.allclose(razon, izquierda, atol=1e-5)
 
 
+@pytest.mark.parametrize("malo", [np.nan, np.inf, -np.inf])
+def test_una_muestra_rota_no_envenena_lo_que_sigue(malo):
+    """Un NaN o un infinito —un WAV flotante dañado— se quedaba en la
+    envolvente para siempre: todo lo que venía después salía NaN (en el play,
+    corriente directa a todo volumen) o, con infinito, mudo."""
+    limitador = PeakLimiter(RATE)
+    roto = seno(0.5, 0.1)
+    roto[:, 100] = malo
+    salida = limitador.process(roto)
+    assert np.isfinite(salida).all()
+    assert np.max(np.abs(salida)) <= CEILING + 1e-6
+
+    calma = seno(0.5, 0.5)
+    despues = limitador.process(calma)
+    assert np.isfinite(limitador._env)
+    assert np.array_equal(despues, calma)       # sale como entró
+
+
 # --- en la mezcla de verdad ------------------------------------------------
 
 def mezcla(media, fmt="fltp", limit=True):

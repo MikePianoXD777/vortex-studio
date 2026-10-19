@@ -22,6 +22,8 @@ from pathlib import Path
 
 import numpy as np
 
+from vortex_studio.media.waveform import frame_time, from_origin, origin
+
 try:
     import av
     from av.audio.resampler import AudioResampler
@@ -35,26 +37,37 @@ RATE = 4000
 
 
 def load_audio(path: str | Path, seconds: float | None = None) -> np.ndarray:
-    """El audio del archivo en mono a 4 kHz, en float32. Vacío si no trae audio."""
+    """El audio del archivo en mono a 4 kHz, en float32. Vacío si no trae audio.
+
+    La muestra 0 es el segundo 0 del clip —el primer cuadro del video—, igual
+    que en el render (`waveform.origin`). Antes era la primera muestra de
+    audio: si una cámara grabó el sonido corrido de su imagen, el desfase
+    salía bien para el audio y la cámara quedaba corrida justo eso, porque
+    la multicámara coloca los clips por su video.
+    """
     if not HAS_PYAV:
         return np.zeros(0, np.float32)
     try:
         contenedor = av.open(str(path))
     except Exception:
         return np.zeros(0, np.float32)
+    trozos, total, desfase = [], 0, None
+    limite = int(seconds * RATE) if seconds else None
     try:
         if not contenedor.streams.audio:
             return np.zeros(0, np.float32)
         flujo = contenedor.streams.audio[0]
+        cero = origin(contenedor, flujo)
         resampler = AudioResampler(format="flt", layout="mono", rate=RATE)
-        trozos, total = [], 0
-        limite = int(seconds * RATE) if seconds else None
         for frame in contenedor.decode(flujo):
+            if desfase is None:
+                desfase = frame_time(frame, flujo) - cero
             for chunk in resampler.resample(frame):
                 datos = chunk.to_ndarray().reshape(-1)[:chunk.samples]
                 trozos.append(datos)
                 total += len(datos)
-            if limite is not None and total >= limite:
+            # Lo que cuenta es lo que queda ya corrido al origen.
+            if limite is not None and total + desfase * RATE >= limite:
                 break
         for chunk in resampler.resample(None):
             trozos.append(chunk.to_ndarray().reshape(-1)[:chunk.samples])
@@ -64,7 +77,7 @@ def load_audio(path: str | Path, seconds: float | None = None) -> np.ndarray:
         contenedor.close()
     if not trozos:
         return np.zeros(0, np.float32)
-    salida = np.concatenate(trozos).astype(np.float32)
+    salida = from_origin(np.concatenate(trozos).astype(np.float32), desfase or 0.0, RATE)
     return salida[:limite] if limite is not None else salida
 
 

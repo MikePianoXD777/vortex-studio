@@ -37,11 +37,53 @@ except ImportError:  # pragma: no cover - depende del entorno
     HAS_PYAV = False
 
 RATE = 8000       # frecuencia a la que se mide la onda
-VERSION = 1       # sube si cambia la manera de calcular: invalida las ondas viejas
+# Sube si cambia la manera de calcular: invalida las ondas viejas. La 2 cuenta
+# desde el primer cuadro del video (`origin`); las de la 1 están corridas.
+VERSION = 2
 
 
 def empty() -> np.ndarray:
     return np.zeros((2, 0), dtype=np.float32)
+
+
+def origin(container, stream) -> float:
+    """Dónde cae el segundo 0 del material, en tiempos del archivo.
+
+    Es el primer cuadro del VIDEO, igual que en `VideoSource`: en material de
+    cámara o `.ts` los tiempos del archivo no empiezan en cero, y si el audio
+    contara desde otro lado se desfasaría de la imagen. Sin video, el audio
+    cuenta desde su propio principio.
+
+    Vive aquí y no en `audio.py` porque lo usan el render, la onda y la
+    sincronía, y `audio.py` ya importa de aquí. Antes solo el render contaba
+    así: la onda —y con ella los silencios— y la sincronía contaban desde la
+    primera muestra de audio, y en un archivo con el audio corrido se
+    dibujaba, se cortaba y se sincronizaba otra cosa de la que se oía.
+    """
+    referencia = next((v for v in container.streams.video
+                       if not (v.disposition & av.stream.Disposition.attached_pic)), stream)
+    inicio = referencia.start_time
+    return float(inicio * referencia.time_base) if inicio is not None else 0.0
+
+
+def frame_time(frame, stream) -> float:
+    """Cuándo empieza el cuadro de audio, en tiempos del archivo. Sin `pts`,
+    en cero: es lo mismo que supone `AudioRenderer`."""
+    return float(frame.pts * stream.time_base) if frame.pts is not None else 0.0
+
+
+def from_origin(muestras: np.ndarray, desfase: float, rate: int) -> np.ndarray:
+    """Corre las muestras para que la 0 caiga en el origen del material.
+
+    `desfase` es cuánto después del origen empieza el audio: si es positivo
+    se rellena el principio con ceros —el audio arranca después que la
+    imagen—, y si es negativo se tira lo que suena antes de ella. Es lo mismo
+    que hace `AudioRenderer` al buscar el punto de entrada.
+    """
+    n = int(round(desfase * rate))
+    if n > 0:
+        return np.concatenate([np.zeros(n, dtype=muestras.dtype), muestras])
+    return muestras[-n:] if n < 0 else muestras
 
 
 def cache_dir() -> Path:
@@ -93,6 +135,7 @@ def compute(path: str | Path, per_second: int = 60) -> np.ndarray:
 
     resampler = AudioResampler(format="s16", layout="mono", rate=RATE)
     trozos: list[np.ndarray] = []
+    desfase = None          # cuánto después del origen empieza el audio
 
     def guardar(chunks) -> None:
         for chunk in chunks:
@@ -101,7 +144,10 @@ def compute(path: str | Path, per_second: int = 60) -> np.ndarray:
             trozos.append(chunk.to_ndarray().reshape(-1)[: chunk.samples])
 
     try:
+        cero = origin(container, stream)
         for frame in container.decode(stream):
+            if desfase is None:
+                desfase = frame_time(frame, stream) - cero
             guardar(resampler.resample(frame))
         guardar(resampler.resample(None))      # lo que quedó en el resampler
     except Exception:
@@ -112,7 +158,12 @@ def compute(path: str | Path, per_second: int = 60) -> np.ndarray:
     if not trozos:
         return empty()
 
-    muestras = np.concatenate(trozos).astype(np.float32) / 32768.0
+    # La muestra 0 de la onda es el segundo 0 del clip, el mismo que suena:
+    # el timeline la lee por `in_point` y los silencios salen en esos segundos.
+    muestras = from_origin(np.concatenate(trozos), desfase or 0.0, RATE)
+    if not len(muestras):
+        return empty()
+    muestras = muestras.astype(np.float32) / 32768.0
     cubo = max(1, RATE // max(1, per_second))
     cubos = -(-len(muestras) // cubo)                   # redondeo hacia arriba
     muestras = np.pad(muestras, (0, cubos * cubo - len(muestras)))

@@ -46,6 +46,14 @@ class PeakLimiter:
         if datos.ndim != 2 or datos.shape[1] == 0:
             self.reduction = 1.0
             return datos
+        if not np.isfinite(datos).all():
+            # Un NaN o un infinito —un WAV flotante dañado— entraba a la
+            # envolvente y ya no salía: todo lo que seguía en el play o en la
+            # exportación salía NaN (en `s16`, corriente directa a todo
+            # volumen) o mudo. Sin limitador era un chasquido de una muestra;
+            # aquí se queda en eso. `nan_to_num` da una copia, así que quien
+            # llama sabe que hay que rearmar el cuadro.
+            datos = np.nan_to_num(datos, nan=0.0, posinf=self.ceiling, neginf=-self.ceiling)
         pico = np.max(np.abs(datos), axis=0).astype(np.float64)
         envolvente = self._envelope(pico)
         ganancia = np.minimum(1.0, self.ceiling / np.maximum(envolvente, 1e-12))
@@ -72,5 +80,7 @@ class PeakLimiter:
             env = np.maximum(env, previo * bajada * math.exp(self._log_r))
             salida[inicio:inicio + len(trozo)] = env
             previo = float(env[-1])
-        self._env = previo
+        # Segundo seguro: un estado que no es un número no se recupera nunca,
+        # porque cada bloque arrastra el anterior.
+        self._env = previo if math.isfinite(previo) else 0.0
         return salida

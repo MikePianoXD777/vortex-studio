@@ -16,7 +16,7 @@ from vortex_studio.model.audio_fx import DUCKED, NORMAL as ROLE_NORMAL, VOICE, A
 from vortex_studio.model.chroma import ChromaKey
 from vortex_studio.model.color import ColorAdjust
 from vortex_studio.model.mask import Mask
-from vortex_studio.model.media import MediaInfo
+from vortex_studio.model.media import MediaInfo, library_key
 from vortex_studio.model.overlays import AdjustmentLayer, ImageOverlay, Title
 from vortex_studio.model.transform import FIT, Transform
 
@@ -30,6 +30,10 @@ DIP_BLACK = "A negro"
 DIP_WHITE = "A blanco"
 TRANSITIONS = (CROSS, DIP_BLACK, DIP_WHITE)
 DIP_COLORS = {DIP_BLACK: "#000000", DIP_WHITE: "#ffffff"}
+# Con menos material que esto de los dos lados, el audio de una cruzada no se
+# encima: pasa por silencio como en un fundido a color. Ver
+# `Sequence._with_audio_transitions`.
+MIN_AUDIO_OVERLAP = 0.010
 
 # Qué pasa con el sonido de un clip que no va a velocidad normal.
 KEEP_PITCH = "Mantener tono"     # como Premiere: la voz se oye natural
@@ -343,16 +347,20 @@ class Sequence:
             pistas = [t for t in pistas if t.solo]
         return [t for t in pistas if not t.muted]
 
-    def audio_clips(self, resolve=None, _depth: int = 0) -> list:
+    def audio_clips(self, resolve=None, source_duration=None, _depth: int = 0) -> list:
         """Lo que va a la mezcla: los clips de las pistas que suenan.
 
         Con `resolve(id) -> Sequence`, las secuencias anidadas aportan su
         audio: copias de sus clips, corridas a donde cae la anidada y
         recortadas a su tramo. Las copias no tocan la secuencia original.
+
+        `source_duration(ruta) -> segundos | None` dice cuánto dura cada
+        archivo (`Project.source_duration`). Sin eso, una transición no sabe
+        cuánto material le queda al clip que sale después de su final.
         """
         propios = [c for t in self.audible_tracks() for c in t.clips
                    if getattr(c, "audio_mode", KEEP_PITCH) != MUTE_AUDIO]
-        propios = self._with_audio_transitions(propios)
+        propios = self._with_audio_transitions(propios, source_duration)
         if resolve is None or _depth > 8:
             return propios
         for track in self.visible_video_tracks():
@@ -362,34 +370,47 @@ class Sequence:
                 hija = resolve(anidada.sequence_id)
                 if hija is None or hija is self:
                     continue
-                for clip in hija.audio_clips(resolve, _depth + 1):
+                for clip in hija.audio_clips(resolve, source_duration, _depth + 1):
                     copia = _shifted_into(clip, anidada)
                     if copia is not None:
                         propios.append(copia)
         return propios
 
-    def _with_audio_transitions(self, clips: list) -> list:
+    def _with_audio_transitions(self, clips: list, source_duration=None) -> list:
         """El audio enlazado sigue a la transición de su video.
 
         Antes el video se cruzaba y el sonido cortaba seco en el corte. Ahora,
         para cada transición de video cuyo par de clips tiene audio enlazado y
         pegado en la misma pista:
 
-        - **cruzada**: el audio que sale se alarga media transición y el que
-          entra empieza media transición antes, tomando material de antes de
-          su punto de entrada. Se enciman y se mezclan con curvas de potencia
-          constante —seno y coseno—, que suman la misma energía en todo el
-          cruce: con rampas lineales el volumen se hundía 3 dB a la mitad;
+        - **cruzada**: el audio que sale se alarga y el que entra empieza
+          antes, hasta media transición cada uno, y se mezclan con curvas de
+          potencia constante —seno y coseno—, que suman la misma energía en
+          todo el cruce: con rampas lineales el volumen se hundía 3 dB a la
+          mitad. Cada lado se alarga solo lo que tiene de material: el que
+          entra, hasta el principio de su archivo; el que sale, hasta el final
+          del suyo, si `source_duration` sabe cuánto dura. Las dos curvas van
+          en la misma ventana, la que de verdad se encima: si cada una tuviera
+          la suya, en el corte sumarían menos energía;
         - **a negro o a blanco**: no se enciman. El que sale se apaga en la
           primera mitad y el que entra se enciende en la segunda, que es lo
-          que se oye cuando la imagen pasa por un color.
+          que se oye cuando la imagen pasa por un color. Es también lo que se
+          hace en una cruzada sin material de ningún lado para encimar.
 
         Los clips del timeline no se tocan: van copias a la mezcla. Las
-        copias conservan `uid`, que es por lo que el ducking los reconoce.
+        copias conservan `uid`, que es por lo que el ducking los reconoce, y
+        recuerdan el tramo del clip original (`level_span`): sus fundidos y
+        sus keyframes de volumen se miden contra él, no contra la copia.
         """
         import copy as _copy
 
-        reemplazos: dict[int, object] = {}
+        # Primero qué transición le toca a cada par de audios, y luego se
+        # aplica una sola vez por par. Un grupo enlazado con video en dos
+        # pistas —un cuadro dentro del cuadro— y transición en las dos en el
+        # mismo corte cruzaba el audio una vez por pista: el doble de alargue
+        # y dos curvas multiplicadas, que ya no suman la misma energía. Gana
+        # la más larga.
+        pares: dict[tuple[int, int], tuple] = {}
         for track in self.video_tracks():
             for entrante in track.clips:
                 d = float(getattr(entrante, "dissolve", 0.0) or 0.0)
@@ -398,7 +419,7 @@ class Sequence:
                 saliente = track.before(entrante)
                 if not isinstance(saliente, Clip) or not saliente.link:
                     continue
-                corte, mitad = entrante.start, d / 2
+                corte = entrante.start
                 cruzada = DIP_COLORS.get(getattr(entrante, "transition", CROSS)) is None
 
                 for a_in in clips:
@@ -411,29 +432,40 @@ class Sequence:
                                   and pista is not None and self.track_of(c) is pista), None)
                     if a_out is None:
                         continue
+                    clave = (id(a_out), id(a_in))
+                    if clave not in pares or d > pares[clave][0]:
+                        pares[clave] = (d, cruzada, corte, a_out, a_in)
 
-                    nuevo_out = _copy.copy(reemplazos.get(id(a_out), a_out))
-                    nuevo_in = _copy.copy(reemplazos.get(id(a_in), a_in))
-                    nuevo_out._xfade = list(getattr(nuevo_out, "_xfade", ()))
-                    nuevo_in._xfade = list(getattr(nuevo_in, "_xfade", ()))
+        reemplazos: dict[int, object] = {}
+        for d, cruzada, corte, a_out, a_in in pares.values():
+            mitad = d / 2
+            nuevo_out = _copy.copy(reemplazos.get(id(a_out), a_out))
+            nuevo_in = _copy.copy(reemplazos.get(id(a_in), a_in))
+            for nuevo, original in ((nuevo_out, a_out), (nuevo_in, a_in)):
+                nuevo._xfade = list(getattr(nuevo, "_xfade", ()))
+                nuevo._level_start, nuevo._level_duration = level_span(original)
 
-                    if cruzada and _plays_straight(a_out) and _plays_straight(a_in):
-                        nuevo_out.duration += mitad
-                        # Solo hay material de antes del punto de entrada hasta
-                        # el principio del archivo.
-                        velocidad = max(float(a_in.speed), 1e-6)
-                        antes = min(mitad, max(0.0, a_in.in_point) / velocidad)
-                        nuevo_in.start -= antes
-                        nuevo_in.in_point -= antes * velocidad
-                        nuevo_in.duration += antes
-                        nuevo_out._xfade.append((corte - mitad, corte + mitad, False))
-                        nuevo_in._xfade.append((corte - antes, corte + mitad, True))
-                    else:
-                        nuevo_out._xfade.append((corte - mitad, corte, False))
-                        nuevo_in._xfade.append((corte, corte + mitad, True))
+            antes = despues = 0.0
+            velocidad = max(float(a_in.speed), 1e-6)
+            if cruzada and _plays_straight(a_out) and _plays_straight(a_in):
+                # Solo hay material de antes del punto de entrada hasta el
+                # principio del archivo, y después del de salida hasta el final.
+                antes = min(mitad, max(0.0, a_in.in_point) / velocidad)
+                despues = _material_after(a_out, mitad, source_duration)
 
-                    reemplazos[id(a_out)] = nuevo_out
-                    reemplazos[id(a_in)] = nuevo_in
+            if max(antes, despues) >= MIN_AUDIO_OVERLAP:
+                nuevo_out.duration += despues
+                nuevo_in.start -= antes
+                nuevo_in.in_point -= antes * velocidad
+                nuevo_in.duration += antes
+                nuevo_out._xfade.append((corte - antes, corte + despues, False))
+                nuevo_in._xfade.append((corte - antes, corte + despues, True))
+            else:
+                nuevo_out._xfade.append((corte - mitad, corte, False))
+                nuevo_in._xfade.append((corte, corte + mitad, True))
+
+            reemplazos[id(a_out)] = nuevo_out
+            reemplazos[id(a_in)] = nuevo_in
 
         if not reemplazos:
             return clips
@@ -676,12 +708,53 @@ class Project:
         activa = self.active
         return next(i for i, s in enumerate(self.sequences) if s is activa)
 
+    def source_duration(self, path) -> float | None:
+        """Cuánto dura el archivo según su sondeo, o None si no se sabe.
+
+        Es lo que `Sequence.audio_clips` necesita para no alargar el audio de
+        una transición más allá del final de su archivo.
+        """
+        info = self.media.get(library_key(path))
+        return info.duration if info is not None and info.duration > 0 else None
+
+
+def level_span(clip) -> tuple[float, float]:
+    """`(inicio, duración)` contra los que se miden los fundidos y el volumen
+    con keyframes de un clip de audio.
+
+    Es el tramo del clip en el timeline. Las copias que van a la mezcla —las
+    de una transición, que empiezan antes o acaban después, y las de una
+    anidada, recortadas a su tramo— lo guardan aparte: medido contra la
+    copia, el fundido y los keyframes se corrían con ella, y una bajada para
+    tapar una tos se oía media transición antes de la tos.
+    """
+    return (getattr(clip, "_level_start", clip.start),
+            getattr(clip, "_level_duration", clip.duration))
+
 
 def _plays_straight(clip) -> bool:
     """¿El audio corre parejo? Sin congelar y sin remapeo de tiempo: solo así
     tiene sentido sacarle material de más para encimarlo en un cruce."""
     return (float(getattr(clip, "speed", 1.0)) > 0
             and not (getattr(clip, "anim", None) or {}).get("time"))
+
+
+def _material_after(clip, mitad: float, source_duration=None) -> float:
+    """Cuánto puede alargarse el audio que sale de un cruce: hasta media
+    transición, y nunca más allá del final de su archivo.
+
+    Antes se alargaba siempre media transición. Con dos clips enteros
+    pegados —lo más común— el que sale ya llegaba al final de su archivo: el
+    render rellenaba con silencio, el sonido se cortaba seco a −3 dB en pleno
+    cruce y luego venía un hueco, peor que un corte. Sin saber cuánto dura el
+    archivo se alarga como antes.
+    """
+    largo = source_duration(clip.source) if source_duration is not None else None
+    if not largo or largo <= 0:
+        return mitad
+    velocidad = max(float(clip.speed), 1e-6)
+    sobra = largo - (clip.in_point + clip.duration * velocidad)
+    return min(mitad, max(0.0, sobra) / velocidad)
 
 
 def _shifted_into(clip, anidada: "NestedClip"):
@@ -694,7 +767,8 @@ def _shifted_into(clip, anidada: "NestedClip"):
     velocidad = max(float(getattr(anidada, "speed", 1.0) or 0.0), 1e-6)
     if (getattr(anidada, "anim", None) or {}).get("time"):
         return None         # con remapeo el audio va mudo, como en los clips
-    inicio = anidada.start + (clip.start - anidada.in_point) / velocidad
+    a_madre = lambda t: anidada.start + (t - anidada.in_point) / velocidad
+    inicio = a_madre(clip.start)
     fin = inicio + clip.duration / velocidad
     if fin <= anidada.start + 1e-9 or inicio >= anidada.end - 1e-9:
         return None
@@ -706,9 +780,14 @@ def _shifted_into(clip, anidada: "NestedClip"):
         inicio = anidada.start
     copia.start = inicio
     copia.duration = min(fin, anidada.end) - inicio
+    # Fundidos y keyframes, contra el tramo entero del clip puesto en la
+    # madre. Si la anidada lo recorta, la copia empieza más tarde, y el
+    # fundido de entrada —que en la hija ya había pasado— se volvía a oír.
+    nivel_inicio, nivel_duracion = level_span(clip)
+    copia._level_start = a_madre(nivel_inicio)
+    copia._level_duration = nivel_duracion / velocidad
     cruces = getattr(clip, "_xfade", None)
     if cruces:
-        a_madre = lambda t: anidada.start + (t - anidada.in_point) / velocidad
         copia._xfade = [(a_madre(a), a_madre(b), sube) for a, b, sube in cruces]
     return copia
 
