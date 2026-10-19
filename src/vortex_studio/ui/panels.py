@@ -1593,16 +1593,16 @@ class AudioPanel(Page):
         self._name.setStyleSheet("color:#7d838c; font-size:10px;")
 
         # En décimas de dB, para que el deslizador tenga pasos finos.
-        self.low = SliderRow("Graves", -120, 120, 0)
-        self.mid = SliderRow("Medios", -120, 120, 0)
-        self.high = SliderRow("Agudos", -120, 120, 0)
+        self.low = SliderRow("Graves", -120, 120, 0, scale=10, decimals=1, suffix=" dB")
+        self.mid = SliderRow("Medios", -120, 120, 0, scale=10, decimals=1, suffix=" dB")
+        self.high = SliderRow("Agudos", -120, 120, 0, scale=10, decimals=1, suffix=" dB")
 
         self.compressor = QCheckBox("Compresor")
-        self.threshold = SliderRow("Umbral dB", -60, 0, -18)
-        self.ratio = SliderRow("Relación ×10", 10, 200, 30)
-        self.attack = SliderRow("Ataque ms", 1, 200, 10)
-        self.release = SliderRow("Soltar ms", 10, 1000, 150)
-        self.makeup = SliderRow("Ganancia ×10", 0, 240, 0)
+        self.threshold = SliderRow("Umbral", -60, 0, -18, suffix=" dB")
+        self.ratio = SliderRow("Relación", 10, 200, 30, scale=10, decimals=1, suffix=":1")
+        self.attack = SliderRow("Ataque", 1, 200, 10, suffix=" ms")
+        self.release = SliderRow("Soltar", 10, 1000, 150, suffix=" ms")
+        self.makeup = SliderRow("Ganancia", 0, 240, 0, scale=10, decimals=1, suffix=" dB")
         for row in (self.low, self.mid, self.high, self.threshold, self.ratio,
                     self.attack, self.release, self.makeup):
             row.changed.connect(self._push)
@@ -1625,12 +1625,12 @@ class AudioPanel(Page):
         self.role.addItems(ROLES)
         self.role.setToolTip("Voz: manda. Música: baja sola cuando suena una pista de voz")
         self.role.currentTextChanged.connect(self._role_changed)
-        self.depth = SliderRow("Cuánto baja dB", 0, 30, 12)
+        self.depth = SliderRow("Cuánto baja", 0, 30, 12, suffix=" dB")
         self.depth.changed.connect(self._depth_changed)
 
         self._set_content(column(
             self._name,
-            section("Ecualizador (dB × 10)"), self.low, self.mid, self.high,
+            section("Ecualizador"), self.low, self.mid, self.high,
             section("Sonoridad"), fila,
             section("Ducking de la pista"), self.role, self.depth,
             self._comp_group,

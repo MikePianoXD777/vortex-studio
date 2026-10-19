@@ -12,6 +12,8 @@ Reparto de la superficie, igual que en cualquier editor:
 
 from __future__ import annotations
 
+import math
+
 from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import (
     QColor,
@@ -101,6 +103,7 @@ BUTTON_ON = {"enabled": QColor("#5f9bd8"), "muted": QColor("#e8904a"),
              "solo": QColor("#e8c15a"), "locked": QColor("#e0574a")}
 
 PEAKS_PER_SECOND = 60
+WAVE_FLOOR_DB = 48.0    # lo que queda por debajo de −48 dB se dibuja plano
 
 # Qué tipo de cosa acepta cada clase de pista. Vive en el modelo
 # (`accepts`); esto queda para quien ya lo usaba.
@@ -122,6 +125,19 @@ BUTTON_TIPS = {
     "muted": "Silenciar la pista",
     "solo": "Solo: oír nada más esta pista (y las otras en solo)",
 }
+
+
+def _wave_level(pico: float) -> float:
+    """De 0 a 1, en decibeles y no en amplitud.
+
+    En amplitud, una voz normal —a −18 dB, un octavo de la escala— ocupaba
+    el 12 % de la altura y se veía como una línea punteada. En decibeles se
+    ve como en Premiere: lo fuerte llena el clip, y lo bajito se nota.
+    """
+    if pico <= 0:
+        return 0.0
+    db = 20.0 * math.log10(pico)
+    return max(0.0, min(1.0, 1.0 + db / WAVE_FLOOR_DB))
 
 
 def _color_for(track, clip) -> QColor:
@@ -659,14 +675,18 @@ class TimelineWidget(QWidget):
             fuente = QFont()
             fuente.setPixelSize(11)
             painter.setFont(fuente)
-            letrero = rect.adjusted(10, 0, -8, 0)
+            # En audio el nombre va arriba y la onda debajo; en lo demás, al centro.
+            if track_kind == "audio":
+                letrero = QRectF(rect.left() + 10, rect.top() + 1, rect.width() - 18, 14)
+            else:
+                letrero = rect.adjusted(10, 0, -8, 0)
             painter.drawText(letrero, Qt.AlignLeft | Qt.AlignVCenter,
                              f"Falta · {clip.name}" if falta else clip.name)
             # Enlazado lleva un eslabón junto al nombre: se nota sin ocupar
             # lugar, igual que el subrayado de antes pero sin ensuciar la letra.
             if getattr(clip, "link", "") and rect.width() > 70:
                 ancho = min(painter.fontMetrics().horizontalAdvance(clip.name), letrero.width())
-                caja = QRectF(letrero.left() + ancho + 6, rect.center().y() - 5, 10, 10)
+                caja = QRectF(letrero.left() + ancho + 6, letrero.center().y() - 5, 10, 10)
                 if caja.right() < rect.right() - 6:
                     eslabon = QColor(tinta)
                     eslabon.setAlpha(140)
@@ -849,8 +869,10 @@ class TimelineWidget(QWidget):
         if visible.width() < 2:
             return
 
-        middle = rect.center().y()
-        half = rect.height() / 2 - 3
+        # Con letrero, la onda va debajo del nombre y no encima de él.
+        area = rect.adjusted(0, 15, 0, -3) if rect.width() > 34 else rect.adjusted(0, 3, 0, -3)
+        middle = area.center().y()
+        half = max(1.0, area.height() / 2)
         velocidad = getattr(clip, "speed", 1.0) or 1.0
         entrada = getattr(clip, "in_point", 0.0)
         cubos_por_pixel = velocidad * PEAKS_PER_SECOND / self.pixels_per_second
@@ -859,6 +881,8 @@ class TimelineWidget(QWidget):
         # Barras de 3 px cada 5 px, como en el diseño. Cada barra toma el pico
         # de todos los cubos de sus 5 pixeles, por la misma razón de arriba.
         paso = 5
+        painter.save()
+        painter.setClipRect(rect.adjusted(1, 0, -1, 0), Qt.IntersectClip)
         painter.setPen(Qt.NoPen)
         painter.setBrush(WAVE)
         x = rect.left() + int((visible.left() - rect.left()) // paso) * paso
@@ -872,10 +896,11 @@ class TimelineWidget(QWidget):
                 bajo = float(data[0, desde:hasta].min())
                 alto = float(data[1, desde:hasta].max())
                 pico = max(abs(bajo), abs(alto))
-                medio_alto = max(1.0, pico * half)
+                medio_alto = max(1.0, _wave_level(pico) * half)
                 painter.drawRoundedRect(QRectF(x + 1, middle - medio_alto, 3, medio_alto * 2),
                                         1, 1)
             x += paso
+        painter.restore()
 
     def _wave_for(self, source):
         return self.waves.get(source)

@@ -189,3 +189,18 @@ def test_la_onda_se_dibuja_en_la_pista(ventana, media, qapp, monkeypatch):
 
     distintos = sum(1 for a, b in zip(con_onda, sin_onda) if a != b)
     assert distintos > 1500, f"la onda casi no cambia la pista ({distintos} pixeles)"
+
+
+def test_la_onda_se_dibuja_en_decibeles():
+    """En amplitud, una voz a −18 dB ocupaba el 12 % del clip y se veía plana."""
+    import math
+
+    from vortex_studio.ui.timeline import WAVE_FLOOR_DB, _wave_level
+
+    assert _wave_level(1.0) == pytest.approx(1.0)
+    assert _wave_level(0.0) == 0.0
+    assert _wave_level(10 ** (-WAVE_FLOOR_DB / 2 / 20)) == pytest.approx(0.5)
+    assert _wave_level(10 ** (-60 / 20)) == 0.0
+    voz = 10 ** (-18 / 20)
+    assert _wave_level(voz) > 0.6 > voz
+    assert math.isfinite(_wave_level(1e-30))
