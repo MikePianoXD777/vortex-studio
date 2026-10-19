@@ -6,7 +6,8 @@ ningún widget de Qt hecho da eso.
 
 Reparto de la superficie, igual que en cualquier editor:
   · la regla de arriba mueve el playhead
-  · el área vacía de las pistas también lo mueve
+  · un clic en el área vacía de las pistas también lo mueve; arrastrar ahí
+    dibuja un rectángulo que selecciona lo que toque (con Ctrl, lo suma)
   · encima de un clip, el clic selecciona y arrastra
 """
 
@@ -49,6 +50,9 @@ ZOOM_MAX = 2000.0
 ZOOM_STEP = 1.25
 EDGE_GRAB = 7          # pixeles de cada extremo que sirven para recortar
 SNAP_PIXELS = 9        # qué tan cerca hay que estar para que imante
+MARQUEE_START = 5      # pixeles que hay que arrastrar para que sea rectángulo y no clic
+MARQUEE_FILL = QColor(95, 155, 216, 40)
+MARQUEE_EDGE = QColor("#5f9bd8")
 
 TOOL_SELECT = "seleccion"
 TOOL_RAZOR = "navaja"
@@ -210,6 +214,9 @@ class TimelineWidget(QWidget):
         self._scrubbing = False
         self._drag: dict | None = None
         self._snap_at: float | None = None
+        # Selección con rectángulo: arranca al presionar en un hueco y solo es
+        # rectángulo si el mouse se movió; si no, fue un clic.
+        self._marquee: dict | None = None
 
         # Cuánto dura el archivo de un clip. Lo pone la ventana, que es quien
         # tiene el caché de sondeos; sin él, el slip solo se detiene en cero.
@@ -425,6 +432,7 @@ class TimelineWidget(QWidget):
         self._draw_range(painter)
         self._draw_snap(painter)
         self._draw_playhead(painter)
+        self._draw_marquee(painter)
         painter.end()
 
     def _draw_empty_hint(self, painter: QPainter) -> None:
@@ -1012,12 +1020,15 @@ class TimelineWidget(QWidget):
         index, item, zone = self._item_at(pos.x(), pos.y())
 
         # Lo de una pista bloqueada ni se selecciona: el clic mueve el
-        # playhead, igual que en un hueco.
+        # playhead, igual que en un hueco. Si en vez de soltar se arrastra,
+        # es un rectángulo de selección.
         if item is None or self.sequence.tracks[index].locked:
-            if not (event.modifiers() & Qt.ControlModifier):
+            sumar = bool(event.modifiers() & Qt.ControlModifier)
+            if not sumar:
                 self.select(None)
-            self._scrubbing = True
-            self._scrub(pos.x())
+            self._marquee = {"origin": QPointF(pos), "current": QPointF(pos), "add": sumar,
+                             "active": False,
+                             "before": [x for x in [self.selected, *self.extra] if x is not None]}
             return
 
         if self.tool == TOOL_RAZOR:
@@ -1074,6 +1085,47 @@ class TimelineWidget(QWidget):
             self._drag["heads"] = {id(x): head_state(x)
                                    for x in [item, *self._partners(item)]}
 
+    def marquee_rect(self) -> QRectF | None:
+        if not self._marquee or not self._marquee["active"]:
+            return None
+        return QRectF(self._marquee["origin"], self._marquee["current"]).normalized()
+
+    def _select_marquee(self) -> None:
+        """Selecciona lo que toque el rectángulo, en vivo mientras se arrastra.
+
+        Toca = se enciman en el tiempo y en la pista; no hace falta encerrar el
+        clip completo, que con clips largos sería imposible. Las pistas
+        bloqueadas no cuentan.
+        """
+        caja = self.marquee_rect()
+        if caja is None:
+            return
+        desde, hasta = self.time_for(caja.left()), self.time_for(caja.right())
+        tocados = []
+        for indice, pista in enumerate(self.sequence.tracks):
+            arriba = self._track_top(indice)
+            if pista.locked or arriba > caja.bottom() or arriba + TRACK_HEIGHT < caja.top():
+                continue
+            tocados += [c for c in pista.clips if c.start < hasta and c.end > desde]
+        if self._marquee["add"]:
+            base = self._marquee["before"]
+            tocados = base + [c for c in tocados if not any(c is b for b in base)]
+        tocados.sort(key=lambda c: c.start)
+        principal = tocados[0] if tocados else None
+        self.extra = tocados[1:]
+        self.ignore_link = False
+        if principal is not self.selected:
+            self.selected = principal
+            self.selection_changed.emit(principal)
+
+    def _draw_marquee(self, painter: QPainter) -> None:
+        caja = self.marquee_rect()
+        if caja is None:
+            return
+        painter.setPen(QPen(MARQUEE_EDGE, 1))
+        painter.setBrush(MARQUEE_FILL)
+        painter.drawRect(caja)
+
     def _partners(self, item) -> list:
         """Lo que se arrastra junto con `item`: el resto de la selección y
         sus enlazados, menos lo que esté en pistas bloqueadas."""
@@ -1103,6 +1155,17 @@ class TimelineWidget(QWidget):
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         pos = event.position()
+
+        if self._marquee is not None:
+            self._marquee["current"] = QPointF(pos)
+            origen = self._marquee["origin"]
+            if not self._marquee["active"] and (abs(pos.x() - origen.x())
+                                                 + abs(pos.y() - origen.y())) >= MARQUEE_START:
+                self._marquee["active"] = True
+            if self._marquee["active"]:
+                self._select_marquee()
+                self.update()
+            return
 
         if self._scrubbing:
             self._scrub(pos.x())
@@ -1207,6 +1270,13 @@ class TimelineWidget(QWidget):
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         self._scrubbing = False
         self._snap_at = None
+
+        if self._marquee is not None:
+            rectangulo, self._marquee = self._marquee, None
+            if not rectangulo["active"]:
+                self._scrub(rectangulo["origin"].x())     # fue un clic en un hueco
+            self.update()
+            return
 
         if self._drag is not None:
             if self._drag["moved"]:
