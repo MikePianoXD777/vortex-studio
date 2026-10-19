@@ -63,6 +63,10 @@ proyectos de la `0.1` abren igual.
 - **Con Qt 6.12 los valores de los deslizadores se veían como «⋮»**: el
   campo del número medía un pixel.
 - Un silencio de medio segundo justo no se cortaba con «Quitar silencios».
+- En archivos cuyo audio empieza después que la imagen, la onda, «Quitar
+  silencios» y la sincronía de la multicámara contaban desde otro punto que
+  lo que se oye.
+- «Ajustar» (`Shift+Z`) vuelve a hacer caber secuencias de horas.
 - El banco de pruebas abría ventanas de verdad en escritorios con Wayland.
 
 ## [0.1.1] — 2026-09-18

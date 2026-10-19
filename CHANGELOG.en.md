@@ -62,6 +62,10 @@ projects open as before.
 - **With Qt 6.12, slider values showed as "⋮"**: the number field was one
   pixel wide.
 - A silence of exactly half a second wasn't cut by "Remove silences".
+- In files whose audio starts after the picture, the waveform, "Remove
+  silences" and multicam sync counted from a different point than what you
+  hear.
+- "Fit" (`Shift+Z`) fits hours-long sequences again.
 - The test suite opened real windows on Wayland desktops.
 
 ## [0.1.1] — 2026-09-18

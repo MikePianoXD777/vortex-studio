@@ -222,6 +222,10 @@ class TimelineWidget(QWidget):
         # La barra de abajo agarrada con el mouse. La pone `TimelineScrollBar`:
         # mientras tanto la vista es de quien la arrastra y no pasa de página.
         self.scroll_held = False
+        # La vista la movió uno a propósito (rueda o barra) y el playhead quedó
+        # fuera: mientras siga así, el play no la regresa. Se apaga en cuanto
+        # el playhead se vuelve a ver, al dar play o con un salto grande.
+        self._view_moved = False
 
         # Cuánto dura el archivo de un clip. Lo pone la ventana, que es quien
         # tiene el caché de sondeos; sin él, el slip solo se detiene en cero.
@@ -350,21 +354,37 @@ class TimelineWidget(QWidget):
         derecha, salta y queda cerca de la izquierda. No se arrastra con cada
         cuadro, que marea.
 
-        Solo cuando *sale*: tiene que haberse visto en `antes`. Si ya no se
-        veía es que uno corrió la vista para mirar otra parte, y el cuadro
-        siguiente se la regresaba —con la barra peleándole el mouse—. Tampoco
-        con algo a medias: arrastrando, con la barra agarrada, o con un clic
-        o un rectángulo pendientes en un hueco, que guardan pixeles y caían
-        en otro instante si la vista pasaba de página entre presionar y soltar.
+        No le pelea la vista a quien la mueve: si uno la corrió con la rueda o
+        la barra para mirar otra parte, el cuadro siguiente ya no se la
+        regresa (`_view_moved`). Tampoco con algo a medias —arrastrando, con
+        la barra agarrada, o con un clic o un rectángulo pendientes en un
+        hueco, que guardan pixeles—; pero en cuanto eso termina, el siguiente
+        cuadro sí pasa de página. Antes se deducía «uno movió la vista» de
+        «el playhead no se ve», y arrastrar el playhead en la regla más allá
+        de la orilla dejaba el play sin seguirlo nunca.
         """
+        if abs(t - antes) * self.pixels_per_second > self.view_width():
+            self._view_moved = False        # un salto: Inicio, Fin, un marcador…
         if (self._scrubbing or self._drag is not None or self._marquee is not None
                 or self.scroll_held or self.width() <= HEADER_WIDTH):
             return
-        if not HEADER_WIDTH <= self.x_for(antes) <= self.width():
-            return
         x = self.x_for(t)
-        if x > self.width() - 8 or x < HEADER_WIDTH:
-            self.set_scroll(t * self.pixels_per_second - self.view_width() * 0.1)
+        if HEADER_WIDTH <= x <= self.width() - 8:
+            self._view_moved = False        # se ve: lo que siga, se sigue
+            return
+        if self._view_moved:
+            return
+        self.set_scroll(t * self.pixels_per_second - self.view_width() * 0.1)
+
+    def reset_follow(self) -> None:
+        """Al dar play la vista vuelve a seguir al playhead, aunque se hubiera
+        movido a mano."""
+        self._view_moved = False
+
+    def user_scrolled(self, pixels: float) -> None:
+        """La vista la mueve uno, con la barra o la rueda."""
+        self._view_moved = True
+        self.set_scroll(pixels)
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -1452,7 +1472,7 @@ class TimelineWidget(QWidget):
         if pasos == 0:
             return
         # Un clic de rueda (120) corre una décima de la vista.
-        self.set_scroll(self.scroll_x - pasos / 120.0 * self.view_width() * 0.1)
+        self.user_scrolled(self.scroll_x - pasos / 120.0 * self.view_width() * 0.1)
         event.accept()
 
 
@@ -1492,4 +1512,4 @@ class TimelineScrollBar(QScrollBar):
 
     def _moved(self, value: int) -> None:
         if not self._syncing:
-            self._timeline.set_scroll(value)
+            self._timeline.user_scrolled(value)

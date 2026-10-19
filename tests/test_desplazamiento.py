@@ -248,11 +248,12 @@ def test_al_reproducir_no_se_regresa_la_vista_que_uno_corrio(ventana):
     """
     tl = larga(ventana)
     ventana._seek(2.0)
-    tl.set_scroll(5000.0)
+    tl.user_scrolled(5000.0)            # con la rueda o la barra
     ventana._seek(2.0 + 1 / 30)         # un cuadro de reproducción
     assert tl.scroll_x == pytest.approx(5000.0)
     # Si uno vuelve a donde va el playhead, la vista lo sigue otra vez.
-    tl.set_scroll(0.0)
+    tl.user_scrolled(0.0)
+    ventana._seek(2.0 + 2 / 30)         # ya se ve
     fuera = tl.time_for(tl.width()) + 0.1
     ventana._seek(fuera)
     assert HEADER_WIDTH <= tl.x_for(fuera) <= tl.width()
@@ -351,3 +352,70 @@ def test_los_valores_de_los_deslizadores_se_ven(qapp):
     qapp.processEvents()
     assert fila._spin.lineEdit().width() > 20
     fila.close()
+
+
+# --- lo que encontró la revisión del seguimiento ------------------------------
+
+def _regla(tl, tipo, x):
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+    botones = Qt.NoButton if tipo == QEvent.MouseButtonRelease else Qt.LeftButton
+    boton = Qt.NoButton if tipo == QEvent.MouseMove else Qt.LeftButton
+    evento = QMouseEvent(tipo, QPointF(x, 10), boton, botones, Qt.NoModifier)
+    {QEvent.MouseButtonPress: tl.mousePressEvent, QEvent.MouseMove: tl.mouseMoveEvent,
+     QEvent.MouseButtonRelease: tl.mouseReleaseEvent}[tipo](evento)
+
+
+def test_arrastrar_el_playhead_fuera_y_dar_play_lo_sigue(ventana):
+    """Arrastrar el playhead en la regla más allá de la orilla y soltar: al
+    reproducir, la vista lo tiene que alcanzar. Con la regla de «solo si se
+    veía antes» se quedaba sin seguirlo toda la reproducción."""
+    from PySide6.QtCore import QEvent
+
+    tl = larga(ventana)
+    _regla(tl, QEvent.MouseButtonPress, tl.x_for(2.0))
+    _regla(tl, QEvent.MouseMove, tl.width() + 200)
+    _regla(tl, QEvent.MouseButtonRelease, tl.width() + 200)
+    assert tl.x_for(tl.playhead) > tl.width() or tl.scroll_x == 0.0
+    tl.reset_follow()                    # lo que hace la ventana al dar play
+    ventana._seek(tl.playhead + 1 / 30)
+    assert HEADER_WIDTH <= tl.x_for(tl.playhead) <= tl.width()
+
+
+def test_un_gesto_a_medias_solo_pausa_el_seguimiento(ventana):
+    """Si el playhead cruza la orilla mientras hay un rectángulo a medias, al
+    soltar el siguiente cuadro sí pasa de página."""
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+
+    tl = larga(ventana)
+    y = tl._track_top(0) + 20
+    tl.mousePressEvent(QMouseEvent(QEvent.MouseButtonPress, QPointF(300, y), Qt.LeftButton,
+                                   Qt.LeftButton, Qt.NoModifier))
+    tl.mouseMoveEvent(QMouseEvent(QEvent.MouseMove, QPointF(360, y + 30), Qt.NoButton,
+                                  Qt.LeftButton, Qt.NoModifier))
+    fuera = tl.time_for(tl.width()) + 0.5
+    ventana._seek(fuera)                 # cruza con el rectángulo puesto: no pasa
+    assert tl.scroll_x == 0.0
+    tl.mouseReleaseEvent(QMouseEvent(QEvent.MouseButtonRelease, QPointF(360, y + 30),
+                                     Qt.LeftButton, Qt.NoButton, Qt.NoModifier))
+    ventana._seek(fuera + 1 / 30)        # el cuadro siguiente sí
+    assert HEADER_WIDTH <= tl.x_for(tl.playhead) <= tl.width()
+
+
+def test_un_salto_grande_muestra_el_playhead(ventana):
+    """Inicio, Fin o un marcador lejano: aunque uno hubiera movido la vista,
+    el salto la lleva a donde quedó el playhead."""
+    tl = larga(ventana)
+    tl.user_scrolled(3000.0)
+    ventana._seek(110.0)
+    assert HEADER_WIDTH <= tl.x_for(110.0) <= tl.width()
+
+
+def test_dar_play_vuelve_a_seguir(ventana, media):
+    tl = larga(ventana)
+    tl.user_scrolled(3000.0)
+    ventana.audio.start = lambda *a, **k: False
+    ventana._play()
+    ventana._pause()
+    assert not tl._view_moved

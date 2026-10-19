@@ -3917,6 +3917,7 @@ class MainWindow(QMainWindow):
         self._playing = True
         self._origin = self.timeline.playhead
         self._elapsed.start()
+        self.timeline.reset_follow()
 
         # El audio solo acompaña a velocidad normal. A otras velocidades se
         # oiría con el tono cambiado, que es peor que no oírlo.
