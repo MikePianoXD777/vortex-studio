@@ -16,7 +16,7 @@ from vortex_studio.model.audio_fx import DUCKED, NORMAL as ROLE_NORMAL, VOICE, A
 from vortex_studio.model.chroma import ChromaKey
 from vortex_studio.model.color import ColorAdjust
 from vortex_studio.model.mask import Mask
-from vortex_studio.model.media import MediaInfo, library_key
+from vortex_studio.model.media import MediaInfo, duration_in
 from vortex_studio.model.overlays import AdjustmentLayer, ImageOverlay, Title
 from vortex_studio.model.transform import FIT, Transform
 
@@ -714,8 +714,7 @@ class Project:
         Es lo que `Sequence.audio_clips` necesita para no alargar el audio de
         una transición más allá del final de su archivo.
         """
-        info = self.media.get(library_key(path))
-        return info.duration if info is not None and info.duration > 0 else None
+        return duration_in(self.media, path)
 
 
 def level_span(clip) -> tuple[float, float]:

@@ -310,3 +310,35 @@ def test_dos_pistas_de_video_con_transicion_cruzan_el_audio_una_vez(secuencia):
     assert entra._xfade == [pytest.approx((2.5, 3.5, True))]
     assert sale.end == pytest.approx(3.5)
     assert entra.start == pytest.approx(2.5) and entra.in_point == pytest.approx(2.6)
+
+
+def test_la_exportacion_suena_igual_que_el_play(ventana, media, tmp_path):
+    """La cola de render armaba el audio sin saber cuánto duran los archivos:
+    al exportar, el que sale se alargaba más allá de su final y el archivo se
+    cortaba a −3 dB justo donde el play ya pasaba por silencio."""
+    import time
+
+    import av
+    from PySide6.QtWidgets import QApplication
+
+    ventana._place_video(media["sonoro"])
+    ventana._place_video(media["sonoro"])
+    _, segundo = ventana.sequence.video_tracks()[-1].clips
+    ventana.timeline.select(segundo)
+    ventana.set_dissolve(1.0)
+    corte = segundo.start
+
+    job = ventana.queue_export(tmp_path / "cruce.mp4", 0.0, corte + 1.0, "Borrador")
+    assert ventana.render_queue.wait(60), "la exportación no terminó"
+    fin = time.monotonic() + 2
+    while time.monotonic() < fin:
+        QApplication.processEvents()
+    assert job.path.exists(), job.error
+
+    with av.open(str(job.path)) as contenedor:
+        flujo = contenedor.streams.audio[0]
+        tasa = flujo.rate
+        arr = np.concatenate([f.to_ndarray()[0] for f in contenedor.decode(flujo)])
+    normal = rms(arr[int(1.0 * tasa):int(1.5 * tasa)])
+    justo_antes = rms(arr[int((corte - 0.03) * tasa):int(corte * tasa)])
+    assert justo_antes < normal * 0.15
