@@ -101,6 +101,41 @@ def test_la_barra_y_el_timeline_van_amarrados(ventana):
     assert barra.value() == 900
 
 
+def barra_al_dia(ventana):
+    tl, barra = ventana.timeline, ventana.timeline_scroll
+    return (tl.scroll_x <= tl.max_scroll() + 1e-6
+            and barra.maximum() == int(round(tl.max_scroll()))
+            and barra.value() == int(round(tl.scroll_x)))
+
+
+def test_borrar_el_final_reacomoda_la_vista_y_la_barra(ventana):
+    """Antes la vista se quedaba más allá del final, toda vacía, y la barra con
+    el rango viejo, hasta la siguiente vuelta de la rueda."""
+    tl = larga(ventana, 10.0)
+    cola = ventana.sequence.video_tracks()[-1].add(Clip("/no/existe.mp4", 10.0, 110.0))
+    tl.refresh()
+    tl.set_scroll(10 ** 9)
+    assert tl.scroll_x > 9000
+    tl.select(cola)
+    ventana.delete_selected()
+    assert ventana.sequence.duration == pytest.approx(10.0)
+    assert barra_al_dia(ventana)
+    assert tl.x_for(10.0) > HEADER_WIDTH       # el final de lo que quedó se ve
+
+
+def test_alargar_la_secuencia_alarga_la_barra(ventana):
+    """Arrastrar un clip más allá de la orilla dejaba la barra sin recorrido."""
+    tl = ventana.timeline
+    clip = ventana.sequence.video_tracks()[-1].add(Clip("/no/existe.mp4", 0.0, 5.0))
+    tl.refresh()
+    tl.fit()
+    assert ventana.timeline_scroll.maximum() == 0
+    clip.start = 30.0                       # lo que deja un arrastre al soltar
+    tl.edit_finished.emit("Mover clip")
+    assert tl.max_scroll() > 0
+    assert barra_al_dia(ventana)
+
+
 def test_al_reproducir_la_vista_pasa_de_pagina(ventana):
     tl = larga(ventana)
     fuera = tl.time_for(tl.width()) + 5.0

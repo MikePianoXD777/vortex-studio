@@ -20,27 +20,35 @@ LIMIT = 100
 
 class History:
     def __init__(self, limit: int = LIMIT) -> None:
-        self._states: list[tuple[str, dict]] = []
+        # Cada estado: etiqueta, instantánea y las secuencias que nacieron con él.
+        self._states: list[tuple[str, dict, frozenset]] = []
         self._index = -1
         self._limit = limit
 
     def reset(self, sequence: Sequence) -> None:
         """Arranca el historial desde este estado, sin nada que deshacer."""
-        self._states = [("Inicio", sequence_to_dict(sequence))]
+        self._states = [("Inicio", sequence_to_dict(sequence), frozenset())]
         self._index = 0
 
-    def push(self, sequence: Sequence, label: str) -> None:
+    def push(self, sequence: Sequence, label: str, creates=()) -> None:
         """Registra un cambio ya aplicado.
 
         Si veníamos de deshacer, lo que estaba adelante se descarta: acaba
         de nacer una rama nueva y la vieja ya no es alcanzable.
+
+        `creates` son los ids de las secuencias que nacieron con este cambio
+        —Anidar, Multicámara—. La instantánea es de una sola secuencia y no
+        las trae: el historial solo recuerda que son de este paso, para que
+        deshacerlo las aparte y rehacerlo las regrese (ver
+        `MainWindow._restore`), y ningún otro paso las toque.
         """
         snapshot = sequence_to_dict(sequence)
-        if self._index >= 0 and snapshot == self._states[self._index][1]:
+        creadas = frozenset(creates)
+        if self._index >= 0 and snapshot == self._states[self._index][1] and not creadas:
             return  # nada cambió de verdad
 
         del self._states[self._index + 1:]
-        self._states.append((label, snapshot))
+        self._states.append((label, snapshot, creadas))
 
         if len(self._states) > self._limit:
             self._states.pop(0)
@@ -61,6 +69,16 @@ class History:
     @property
     def redo_label(self) -> str:
         return self._states[self._index + 1][0] if self.can_redo else ""
+
+    @property
+    def undo_creates(self) -> frozenset:
+        """Las secuencias que nacieron con el paso que deshacer quitaría."""
+        return self._states[self._index][2] if self.can_undo else frozenset()
+
+    @property
+    def redo_creates(self) -> frozenset:
+        """Las secuencias que nacieron con el paso que rehacer volvería a poner."""
+        return self._states[self._index + 1][2] if self.can_redo else frozenset()
 
     def undo(self) -> Sequence | None:
         if not self.can_undo:

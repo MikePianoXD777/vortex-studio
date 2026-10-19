@@ -205,3 +205,38 @@ def test_el_panel_de_audio(ventana, sonidos):
     panel.role.setCurrentText(VOICE)
     assert ventana.sequence.audio_tracks()[0].role == VOICE
     assert ventana.history.undo_label == "A1: voz"
+
+
+def escribir(fila, texto):
+    """Teclea en el número de la fila, como el usuario, y da Enter."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+
+    fila._spin.selectAll()
+    QTest.keyClicks(fila._spin, texto)
+    QTest.keyClick(fila._spin, Qt.Key_Return)
+    return fila.value()
+
+
+def test_la_relacion_se_escribe_como_se_lee(qapp):
+    """«3:1» ponía 20:1: el «:» no entraba, y el 1 se pegaba al 3."""
+    from vortex_studio.ui.widgets import SliderRow
+
+    relacion = SliderRow("Relación", 10, 200, 30, scale=10, decimals=1, suffix=":1")
+    vistos = []
+    relacion.changed.connect(vistos.append)
+    assert escribir(relacion, "3:1") == 30
+    assert relacion._spin.text() == "3.0:1"
+    assert 200 not in vistos                # ni de paso, mientras se tecleaba
+    assert escribir(relacion, "10:1") == 100
+    assert escribir(relacion, "4.5") == 45
+
+
+def test_las_unidades_se_pueden_teclear_a_medias(qapp):
+    from vortex_studio.ui.widgets import SliderRow
+
+    umbral = SliderRow("Umbral", -60, 0, -18, suffix=" dB")
+    assert escribir(umbral, "-12 dB") == -12
+    assert escribir(umbral, "-30 d") == -30
+    ataque = SliderRow("Ataque", 1, 200, 10, suffix=" ms")
+    assert escribir(ataque, "25 m") == 25

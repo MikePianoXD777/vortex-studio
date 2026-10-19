@@ -223,3 +223,23 @@ def test_la_ventana_corta_al_angulo_en_el_playhead_y_se_ve(ventana, camaras):
     assert not ventana.switch_angle(5)
     ventana.undo()
     assert mc.cuts(ventana.sequence.track_named("V1").clips[0]) == []
+
+
+def test_deshacer_la_multicamara_la_aparta_y_rehacer_la_regresa(ventana, camaras):
+    clip = ventana.create_multicam(list(camaras), method="timecode")
+    multi = ventana.project.sequence_by_id(clip.sequence_id)
+    ventana.undo()
+    assert ventana.project.sequence_by_id(clip.sequence_id) is None
+    ventana.redo()
+    assert ventana.project.sequence_by_id(clip.sequence_id) is multi
+
+
+def test_borrar_el_clip_y_deshacer_otra_cosa_no_aparta_la_multicamara(ventana, camaras, media):
+    """Antes cualquier deshacer se llevaba la multicámara que ya nadie usaba,
+    aunque lo deshecho no tuviera nada que ver con ella."""
+    clip = ventana.create_multicam(list(camaras), method="timecode")
+    ventana.timeline.select(clip)
+    ventana.delete_selected()
+    ventana._place_video(media["gris"], at=20.0)
+    ventana.undo()
+    assert ventana.project.sequence_by_id(clip.sequence_id) is not None

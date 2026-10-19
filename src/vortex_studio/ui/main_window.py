@@ -6,6 +6,7 @@ import copy
 import time
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 from PySide6.QtCore import QElapsedTimer, QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QActionGroup, QImage, QKeySequence
@@ -98,7 +99,7 @@ from vortex_studio.ui.topbar import TopBar
 from vortex_studio.ui.widgets import Card, style_dock
 from vortex_studio.model.overlays import AdjustmentLayer
 from vortex_studio.model.project import NestedClip
-from vortex_studio.model.nesting import would_cycle
+from vortex_studio.model.nesting import children_of, would_cycle
 from vortex_studio.model import render_zones
 from vortex_studio.ui import render_cache
 from vortex_studio.ui.renderer import (
@@ -224,7 +225,7 @@ class MainWindow(QMainWindow):
         self.history.reset(self.sequence)
         self._histories: dict[str, History] = {}    # uno por secuencia
         # Las secuencias que nacen de una edición —Anidar, Multicámara— y las
-        # que se apartaron porque se deshizo esa edición. Ver `_sync_made_sequences`.
+        # que se apartaron porque se deshizo esa edición. Ver `_restore`.
         self._made_sequences: set[str] = set()
         self._set_aside: dict[str, Sequence] = {}
 
@@ -255,7 +256,13 @@ class MainWindow(QMainWindow):
         self._path: Path | None = None
         self.lock_holder = None             # quién más tiene abierto el proyecto
         self.last_merge_conflicts: list[str] = []
+        self._unsaved = False
+        self._unsaved_changes = 0           # sube con cada cambio, ver `_dirty`
         self._dirty = False
+        # «Salir al terminar»: cerrar solo cuando acabe la cola, y en qué punto
+        # de los cambios se contestó ya «¿Guardar?». Ver `closeEvent`.
+        self._quit_after_render = False
+        self._quit_answered_at = -1
 
         # Atajos de una sola tecla (Espacio, C, L, Supr…). Hay que apagarlos
         # mientras se escribe: si no, teclear un subtítulo activa la navaja,
@@ -849,6 +856,9 @@ class MainWindow(QMainWindow):
         self.project = Project()
         self._made_sequences.clear()
         self._set_aside.clear()
+        # Abrir otro proyecto es cambiar de idea: con «Salir al terminar» aún
+        # puesto, la exportación de antes cerraba el que se acababa de abrir.
+        self._quit_after_render = False
         self._path = None
         self._adopt(self.project.active, reset_history=True)
         self._dirty = False
@@ -879,6 +889,7 @@ class MainWindow(QMainWindow):
         self.project = project
         self._made_sequences.clear()
         self._set_aside.clear()
+        self._quit_after_render = False     # como en `new_project`
         self._path = nueva
         self._adopt(project.active, reset_history=True)
         self._dirty = False
@@ -1227,6 +1238,7 @@ class MainWindow(QMainWindow):
         self.project = project
         self._made_sequences.clear()
         self._set_aside.clear()
+        self._quit_after_render = False     # como en `new_project`
         self._path = copia.original
         self._adopt(project.active, reset_history=True)
         # Queda como "sin guardar" a propósito: lo recuperado todavía no
@@ -1239,6 +1251,22 @@ class MainWindow(QMainWindow):
             f"{time.strftime('%H:%M', time.localtime(copia.saved_at))}. "
             f"Guarda para no perderlo.", 10000)
         return True
+
+    @property
+    def _dirty(self) -> bool:
+        """Hay cambios sin guardar."""
+        return self._unsaved
+
+    @_dirty.setter
+    def _dirty(self, valor: bool) -> None:
+        # Cada cambio cuenta, aunque el proyecto ya estuviera sin guardar: así
+        # se sabe si hubo algo nuevo después de contestar «¿Guardar?» (ver
+        # `closeEvent`). Con solo el sí/no no se distinguía, y no todos los
+        # cambios pasan por el historial: importar al panel de medios, mover
+        # un keyframe a medio arrastre…
+        if valor:
+            self._unsaved_changes += 1
+        self._unsaved = bool(valor)
 
     def _confirm_discard(self) -> bool:
         if not self._dirty:
@@ -1314,12 +1342,16 @@ class MainWindow(QMainWindow):
         self._pending = None
         self._update_history_actions()
 
-    def _commit(self, label: str) -> None:
-        """Registra un cambio ya aplicado y refresca lo que dependa de él."""
+    def _commit(self, label: str, creates=()) -> None:
+        """Registra un cambio ya aplicado y refresca lo que dependa de él.
+
+        `creates`: las secuencias que nacieron con este cambio. Ver `_restore`.
+        """
         self._edit_serial += 1
         self._commit_timer.stop()
         self._pending = None
-        self.history.push(self.sequence, label)
+        self.history.push(self.sequence, label, creates)
+        self._reclaim_set_aside()
         self._dirty = True
         self._update_title()
         self._update_history_actions()
@@ -1329,57 +1361,82 @@ class MainWindow(QMainWindow):
 
     def undo(self) -> None:
         self._flush()
-        self._restore(self.history.undo())
+        creadas = self.history.undo_creates
+        self._restore(self.history.undo(), set_aside=creadas)
 
     def redo(self) -> None:
         self._flush()
-        self._restore(self.history.redo())
+        creadas = self.history.redo_creates
+        self._restore(self.history.redo(), bring_back=creadas)
 
-    def _restore(self, sequence: Sequence | None) -> None:
+    def _restore(self, sequence: Sequence | None, set_aside=(), bring_back=()) -> None:
+        """Pone el estado que dio el historial.
+
+        Las secuencias que creó una edición siguen a esa edición: deshacer
+        «Anidar» aparta la anidada que creó, y rehacerlo la regresa tal cual,
+        con lo editado adentro y su historial. Antes la anidada se quedaba en
+        el proyecto, huérfana, y se guardaba con él.
+
+        Y solo esa edición las mueve. Antes cada deshacer, en cualquier
+        secuencia, apartaba toda secuencia hecha que nadie usara: una anidada
+        que el usuario dejó sin usar a propósito se iba con lo que tuviera
+        adentro, y ya no se guardaba. Y como se comparaba el objeto, deshacer
+        adentro de esa anidada la sacaba del proyecto mientras se editaba.
+        """
         if sequence is None:
             return
         self._pause()
         self.project.sequences[self.project.active_index()] = sequence
-        self._sync_made_sequences()
+        self._set_aside_made(set_aside, keep=sequence.id)
+        self._bring_back(bring_back)
+        self._reclaim_set_aside()
         self._adopt(sequence, reset_history=False)
         self._dirty = True
         self._update_title()
 
-    def _sync_made_sequences(self) -> None:
-        """Las secuencias que creó una edición siguen a esa edición.
+    def _referenced(self) -> set[str]:
+        """Las secuencias que usa algún clip del proyecto."""
+        return set().union(*(children_of(s) for s in self.project.sequences))
 
-        Antes, deshacer «Anidar» regresaba los clips a su lugar pero la
-        secuencia anidada se quedaba en el proyecto, huérfana, y se guardaba
-        con él. Ahora, si después de deshacer ya nadie la usa, se aparta; y si
-        rehacer la vuelve a usar, regresa tal cual, con su historial.
+    def _set_aside_made(self, idents, keep: str) -> None:
+        """Aparta lo que creó la edición que se deshizo, si ya nadie lo usa.
+
+        La que se está editando no se aparta nunca, y tampoco una que otra
+        secuencia usa: pegada en otro lado, apartarla dejaba ahí un clip
+        apuntando a nada.
         """
-        if not self._made_sequences:
-            return
-        def hijas(secuencia) -> set:
-            return {getattr(clip, "sequence_id", "") for pista in secuencia.tracks
-                    for clip in pista.clips} - {""}
-
-        usadas: set = set()
-        for secuencia in self.project.sequences:
-            usadas |= hijas(secuencia)
-        # Una apartada que vuelve trae a las suyas: anidadas dentro de anidadas.
-        while True:
-            mas = set().union(*(hijas(s) for i, s in self._set_aside.items() if i in usadas))
-            if mas <= usadas:
-                break
-            usadas |= mas
-        cambio = False
-        for ident in sorted(self._made_sequences):
+        pendientes = list(idents)
+        while pendientes:
+            ident = pendientes.pop()
             presente = self.project.sequence_by_id(ident)
-            if presente is not None and ident not in usadas and presente is not self.sequence:
-                self.project.sequences = [s for s in self.project.sequences if s is not presente]
-                self._set_aside[ident] = presente
-                cambio = True
-            elif presente is None and ident in usadas and ident in self._set_aside:
-                self.project.sequences.append(self._set_aside.pop(ident))
-                cambio = True
-        if cambio:
-            self._sync_made_sequences()     # una que se fue pudo dejar huérfana a otra
+            if presente is None or ident == keep or ident in self._referenced():
+                continue
+            self.project.sequences = [s for s in self.project.sequences if s is not presente]
+            self._set_aside[ident] = presente
+            # Una anidada hecha adentro de la que se fue queda huérfana: se va
+            # con ella (y regresa con ella, ver `_bring_back`).
+            pendientes.extend(i for i in children_of(presente) if i in self._made_sequences)
+
+    def _bring_back(self, idents) -> None:
+        """Regresa las apartadas tal cual, con las que traían adentro."""
+        pendientes = list(idents)
+        while pendientes:
+            secuencia = self._set_aside.pop(pendientes.pop(), None)
+            if secuencia is not None:
+                self.project.sequences.append(secuencia)
+                pendientes.extend(children_of(secuencia))
+
+    def _reclaim_set_aside(self) -> None:
+        """Una apartada que algo vuelve a usar regresa al proyecto.
+
+        Pegar el clip de una anidada después de deshacer su «Anidar» dejaba
+        un clip apuntando a una secuencia que no estaba en el proyecto: se
+        veía vacío, y al guardar quedaba colgando para siempre, porque lo
+        apartado no se guarda. Igual al rehacer, en otra secuencia, un pegado
+        que la usaba.
+        """
+        if self._set_aside:
+            self._bring_back(self._referenced() & self._set_aside.keys())
 
     def _adopt(self, sequence: Sequence, reset_history: bool) -> None:
         """Pone una secuencia nueva en circulación por toda la interfaz."""
@@ -1918,7 +1975,7 @@ class MainWindow(QMainWindow):
         elif job.status == CANCELLED:
             self.statusBar().showMessage(f"Exportación cancelada: {job.name}", 5000)
 
-        if getattr(self, "_quit_after_render", False):
+        if self._quit_after_render:
             if job.status == FAILED:
                 # Si algo falló no se cierra solo: el aviso se perdería con la
                 # ventana y uno creería que todo salió.
@@ -1927,7 +1984,24 @@ class MainWindow(QMainWindow):
                     self, "No se cerró el editor",
                     f"Falló la exportación de {job.name}:\n\n{job.error}")
             elif not self.render_queue.busy:
-                self.close()
+                # No desde aquí adentro: cancelar el último trabajo en el panel
+                # avisa en el mismo momento, y se cerraba todo a media llamada.
+                QTimer.singleShot(0, self._close_after_render)
+
+    def _close_after_render(self) -> None:
+        """El cierre de «Salir al terminar», en cuanto no haya un diálogo abierto.
+
+        El aviso de la cola llega aunque haya uno encima —exportar, guardar
+        como…—: cerrar ahí apagaba el editor por debajo, y lo que el diálogo
+        hiciera al aceptarse caía en una ventana ya cerrada. Si mientras tanto
+        se agregó otra exportación, se espera a esa también.
+        """
+        if not self._quit_after_render or self.render_queue.busy or not self.isVisible():
+            return
+        if QApplication.activeModalWidget() is not None:
+            QTimer.singleShot(300, self._close_after_render)
+            return
+        self.close()
 
     def _ask_quit_with_exports(self) -> str:
         """«esperar», «cancelar» o «seguir». Aparte para poder probarlo."""
@@ -2593,7 +2667,7 @@ class MainWindow(QMainWindow):
         pista.add(clip)
         self.timeline.select(clip)
         self._fit_zoom()
-        self._commit("Multicámara")
+        self._commit("Multicámara", creates={multi.id})
         aviso = f"Multicámara de {len(rutas)} cámaras, sincronizada por " \
                 f"{'código de tiempo' if metodo == 'timecode' else 'audio'}. Corta con 1 a 4."
         if dudosas:
@@ -2883,10 +2957,14 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("No hay nada copiado.", 3000)
             return
         # Pegar una anidada dentro de sí misma (o de quien la contiene) se
-        # colaba por aquí: Insertar secuencia sí lo revisaba, pegar no.
+        # colaba por aquí: Insertar secuencia sí lo revisaba, pegar no. Y lo
+        # apartado también cuenta: pegar una anidada cuyo «Anidar» se deshizo
+        # la regresa al proyecto (ver `_reclaim_set_aside`), y fuera de él la
+        # revisión no veía lo que tiene adentro.
+        alcance = SimpleNamespace(sequences=[*self.project.sequences, *self._set_aside.values()])
         for entrada in self._clipboard:
             ident = (entrada.get("data") or {}).get("sequence_id") or ""
-            if ident and would_cycle(self.project, self.sequence.id, ident):
+            if ident and would_cycle(alcance, self.sequence.id, ident):
                 self.statusBar().showMessage(
                     "No se puede pegar aquí: la secuencia quedaría dentro de sí misma.", 6000)
                 return
@@ -3362,7 +3440,7 @@ class MainWindow(QMainWindow):
         overwrite(destino, anidada)
         destino.add(anidada)
         self.timeline.select(anidada)
-        self._commit("Anidar")
+        self._commit("Anidar", creates={hija.id})
         return anidada
 
     def _fill_switch_menu(self) -> None:
@@ -3720,7 +3798,12 @@ class MainWindow(QMainWindow):
     def _refresh(self) -> None:
         """Vuelve a componer el cuadro actual sin mover el playhead."""
         self._render(self.timeline.playhead)
-        self.timeline.update()
+        # `refresh` y no solo `update`: la edición pudo cambiar la duración, y
+        # con ella hasta dónde se recorre. Antes, borrar el final con la vista
+        # al fondo la dejaba más allá de todo, vacía, y la barra con el rango
+        # viejo; y alargar la secuencia no le daba recorrido a la barra. Se
+        # arreglaba hasta la siguiente vuelta de la rueda.
+        self.timeline.refresh()
 
     def _cover_scale(self, overlay) -> float:
         """Cuánto escalar una imagen para cubrir el cuadro de la secuencia.
@@ -3956,24 +4039,40 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         self._flush()
-        if not self._confirm_discard():
+        # «¿Guardar?» ya se contestó al elegir «Salir al terminar». Con «No
+        # guardar» el proyecto seguía sin guardar, el cierre que llega al
+        # terminar la cola volvía a preguntar, y el editor se quedaba abierto
+        # esperando un clic. Solo si algo cambió después se pregunta otra vez.
+        contestado = (self._quit_after_render
+                      and self._quit_answered_at == self._unsaved_changes)
+        if not contestado and not self._confirm_discard():
+            # Si no se cierra, «Salir al terminar» se desarma: se quedaba
+            # puesto, y una exportación de mucho después cerraba el editor.
+            self._quit_after_render = False
             event.ignore()
             return
         if self.render_queue.busy:
             respuesta = self._ask_quit_with_exports()
-            if respuesta == "esperar":
+            # Mientras se contestaba pudo terminar todo, y el aviso de la cola
+            # no cierra con este diálogo abierto (ver `_close_after_render`):
+            # si ya no hay qué esperar, se cierra ahora. Si no, se quedaba
+            # armado y ninguna exportación iba a volver a avisar.
+            if respuesta == "esperar" and self.render_queue.busy:
                 # Antes la única salida era cancelar: una exportación de una
                 # hora se perdía por cerrar la ventana.
                 self._quit_after_render = True
+                self._quit_answered_at = self._unsaved_changes
                 self.queue_panel.show()
                 self.statusBar().showMessage(
                     "El editor se cerrará cuando terminen las exportaciones.")
                 event.ignore()
                 return
-            self._quit_after_render = False
-            if respuesta != "cancelar":
+            if respuesta not in ("esperar", "cancelar"):
+                self._quit_after_render = False
                 event.ignore()
                 return
+        # Ya se cierra de verdad: que ningún aviso de la cola lo vuelva a pedir.
+        self._quit_after_render = False
         self.render_queue.shutdown()
         self.cache_worker.shutdown()
         self.proxies.shutdown()
