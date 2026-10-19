@@ -1918,6 +1918,33 @@ class MainWindow(QMainWindow):
         elif job.status == CANCELLED:
             self.statusBar().showMessage(f"Exportación cancelada: {job.name}", 5000)
 
+        if getattr(self, "_quit_after_render", False):
+            if job.status == FAILED:
+                # Si algo falló no se cierra solo: el aviso se perdería con la
+                # ventana y uno creería que todo salió.
+                self._quit_after_render = False
+                QMessageBox.warning(
+                    self, "No se cerró el editor",
+                    f"Falló la exportación de {job.name}:\n\n{job.error}")
+            elif not self.render_queue.busy:
+                self.close()
+
+    def _ask_quit_with_exports(self) -> str:
+        """«esperar», «cancelar» o «seguir». Aparte para poder probarlo."""
+        caja = QMessageBox(self)
+        caja.setIcon(QMessageBox.Question)
+        caja.setWindowTitle("Hay exportaciones en curso")
+        caja.setText("Hay exportaciones sin terminar.")
+        caja.setInformativeText(
+            "Puedes dejar que terminen y el editor se cierra solo, o cancelarlas "
+            "ahora: los archivos a medias se borran.")
+        esperar = caja.addButton("Salir al terminar", QMessageBox.AcceptRole)
+        cancelar = caja.addButton("Cancelarlas y salir", QMessageBox.DestructiveRole)
+        seguir = caja.addButton("Seguir editando", QMessageBox.RejectRole)
+        caja.setDefaultButton(esperar)
+        caja.exec()
+        return {esperar: "esperar", cancelar: "cancelar"}.get(caja.clickedButton(), "seguir")
+
     def _audio_clips(self) -> list:
         """Lo que suena: respeta silencio y solo por pista, y el modo Silenciar."""
         return self.sequence.audio_clips(self.project.sequence_by_id)
@@ -3933,12 +3960,18 @@ class MainWindow(QMainWindow):
             event.ignore()
             return
         if self.render_queue.busy:
-            respuesta = QMessageBox.question(
-                self, "Hay exportaciones en curso",
-                "Si sales ahora se cancelan y los archivos a medias se borran.\n\n"
-                "¿Salir de todos modos?",
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-            if respuesta != QMessageBox.Yes:
+            respuesta = self._ask_quit_with_exports()
+            if respuesta == "esperar":
+                # Antes la única salida era cancelar: una exportación de una
+                # hora se perdía por cerrar la ventana.
+                self._quit_after_render = True
+                self.queue_panel.show()
+                self.statusBar().showMessage(
+                    "El editor se cerrará cuando terminen las exportaciones.")
+                event.ignore()
+                return
+            self._quit_after_render = False
+            if respuesta != "cancelar":
                 event.ignore()
                 return
         self.render_queue.shutdown()
