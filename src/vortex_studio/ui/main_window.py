@@ -132,7 +132,14 @@ from vortex_studio.ui.render_queue import (
     RenderQueuePanel,
 )
 from vortex_studio.ui.settings import load_settings, save_settings
-from vortex_studio.ui.timeline import TOOL_RAZOR, TOOL_SELECT, TOOL_SLIP, TimelineWidget
+from vortex_studio.ui.timeline import (
+    HEADER_WIDTH,
+    TOOL_RAZOR,
+    TOOL_SELECT,
+    TOOL_SLIP,
+    TimelineScrollBar,
+    TimelineWidget,
+)
 from vortex_studio.ui.transport import SPEEDS, TransportBar
 
 VIDEO_EXT = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v", ".mpg", ".mpeg"}
@@ -374,9 +381,17 @@ class MainWindow(QMainWindow):
         self.timeline_tools.split_requested.connect(self.cut_at_playhead)
         self.timeline_tools.snap_toggled.connect(self._set_snapping)
         self.timeline_tools.link_toggled.connect(self._set_linked_selection)
+        self.timeline_tools.zoom_in.connect(self.timeline.zoom_in)
+        self.timeline_tools.zoom_out.connect(self.timeline.zoom_out)
+        self.timeline_tools.zoom_fit.connect(self._fit_zoom)
+        self.timeline_scroll = TimelineScrollBar(self.timeline)
+        barra = QHBoxLayout()
+        barra.setContentsMargins(HEADER_WIDTH, 2, 0, 0)
+        barra.addWidget(self.timeline_scroll)
         linea = Card(padding=(12, 10, 12, 8))
         linea.body.addWidget(self.timeline_tools)
         linea.body.addWidget(self.timeline, 1)
+        linea.body.addLayout(barra)
         self._timeline_card = linea
 
         splitter = QSplitter(Qt.Vertical)
@@ -661,6 +676,8 @@ class MainWindow(QMainWindow):
         ver = self.menuBar().addMenu("&Ver")
         self._action(ver, "Pantalla &completa", "ver.pantalla_completa", self.toggle_fullscreen)
         self._action(ver, "&Ajustar timeline", "ver.ajustar", self._fit_zoom)
+        self._action(ver, "A&cercar el timeline", "ver.acercar", self.timeline.zoom_in)
+        self._action(ver, "A&lejar el timeline", "ver.alejar", self.timeline.zoom_out)
         ver.addSeparator()
         self._proxy_action = self._action(ver, "Usar &proxies (540p)", None,
                                           lambda on: self.set_use_proxies(on))
@@ -3650,16 +3667,9 @@ class MainWindow(QMainWindow):
 
     def _fit_zoom(self) -> None:
         """Ajusta el zoom para que quepa toda la secuencia."""
-        duration = self.sequence.duration
-        if duration > 0:
-            from vortex_studio.ui.timeline import HEADER_WIDTH
-
-            # Lo que queda a la derecha de las cabeceras, con un respiro al
-            # final. Antes se restaban 90 y la cabecera mide 116: el final de
-            # la secuencia quedaba fuera de la vista.
-            usable = max(200, self.timeline.width() - HEADER_WIDTH - 16)
-            self.timeline.pixels_per_second = usable / duration
-            self.timeline.update()
+        # Lo que queda a la derecha de las cabeceras, con un respiro al final,
+        # y desde el principio: con la vista corrida no se vería el inicio.
+        self.timeline.fit()
 
     # --- marcas de entrada y salida ---------------------------------------
 

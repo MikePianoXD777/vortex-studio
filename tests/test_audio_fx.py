@@ -171,7 +171,7 @@ def test_el_papel_de_la_pista_arma_las_opciones():
     musica = a2.add(Clip("/tmp/m.wav", 0.0, 2.0))
     a1.role, a2.role = VOICE, DUCKED
     opciones = seq.audio_mix_options()
-    assert opciones["voices"] == {id(voz)} and opciones["ducked"] == {id(musica)}
+    assert opciones["voices"] == {voz.uid} and opciones["ducked"] == {musica.uid}
     a1.muted = True
     assert seq.audio_mix_options()["voices"] == set()
 

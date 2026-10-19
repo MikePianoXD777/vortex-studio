@@ -27,6 +27,7 @@ except ImportError:  # pragma: no cover - depende del entorno
     av = None
     HAS_PYAV = False
 
+SEEK_MARGIN = 0.25        # segundos antes del punto de entrada desde donde se decodifica
 PEAK_RATE = 8000          # frecuencia a la que se mide la onda
 RATE = 48000              # frecuencia de salida al exportar
 LAYOUT = "stereo"
@@ -95,6 +96,24 @@ def fade_envelope(clip, tiempos: np.ndarray) -> np.ndarray:
     if salida > 0:
         alfa = np.minimum(alfa, np.clip((duracion - dentro) / salida, 0.0, 1.0))
     return alfa
+
+
+def transition_envelope(clip, tiempos: np.ndarray) -> np.ndarray:
+    """El nivel de las transiciones de audio, muestra por muestra.
+
+    Las pone `Sequence._with_audio_transitions` como `(desde, hasta, sube)`.
+    Seno para entrar y coseno para salir: es la curva de potencia constante,
+    con la que dos audios cruzados suman la misma energía en todo el tramo.
+    """
+    nivel = np.ones_like(tiempos, dtype=np.float64)
+    for desde, hasta, sube in getattr(clip, "_xfade", None) or ():
+        largo = hasta - desde
+        if largo <= 1e-9:
+            continue
+        avance = np.clip((tiempos - desde) / largo, 0.0, 1.0)
+        curva = np.sin(avance * np.pi / 2) if sube else np.cos(avance * np.pi / 2)
+        nivel *= curva
+    return nivel
 
 
 class AudioRenderer:
@@ -169,7 +188,7 @@ class AudioRenderer:
             ganancia = np.maximum(0.0, evaluate_many(puntos, tiempos - clip.start))
         else:
             ganancia = max(0.0, float(getattr(clip, "gain", 1.0)))
-        nivel = ganancia * fade_envelope(clip, tiempos)
+        nivel = ganancia * fade_envelope(clip, tiempos) * transition_envelope(clip, tiempos)
 
         if np.all(np.abs(nivel - 1.0) < 1e-4):
             return frame            # nada que hacer: ni se copia el bloque
@@ -484,6 +503,13 @@ class AudioRenderer:
             # y quien llama rellena con silencio.
             return
 
+        # El segundo 0 del clip es el primer cuadro del VIDEO, igual que en
+        # `VideoSource`: en material de cámara o `.ts` los tiempos del archivo
+        # no empiezan en cero, y si el audio contara desde otro lado se
+        # desfasaría de la imagen —o, si arranca después del video, se
+        # recorrería—. Sin video, cuenta desde su propio principio.
+        source_start += _origin(container, stream)
+
         resampler = AudioResampler(format=self.format, layout=self.layout, rate=self.rate)
         fifo = AudioFifo()
         faltan = limite
@@ -495,7 +521,18 @@ class AudioRenderer:
 
         try:
             if source_start > 0:
-                container.seek(int(source_start / stream.time_base),
+                # Se busca un poco antes del punto de entrada, por dos cosas
+                # del AAC, que es el audio de casi cualquier MP4:
+                #
+                # - el MP4 corre los tiempos del AAC por su relleno inicial, y
+                #   `seek(backward=True)` caía hasta un cuadro DESPUÉS del
+                #   punto pedido. El código daba por hecho que caía antes, y
+                #   el audio salía adelantado hasta 23 ms. Al cruzar dos
+                #   pedazos del mismo archivo se cancelaban entre sí;
+                # - el primer cuadro después de un salto sale a medias: le
+                #   falta el cuadro anterior para traslaparse. Con el margen
+                #   ese cuadro cae antes del punto de entrada y se tira.
+                container.seek(int(max(0.0, source_start - SEEK_MARGIN) / stream.time_base),
                                stream=stream, backward=True)
 
             for frame in container.decode(stream):
@@ -504,7 +541,15 @@ class AudioRenderer:
                     continue    # todavía vamos antes del punto de entrada
 
                 if sobran < 0:
-                    sobran = max(0, int(round((source_start - cuando) * self.rate)))
+                    adelanto = source_start - cuando
+                    sobran = max(0, int(round(adelanto * self.rate)))
+                    hueco = int(round(-adelanto * self.rate))
+                    if hueco > 0:
+                        # El archivo no tiene sonido desde el punto pedido:
+                        # el hueco va en silencio para no recorrer lo demás.
+                        for vacio in silence(min(hueco, faltan) / self.rate, self.rate,
+                                             self.layout, self.format):
+                            fifo.write(vacio)
 
                 for chunk in resampler.resample(frame):
                     chunk.pts = None
@@ -551,6 +596,14 @@ class AudioRenderer:
                 yield salida
         finally:
             container.close()
+
+
+def _origin(container, stream) -> float:
+    """Dónde cae el segundo 0 del material, en tiempos del archivo."""
+    referencia = next((v for v in container.streams.video
+                       if not (v.disposition & av.stream.Disposition.attached_pic)), stream)
+    inicio = referencia.start_time
+    return float(inicio * referencia.time_base) if inicio is not None else 0.0
 
 
 def frame_seconds(frame) -> float:

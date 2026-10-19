@@ -139,6 +139,8 @@ DEFAULTS: dict[str, tuple[str, str]] = {
 
     "ver.pantalla_completa": ("Pantalla completa", "F"),
     "ver.ajustar": ("Ajustar timeline", "Shift+Z"),
+    "ver.acercar": ("Acercar el timeline", "="),
+    "ver.alejar": ("Alejar el timeline", "-"),
 }
 
 

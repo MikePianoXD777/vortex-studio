@@ -245,7 +245,7 @@ class _Ducker:
     def _mascara(self, carril, inicio: float, n: int, ids: set) -> np.ndarray:
         mascara = np.zeros(n, dtype=bool)
         for clip in carril:
-            if id(clip) not in ids:
+            if getattr(clip, "uid", None) not in ids and id(clip) not in ids:
                 continue
             a = int(round((clip.start - inicio) * self.rate))
             b = int(round((clip.end - inicio) * self.rate))

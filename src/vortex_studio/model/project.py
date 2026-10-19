@@ -352,6 +352,7 @@ class Sequence:
         """
         propios = [c for t in self.audible_tracks() for c in t.clips
                    if getattr(c, "audio_mode", KEEP_PITCH) != MUTE_AUDIO]
+        propios = self._with_audio_transitions(propios)
         if resolve is None or _depth > 8:
             return propios
         for track in self.visible_video_tracks():
@@ -367,11 +368,86 @@ class Sequence:
                         propios.append(copia)
         return propios
 
+    def _with_audio_transitions(self, clips: list) -> list:
+        """El audio enlazado sigue a la transición de su video.
+
+        Antes el video se cruzaba y el sonido cortaba seco en el corte. Ahora,
+        para cada transición de video cuyo par de clips tiene audio enlazado y
+        pegado en la misma pista:
+
+        - **cruzada**: el audio que sale se alarga media transición y el que
+          entra empieza media transición antes, tomando material de antes de
+          su punto de entrada. Se enciman y se mezclan con curvas de potencia
+          constante —seno y coseno—, que suman la misma energía en todo el
+          cruce: con rampas lineales el volumen se hundía 3 dB a la mitad;
+        - **a negro o a blanco**: no se enciman. El que sale se apaga en la
+          primera mitad y el que entra se enciende en la segunda, que es lo
+          que se oye cuando la imagen pasa por un color.
+
+        Los clips del timeline no se tocan: van copias a la mezcla. Las
+        copias conservan `uid`, que es por lo que el ducking los reconoce.
+        """
+        import copy as _copy
+
+        reemplazos: dict[int, object] = {}
+        for track in self.video_tracks():
+            for entrante in track.clips:
+                d = float(getattr(entrante, "dissolve", 0.0) or 0.0)
+                if d <= 0 or not isinstance(entrante, Clip) or not entrante.link:
+                    continue
+                saliente = track.before(entrante)
+                if not isinstance(saliente, Clip) or not saliente.link:
+                    continue
+                corte, mitad = entrante.start, d / 2
+                cruzada = DIP_COLORS.get(getattr(entrante, "transition", CROSS)) is None
+
+                for a_in in clips:
+                    if getattr(a_in, "link", "") != entrante.link or abs(a_in.start - corte) > 1e-6:
+                        continue
+                    pista = self.track_of(a_in)
+                    a_out = next((c for c in clips
+                                  if getattr(c, "link", "") == saliente.link
+                                  and abs(c.end - corte) < 1e-6
+                                  and pista is not None and self.track_of(c) is pista), None)
+                    if a_out is None:
+                        continue
+
+                    nuevo_out = _copy.copy(reemplazos.get(id(a_out), a_out))
+                    nuevo_in = _copy.copy(reemplazos.get(id(a_in), a_in))
+                    nuevo_out._xfade = list(getattr(nuevo_out, "_xfade", ()))
+                    nuevo_in._xfade = list(getattr(nuevo_in, "_xfade", ()))
+
+                    if cruzada and _plays_straight(a_out) and _plays_straight(a_in):
+                        nuevo_out.duration += mitad
+                        # Solo hay material de antes del punto de entrada hasta
+                        # el principio del archivo.
+                        velocidad = max(float(a_in.speed), 1e-6)
+                        antes = min(mitad, max(0.0, a_in.in_point) / velocidad)
+                        nuevo_in.start -= antes
+                        nuevo_in.in_point -= antes * velocidad
+                        nuevo_in.duration += antes
+                        nuevo_out._xfade.append((corte - mitad, corte + mitad, False))
+                        nuevo_in._xfade.append((corte - antes, corte + mitad, True))
+                    else:
+                        nuevo_out._xfade.append((corte - mitad, corte, False))
+                        nuevo_in._xfade.append((corte, corte + mitad, True))
+
+                    reemplazos[id(a_out)] = nuevo_out
+                    reemplazos[id(a_in)] = nuevo_in
+
+        if not reemplazos:
+            return clips
+        return [reemplazos.get(id(c), c) for c in clips]
+
     def audio_mix_options(self) -> dict:
-        """Lo que el mezclador necesita para el ducking: quién es voz y quién se agacha."""
+        """Lo que el mezclador necesita para el ducking: quién es voz y quién se agacha.
+
+        Por `uid` y no por `id()`: a la mezcla pueden llegar copias de los
+        clips —las de una transición de audio— y tienen que agacharse igual.
+        """
         pistas = self.audible_tracks()
-        voces = {id(c) for t in pistas if t.role == VOICE for c in t.clips}
-        agachados = {id(c) for t in pistas if t.role == DUCKED for c in t.clips}
+        voces = {c.uid for t in pistas if t.role == VOICE for c in t.clips}
+        agachados = {c.uid for t in pistas if t.role == DUCKED for c in t.clips}
         return {"voices": voces, "ducked": agachados, "depth": self.duck_depth}
 
     def track_of(self, item) -> Track | None:
@@ -601,6 +677,13 @@ class Project:
         return next(i for i, s in enumerate(self.sequences) if s is activa)
 
 
+def _plays_straight(clip) -> bool:
+    """¿El audio corre parejo? Sin congelar y sin remapeo de tiempo: solo así
+    tiene sentido sacarle material de más para encimarlo en un cruce."""
+    return (float(getattr(clip, "speed", 1.0)) > 0
+            and not (getattr(clip, "anim", None) or {}).get("time"))
+
+
 def _shifted_into(clip, anidada: "NestedClip"):
     """Copia de un clip de la secuencia hija, puesta en el tiempo de la madre."""
     import copy as _copy
@@ -623,6 +706,10 @@ def _shifted_into(clip, anidada: "NestedClip"):
         inicio = anidada.start
     copia.start = inicio
     copia.duration = min(fin, anidada.end) - inicio
+    cruces = getattr(clip, "_xfade", None)
+    if cruces:
+        a_madre = lambda t: anidada.start + (t - anidada.in_point) / velocidad
+        copia._xfade = [(a_madre(a), a_madre(b), sube) for a, b, sube in cruces]
     return copia
 
 

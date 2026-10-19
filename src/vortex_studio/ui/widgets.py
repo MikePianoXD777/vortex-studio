@@ -142,6 +142,11 @@ QSpinBox:hover {{ border-color: {theme.BORDE}; }}
 QSpinBox:focus {{ border-color: {theme.BORDE_FUERTE}; color: {theme.TEXTO};
     background: {theme.CAMPO}; }}
 QSpinBox:disabled {{ color: {theme.APAGADO}; }}
+/* Sin flechas, Qt 6.12 igual les guarda lugar y el campo de texto se
+   queda en 1 px: el valor se veía como «⋮». Con origen y tamaño cero, no. */
+QSpinBox::up-button, QSpinBox::down-button {{
+    subcontrol-origin: border; width: 0px; height: 0px; image: none; border: none;
+}}
 """
 
 
@@ -368,6 +373,17 @@ def draw_icon(painter, nombre: str, rect, color) -> None:
     elif nombre == "mas":
         painter.drawLine(P(0, -5), P(0, 5))
         painter.drawLine(P(-5, 0), P(5, 0))
+    elif nombre == "menos":
+        painter.drawLine(P(-5, 0), P(5, 0))
+    elif nombre == "ajustar":
+        # Dos topes y una flecha de lado a lado: «que quepa todo».
+        painter.drawLine(P(-7, -5), P(-7, 5))
+        painter.drawLine(P(7, -5), P(7, 5))
+        painter.drawLine(P(-4.5, 0), P(4.5, 0))
+        painter.drawLine(P(-4.5, 0), P(-2, -2.5))
+        painter.drawLine(P(-4.5, 0), P(-2, 2.5))
+        painter.drawLine(P(4.5, 0), P(2, -2.5))
+        painter.drawLine(P(4.5, 0), P(2, 2.5))
 
 
 def make_icon(nombre: str, color: str = theme.TENUE, size: int = 16):
