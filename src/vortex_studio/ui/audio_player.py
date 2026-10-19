@@ -12,6 +12,9 @@ que la imagen lo siga es lo que mantiene la sincronía.
 
 from __future__ import annotations
 
+from collections import deque
+
+import numpy as np
 from PySide6.QtCore import QObject, QTimer, Signal
 from PySide6.QtMultimedia import QAudioFormat, QAudioSink, QMediaDevices
 
@@ -20,6 +23,7 @@ from vortex_studio.media.mixer import AudioMixer
 
 CHUNK_MS = 120          # cuánto audio se adelanta en cada empujón
 BYTES_PER_FRAME = 4     # estéreo, 16 bits
+METER_WINDOW = RATE // 50   # el medidor mide de 20 en 20 ms
 
 
 class AudioPlayer(QObject):
@@ -34,6 +38,11 @@ class AudioPlayer(QObject):
         self._frames = None
         self._pending = b""
         self._volume = 1.0
+        self._mix: AudioMixer | None = None
+        # Para el medidor: (muestra donde empieza la ventana, pico izq, pico der)
+        # de lo que ya se mandó a la tarjeta, en orden.
+        self._levels: deque = deque(maxlen=50 * 20)
+        self._queued = 0            # muestras mandadas desde el arranque
 
         self._pump = QTimer(self)
         self._pump.setInterval(CHUNK_MS // 2)
@@ -69,6 +78,7 @@ class AudioPlayer(QObject):
             # salir en el archivo final.
             mezcla = AudioMixer(clips, rate=RATE, layout=LAYOUT, fmt="s16", **(options or {}))
             self._frames = mezcla.stream(desde, hasta)
+            self._mix = mezcla
             self._sink = QAudioSink(QMediaDevices.defaultAudioOutput(), self._format)
             self._sink.setVolume(self._volume)
             self._io = self._sink.start()
@@ -78,6 +88,8 @@ class AudioPlayer(QObject):
             return False
 
         self._pending = b""
+        self._levels.clear()
+        self._queued = 0
         self._push()                    # llenar antes de arrancar el reloj
         self._pump.start()
         return True
@@ -89,7 +101,10 @@ class AudioPlayer(QObject):
             self._sink = None
         self._io = None
         self._frames = None
+        self._mix = None
         self._pending = b""
+        self._levels.clear()
+        self._queued = 0
 
     def set_volume(self, volume: float) -> None:
         self._volume = max(0.0, min(1.0, volume))
@@ -101,6 +116,27 @@ class AudioPlayer(QObject):
         if self._sink is None:
             return 0.0
         return self._sink.processedUSecs() / 1_000_000.0
+
+    def levels(self) -> tuple[float, float, bool]:
+        """(pico izquierdo, pico derecho, ¿el limitador actuó?) de lo que suena ahora.
+
+        Los picos van de 0 a 1 y son de la mezcla, antes del volumen del
+        monitor: lo que mide un medidor es lo que va a salir en el archivo,
+        no cuánto le subiste a tus bocinas.
+        """
+        if self._sink is None or not self._levels:
+            return 0.0, 0.0, False
+        ahora = int(self.position() * RATE)
+        izquierdo = derecho = 0.0
+        for inicio, izq, der in reversed(self._levels):
+            if inicio <= ahora:
+                izquierdo, derecho = izq, der
+                break
+        limitado = False
+        if self._mix is not None:
+            limitado = any(desde <= ahora < desde + largo
+                           for desde, largo, _ in self._mix.reductions)
+        return izquierdo, derecho, limitado
 
     # --- alimentación -----------------------------------------------------
 
@@ -129,4 +165,16 @@ class AudioPlayer(QObject):
             return None
         # Con formato `s16` el plano ya viene entrelazado; hay que recortar
         # el relleno del final o se cuelan muestras basura entre bloques.
-        return bytes(frame.planes[0])[: frame.samples * BYTES_PER_FRAME]
+        datos = bytes(frame.planes[0])[: frame.samples * BYTES_PER_FRAME]
+        self._measure(datos)
+        return datos
+
+    def _measure(self, datos: bytes) -> None:
+        """Picos por ventana de 20 ms, para el medidor."""
+        muestras = np.frombuffer(datos, dtype=np.int16).reshape(-1, 2)
+        for inicio in range(0, len(muestras), METER_WINDOW):
+            trozo = np.abs(muestras[inicio:inicio + METER_WINDOW].astype(np.int32))
+            if len(trozo):
+                picos = trozo.max(axis=0) / 32768.0
+                self._levels.append((self._queued + inicio, float(picos[0]), float(picos[1])))
+        self._queued += len(muestras)

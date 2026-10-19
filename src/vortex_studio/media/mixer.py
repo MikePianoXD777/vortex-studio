@@ -17,6 +17,7 @@ una mezcla pista por pista se seguiría perdiendo.
 
 from __future__ import annotations
 
+from collections import deque
 from typing import Iterator
 
 import numpy as np
@@ -29,14 +30,21 @@ from vortex_studio.media.audio import (
     AudioRenderer,
     silence,
 )
+from vortex_studio.media.limiter import PeakLimiter
 
 try:
     import av
     from av.audio.fifo import AudioFifo
+    from av.audio.resampler import AudioResampler
 except ImportError:  # pragma: no cover - depende del entorno
     av = None
 
 BLOCK = 1.0     # segundos de audio por bloque de mezcla
+
+# La mezcla se hace en flotante aunque se pida `s16`. Antes se pedía `s16` de
+# una vez y lo que pasaba de 1.0 se recortaba al convertir a enteros, antes de
+# que nadie lo pudiera limitar.
+WORK_FORMAT = "fltp"
 
 
 def lanes(clips: list) -> list[list]:
@@ -65,11 +73,16 @@ class AudioMixer:
     Con un solo carril no monta ningún filtro: entrega el `AudioRenderer`
     tal cual. El caso común —una voz, una música, sin encimar— no paga nada
     por la existencia de la mezcla.
+
+    Todo sale por un limitador de picos (`media/limiter.py`) que no deja
+    pasar de −0.3 dBFS y no retrasa nada. `reductions` guarda dónde tuvo que
+    bajar el volumen, para que el medidor lo avise.
     """
 
     def __init__(self, clips: list, rate: int = RATE,
                  layout: str = LAYOUT, fmt: str = FORMAT,
-                 voices=None, ducked=None, depth: float = 12.0) -> None:
+                 voices=None, ducked=None, depth: float = 12.0,
+                 limit: bool = True) -> None:
         self.lanes = lanes(clips)
         self.rate = rate
         self.layout = layout
@@ -78,6 +91,11 @@ class AudioMixer:
         self.ducked = set(ducked or ())
         self.depth = depth
         self._duck = _Ducker(rate, depth)
+        self.limit = limit
+        self._limiter = PeakLimiter(rate)
+        # (muestra donde empieza el bloque, muestras, ganancia más baja), solo
+        # de los bloques donde el limitador actuó. Contadas desde `start`.
+        self.reductions: deque = deque(maxlen=4096)
 
     @property
     def count(self) -> int:
@@ -93,15 +111,43 @@ class AudioMixer:
             return
 
         if len(self.lanes) == 1:
-            yield from self._renderer(self.lanes[0]).stream(start, end)
-            return
-
-        yield from self._mix(start, end)
+            crudo = self._renderer(self.lanes[0]).stream(start, end)
+        else:
+            crudo = self._mix(start, end)
+        yield from self._finish(crudo)
 
     # --- piezas -----------------------------------------------------------
 
     def _renderer(self, carril: list) -> AudioRenderer:
-        return AudioRenderer(carril, self.rate, self.layout, self.format)
+        return AudioRenderer(carril, self.rate, self.layout, WORK_FORMAT)
+
+    def _finish(self, frames) -> Iterator:
+        """Limita en flotante y, al final, convierte al formato pedido."""
+        convertir = (None if self.format == WORK_FORMAT else
+                     AudioResampler(format=self.format, layout=self.layout, rate=self.rate))
+        cursor = 0
+        for frame in frames:
+            if self.limit:
+                datos = frame.to_ndarray()
+                limitado = self._limiter.process(datos)
+                if self._limiter.reduction < 0.999:
+                    self.reductions.append((cursor, frame.samples, self._limiter.reduction))
+                if limitado is not datos:
+                    frame = av.AudioFrame.from_ndarray(np.ascontiguousarray(limitado),
+                                                       format=WORK_FORMAT, layout=self.layout)
+                    frame.sample_rate = self.rate
+            cursor += frame.samples
+            if convertir is None:
+                yield frame
+                continue
+            frame.pts = None
+            for salida in convertir.resample(frame):
+                salida.pts = None
+                yield salida
+        if convertir is not None:
+            for salida in convertir.resample(None):
+                salida.pts = None
+                yield salida
 
     def _mix(self, start: float, end: float) -> Iterator:
         """Empuja un bloque del mismo tamaño por carril y jala la suma.
@@ -159,10 +205,8 @@ class AudioMixer:
         mitad el volumen de las demás — que no es lo que nadie espera al
         poner un clip en otra pista.
 
-        Sumar sí puede pasarse de 1.0 y recortar, igual que en Premiere. Se
-        deja recortar en vez de meter un limitador porque un limitador
-        necesita mirar hacia adelante, y ese adelanto desfasaría el sonido
-        de la imagen.
+        Sumar sí puede pasarse de 1.0: de eso se encarga el limitador que va
+        después (`_finish`), que no mira hacia adelante y no desfasa nada.
 
         El `aformat` del final no es adorno: `amix` elige el formato que le
         acomoda para sumar y devolvió `flt` empaquetado cuando le pedimos
@@ -170,14 +214,14 @@ class AudioMixer:
         que sin esta línea el play sonaba a ruido blanco a todo volumen.
         """
         graph = av.filter.Graph()
-        spec = (f"sample_rate={self.rate}:sample_fmt={self.format}"
+        spec = (f"sample_rate={self.rate}:sample_fmt={WORK_FORMAT}"
                 f":channel_layout={self.layout}:time_base=1/{self.rate}")
 
         entradas = [graph.add("abuffer", spec) for _ in range(n)]
         mezcla = graph.add("amix", f"inputs={n}:duration=longest:normalize=0")
         formato = graph.add(
             "aformat",
-            f"sample_fmts={self.format}:channel_layouts={self.layout}"
+            f"sample_fmts={WORK_FORMAT}:channel_layouts={self.layout}"
             f":sample_rates={self.rate}",
         )
         sink = graph.add("abuffersink")

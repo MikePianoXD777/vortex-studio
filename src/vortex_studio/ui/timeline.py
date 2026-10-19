@@ -449,7 +449,11 @@ class TimelineWidget(QWidget):
             painter.setPen(QPen(RULER_TICK, 1))
             painter.drawLine(QPointF(x, RULER_HEIGHT - 14), QPointF(x, RULER_HEIGHT - 3))
             painter.setPen(DIM_TEXT)
-            painter.drawText(QPointF(x + 4, RULER_HEIGHT - 9), self._ruler_label(t, step))
+            etiqueta = self._ruler_label(t, step)
+            # Una etiqueta cortada en la orilla («01» por «01:00») confunde más
+            # de lo que ayuda: si no cabe entera, solo va la rayita.
+            if x + 4 + painter.fontMetrics().horizontalAdvance(etiqueta) <= self.width():
+                painter.drawText(QPointF(x + 4, RULER_HEIGHT - 9), etiqueta)
             t += step
         painter.restore()
         self._draw_render_bar(painter)

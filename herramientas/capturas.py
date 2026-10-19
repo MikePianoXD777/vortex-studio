@@ -75,7 +75,9 @@ def main() -> None:
         ventana._place_audio(medios["musica"])
         ventana._seek(8.0)
         ventana.timeline.select(ventana.sequence.video_tracks()[-1].clips[0])
+        ventana.meter.set_levels(0.62, 0.48)     # como si estuviera sonando
         esperar(2.0)
+        ventana.meter.set_levels(0.62, 0.48)
         ventana.grab().save(str(salida / f"lleno-{tamano}.png"))
 
         if tamano == tamanos[0]:

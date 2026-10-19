@@ -93,6 +93,7 @@ from vortex_studio.ui.imagenes import load_image
 from vortex_studio.ui.panels import PropertiesPanel
 from vortex_studio.ui import theme
 from vortex_studio.ui.timeline_tools import TimelineTools
+from vortex_studio.ui.meters import AudioMeter
 from vortex_studio.ui.topbar import TopBar
 from vortex_studio.ui.widgets import Card, style_dock
 from vortex_studio.model.overlays import AdjustmentLayer
@@ -388,9 +389,16 @@ class MainWindow(QMainWindow):
         barra = QHBoxLayout()
         barra.setContentsMargins(HEADER_WIDTH, 2, 0, 0)
         barra.addWidget(self.timeline_scroll)
+        self.meter = AudioMeter()
+        fila = QHBoxLayout()
+        fila.setContentsMargins(0, 0, 0, 0)
+        fila.setSpacing(8)
+        fila.addWidget(self.timeline, 1)
+        fila.addWidget(self.meter)
+        barra.addSpacing(self.meter.width() + 8)
         linea = Card(padding=(12, 10, 12, 8))
         linea.body.addWidget(self.timeline_tools)
-        linea.body.addWidget(self.timeline, 1)
+        linea.body.addLayout(fila, 1)
         linea.body.addLayout(barra)
         self._timeline_card = linea
 
@@ -3769,6 +3777,7 @@ class MainWindow(QMainWindow):
         self._clock.stop()
         self.audio.stop()
         self._audio_on = False
+        self.meter.reset()
         self.transport.set_playing(False)
 
     def _interval(self) -> int:
@@ -3802,6 +3811,9 @@ class MainWindow(QMainWindow):
             self._pause()
             self._seek(end)
             return
+
+        if self._audio_on:
+            self.meter.set_levels(*self.audio.levels())
 
         # Al cuadro exacto: los cuadros adelantados se encargan en múltiplos
         # del cuadro, y un instante suelto nunca daría con ellos en el búfer.
