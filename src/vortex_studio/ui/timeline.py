@@ -45,7 +45,9 @@ BUTTON = 17            # lado de los botones de la cabecera de pista
 RULER_HEIGHT = 26
 TRACK_HEIGHT = 40
 TRACK_GAP = 2
-ZOOM_MIN = 0.5         # pixeles por segundo: una hora cabe en 1800 px
+# Pixeles por segundo: una hora cabe en 1800 px. Es el piso de acercar y
+# alejar a mano; «ajustar» baja de ahí si la secuencia no cabe de otro modo.
+ZOOM_MIN = 0.5
 ZOOM_MAX = 2000.0
 ZOOM_STEP = 1.25
 EDGE_GRAB = 7          # pixeles de cada extremo que sirven para recortar
@@ -217,6 +219,9 @@ class TimelineWidget(QWidget):
         # Selección con rectángulo: arranca al presionar en un hueco y solo es
         # rectángulo si el mouse se movió; si no, fue un clic.
         self._marquee: dict | None = None
+        # La barra de abajo agarrada con el mouse. La pone `TimelineScrollBar`:
+        # mientras tanto la vista es de quien la arrastra y no pasa de página.
+        self.scroll_held = False
 
         # Cuánto dura el archivo de un clip. Lo pone la ventana, que es quien
         # tiene el caché de sondeos; sin él, el slip solo se detiene en cero.
@@ -248,8 +253,8 @@ class TimelineWidget(QWidget):
     def set_playhead(self, t: float) -> None:
         t = max(0.0, t)
         if abs(t - self.playhead) > 1e-9:
-            self.playhead = t
-            self._follow(t)
+            antes, self.playhead = self.playhead, t
+            self._follow(antes, t)
             self.update()
 
     # --- zoom y desplazamiento ------------------------------------------------
@@ -285,10 +290,19 @@ class TimelineWidget(QWidget):
 
         Sin ancla se queda quieto el playhead si se ve, o la orilla izquierda.
         """
-        nuevo = max(ZOOM_MIN, min(ZOOM_MAX, float(pixels_per_second)))
+        # Se aleja hasta ZOOM_MIN, o hasta donde cabe todo si eso queda más
+        # lejos: con una secuencia de horas, alejar después de ajustar
+        # brincaba de regreso a 0.5 px/s y el final volvía a quedar fuera.
+        ajuste = self._fit_pps()
+        piso = ZOOM_MIN if ajuste is None else min(ZOOM_MIN, ajuste)
+        nuevo = max(piso, min(ZOOM_MAX, float(pixels_per_second)))
         if anchor_x is None:
             x_play = self.x_for(self.playhead)
             anchor_x = x_play if HEADER_WIDTH <= x_play <= self.width() else HEADER_WIDTH
+        # El ancla siempre en el área del tiempo. Con el mouse sobre las
+        # cabeceras, `time_for` daba el segundo 0 y el zoom lo dejaba escondido
+        # detrás de ellas; ahí lo que se queda quieto es la orilla izquierda.
+        anchor_x = max(float(HEADER_WIDTH), min(float(anchor_x), float(self.width())))
         t = self.time_for(anchor_x)
         self.pixels_per_second = nuevo
         self.scroll_x = 0.0
@@ -301,12 +315,22 @@ class TimelineWidget(QWidget):
     def zoom_out(self) -> None:
         self.set_zoom(self.pixels_per_second / ZOOM_STEP)
 
-    def fit(self) -> None:
-        """Que quepa toda la secuencia, desde el principio."""
+    def _fit_pps(self) -> float | None:
+        """El zoom con el que cabe toda la secuencia; None si está vacía."""
         duracion = self.sequence.duration
-        if duracion > 0:
-            self.pixels_per_second = max(ZOOM_MIN, min(
-                ZOOM_MAX, max(200.0, self.view_width() - 16) / duracion))
+        if duracion <= 0:
+            return None
+        return min(ZOOM_MAX, max(200.0, self.view_width() - 16) / duracion)
+
+    def fit(self) -> None:
+        """Que quepa toda la secuencia, desde el principio.
+
+        Sin el piso de ZOOM_MIN: con él, una hora pedía 1800 px de vista, y en
+        una ventana normal «ajustar» dejaba fuera el final de un podcast.
+        """
+        ajuste = self._fit_pps()
+        if ajuste is not None:
+            self.pixels_per_second = ajuste
         self.scroll_x = 0.0
         self.set_scroll(0.0)
         self.update()
@@ -319,14 +343,24 @@ class TimelineWidget(QWidget):
         elif x > self.width() - margin:
             self.set_scroll(self.scroll_x + (x - (self.width() - margin)))
 
-    def _follow(self, t: float) -> None:
+    def _follow(self, antes: float, t: float) -> None:
         """Si el playhead se sale de la vista, la vista pasa de página.
 
         Como en Premiere: al reproducir, cuando el playhead llega a la orilla
         derecha, salta y queda cerca de la izquierda. No se arrastra con cada
         cuadro, que marea.
+
+        Solo cuando *sale*: tiene que haberse visto en `antes`. Si ya no se
+        veía es que uno corrió la vista para mirar otra parte, y el cuadro
+        siguiente se la regresaba —con la barra peleándole el mouse—. Tampoco
+        con algo a medias: arrastrando, con la barra agarrada, o con un clic
+        o un rectángulo pendientes en un hueco, que guardan pixeles y caían
+        en otro instante si la vista pasaba de página entre presionar y soltar.
         """
-        if self._scrubbing or self._drag is not None or self.width() <= HEADER_WIDTH:
+        if (self._scrubbing or self._drag is not None or self._marquee is not None
+                or self.scroll_held or self.width() <= HEADER_WIDTH):
+            return
+        if not HEADER_WIDTH <= self.x_for(antes) <= self.width():
             return
         x = self.x_for(t)
         if x > self.width() - 8 or x < HEADER_WIDTH:
@@ -459,9 +493,13 @@ class TimelineWidget(QWidget):
             painter.setPen(DIM_TEXT)
             etiqueta = self._ruler_label(t, step)
             # Una etiqueta cortada en la orilla («01» por «01:00») confunde más
-            # de lo que ayuda: si no cabe entera, solo va la rayita.
-            if x + 4 + painter.fontMetrics().horizontalAdvance(etiqueta) <= self.width():
-                painter.drawText(QPointF(x + 4, RULER_HEIGHT - 9), etiqueta)
+            # de lo que ayuda: si no cabe entera, solo va la rayita. En las dos
+            # orillas: con la vista corrida, la de la izquierda quedaba a medias
+            # detrás de las cabeceras.
+            izquierda = x + 4
+            derecha = izquierda + painter.fontMetrics().horizontalAdvance(etiqueta)
+            if izquierda >= HEADER_WIDTH - 2 and derecha <= self.width():
+                painter.drawText(QPointF(izquierda, RULER_HEIGHT - 9), etiqueta)
             t += step
         painter.restore()
         self._draw_render_bar(painter)
@@ -530,11 +568,17 @@ class TimelineWidget(QWidget):
             painter.drawText(caja, Qt.AlignCenter, etiqueta)
 
     def _ruler_step(self) -> float:
-        """Separación entre marcas, para que no se encimen al alejar el zoom."""
-        for step in (0.5, 1, 2, 5, 10, 30, 60, 300, 600, 1800):
+        """Separación entre marcas, para que no se encimen al alejar el zoom.
+
+        Llega a días porque «ajustar» ya no tiene piso: con una secuencia de
+        varias horas, las marcas de una hora quedaban a unos pixeles y las
+        etiquetas se encimaban.
+        """
+        for step in (0.5, 1, 2, 5, 10, 30, 60, 300, 600, 1800,
+                     3600, 7200, 10800, 21600, 43200, 86400):
             if step * self.pixels_per_second >= 110:
                 return float(step)
-        return 3600.0
+        return 86400.0 * math.ceil(110 / (86400.0 * self.pixels_per_second))
 
     def _draw_tracks(self, painter: QPainter) -> None:
         dragging = self._drag["item"] if self._drag else None
@@ -1086,9 +1130,21 @@ class TimelineWidget(QWidget):
                                    for x in [item, *self._partners(item)]}
 
     def marquee_rect(self) -> QRectF | None:
+        """El rectángulo, recortado a lo que se ve del tiempo.
+
+        Con el botón apretado el mouse sigue mandando posiciones aunque salga
+        del widget. Sin recortar, pasarse encima de las cabeceras —o de la
+        orilla derecha— con la vista corrida seleccionaba clips escondidos sin
+        que se viera, y Suprimir se los llevaba.
+        """
         if not self._marquee or not self._marquee["active"]:
             return None
-        return QRectF(self._marquee["origin"], self._marquee["current"]).normalized()
+        caja = QRectF(self._marquee["origin"], self._marquee["current"]).normalized()
+        izquierda = max(caja.left(), float(HEADER_WIDTH))
+        arriba = max(caja.top(), float(RULER_HEIGHT))
+        derecha = max(izquierda, min(caja.right(), float(self.width())))
+        abajo = max(arriba, min(caja.bottom(), float(self.height())))
+        return QRectF(QPointF(izquierda, arriba), QPointF(derecha, abajo))
 
     def _select_marquee(self) -> None:
         """Selecciona lo que toque el rectángulo, en vivo mientras se arrastra.
@@ -1272,9 +1328,13 @@ class TimelineWidget(QWidget):
         self._snap_at = None
 
         if self._marquee is not None:
-            rectangulo, self._marquee = self._marquee, None
-            if not rectangulo["active"]:
-                self._scrub(rectangulo["origin"].x())     # fue un clic en un hueco
+            # El clic se resuelve con el rectángulo todavía puesto, para que
+            # `_follow` no pase de página: antes se quitaba primero, y un clic
+            # en los últimos pixeles de la derecha corría la vista una página
+            # entera, cosa que el mismo clic en la regla no hacía.
+            if not self._marquee["active"]:
+                self._scrub(self._marquee["origin"].x())     # fue un clic en un hueco
+            self._marquee = None
             self.update()
             return
 
@@ -1410,7 +1470,14 @@ class TimelineScrollBar(QScrollBar):
         self.setToolTip("Recorrer el timeline  ·  rueda del mouse; Ctrl + rueda para el zoom")
         timeline.view_changed.connect(self.sync)
         self.valueChanged.connect(self._moved)
+        self.sliderPressed.connect(self._held)
+        self.sliderReleased.connect(self._held)
         self.sync()
+
+    def _held(self) -> None:
+        # Mientras uno la tiene agarrada, el play no pasa de página: `sync`
+        # movía la barra debajo del mouse y la vista brincaba entre los dos.
+        self._timeline.scroll_held = self.isSliderDown()
 
     def sync(self) -> None:
         tl = self._timeline

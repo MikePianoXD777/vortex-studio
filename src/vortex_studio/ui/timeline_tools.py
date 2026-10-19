@@ -81,10 +81,12 @@ class TimelineTools(QWidget):
         layout.addSpacing(10)
 
         # Zoom a la vista: antes solo existía Ctrl + rueda y Shift+Z, y nada
-        # en pantalla decía que el timeline se podía acercar.
-        self.zoom_out_button = self._icon_pill("menos", "Alejar el timeline  ·  −")
+        # en pantalla decía que el timeline se podía acercar. Las teclas son
+        # las de `ver.alejar` y `ver.acercar`: el de acercar decía «+», y con
+        # «+» —tecla propia en el teclado latinoamericano— no pasaba nada.
+        self.zoom_out_button = self._icon_pill("menos", "Alejar el timeline  ·  -")
         self.zoom_out_button.clicked.connect(self.zoom_out.emit)
-        self.zoom_in_button = self._icon_pill("mas", "Acercar el timeline  ·  +")
+        self.zoom_in_button = self._icon_pill("mas", "Acercar el timeline  ·  =")
         self.zoom_in_button.clicked.connect(self.zoom_in.emit)
         self.fit_button = self._icon_pill("ajustar", "Que quepa toda la secuencia  ·  Shift+Z")
         self.fit_button.clicked.connect(self.zoom_fit.emit)

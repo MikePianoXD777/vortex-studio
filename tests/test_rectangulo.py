@@ -5,6 +5,7 @@ from PySide6.QtCore import QEvent, QPointF, Qt
 from PySide6.QtGui import QMouseEvent
 
 from vortex_studio.model import Clip
+from vortex_studio.ui.timeline import HEADER_WIDTH, RULER_HEIGHT
 
 
 def evento(tipo, x, y, botones=Qt.LeftButton, mods=Qt.NoModifier):
@@ -99,6 +100,41 @@ def test_mientras_se_arrastra_se_ve_el_rectangulo(tres):
     assert not tl.grab().toImage().isNull()
     tl.mouseReleaseEvent(evento(QEvent.MouseButtonRelease, tl.x_for(5.0), 0, Qt.NoButton))
     assert tl.marquee_rect() is None
+
+
+def test_pasarse_de_la_orilla_no_selecciona_lo_que_no_se_ve(ventana):
+    """El mouse sigue mandando posiciones fuera del widget.
+
+    Antes, pasarse encima de las cabeceras —o de la orilla derecha— con la
+    vista corrida seleccionaba clips escondidos, y Suprimir los borraba.
+    """
+    seq = ventana.sequence
+    v1 = seq.video_tracks()[1]
+    oculto_izq = v1.add(Clip("/a.mp4", 10.0, 5.0))
+    visible = v1.add(Clip("/b.mp4", 40.0, 5.0))
+    oculto_der = v1.add(Clip("/c.mp4", 100.0, 5.0))
+    tl = ventana.timeline
+    tl.pixels_per_second = 10.0
+    tl.refresh()
+    tl.set_scroll(300.0)        # la vista empieza en el segundo 30
+    assert tl.x_for(oculto_izq.end) < HEADER_WIDTH
+    assert tl.x_for(oculto_der.start) > tl.width()
+    y = y_de(tl, seq, v1)
+
+    # Hacia la izquierda, hasta más allá de las cabeceras.
+    tl.mousePressEvent(evento(QEvent.MouseButtonPress, tl.x_for(50.0), y))
+    tl.mouseMoveEvent(evento(QEvent.MouseMove, -300, y - 200))
+    caja = tl.marquee_rect()
+    assert caja.left() == HEADER_WIDTH       # lo que se dibuja es lo que se selecciona
+    assert caja.top() >= RULER_HEIGHT
+    tl.mouseReleaseEvent(evento(QEvent.MouseButtonRelease, -300, y - 200, Qt.NoButton))
+    assert seleccion(tl) == {id(visible)}
+
+    # Hacia la derecha, más allá de la orilla.
+    arrastrar(tl, tl.x_for(35.0), y, tl.width() + 300, y)
+    assert seleccion(tl) == {id(visible)}
+    ventana.delete_selected()
+    assert {c.uid for c in v1.clips} == {oculto_izq.uid, oculto_der.uid}
 
 
 def test_lo_seleccionado_se_borra_junto(ventana, tres):
