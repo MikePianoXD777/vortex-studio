@@ -223,6 +223,10 @@ class MainWindow(QMainWindow):
         self.history = History()
         self.history.reset(self.sequence)
         self._histories: dict[str, History] = {}    # uno por secuencia
+        # Las secuencias que nacen de una edición —Anidar, Multicámara— y las
+        # que se apartaron porque se deshizo esa edición. Ver `_sync_made_sequences`.
+        self._made_sequences: set[str] = set()
+        self._set_aside: dict[str, Sequence] = {}
 
         # Un decodificador por clip. Compartirlo por archivo hacía que una
         # transición entre dos mitades del mismo video saltara adelante y
@@ -843,6 +847,8 @@ class MainWindow(QMainWindow):
         self._stop_background()
         self._close_sources()
         self.project = Project()
+        self._made_sequences.clear()
+        self._set_aside.clear()
         self._path = None
         self._adopt(self.project.active, reset_history=True)
         self._dirty = False
@@ -871,6 +877,8 @@ class MainWindow(QMainWindow):
         self._stop_background()
         self._close_sources()
         self.project = project
+        self._made_sequences.clear()
+        self._set_aside.clear()
         self._path = nueva
         self._adopt(project.active, reset_history=True)
         self._dirty = False
@@ -1217,6 +1225,8 @@ class MainWindow(QMainWindow):
 
         self._close_sources()
         self.project = project
+        self._made_sequences.clear()
+        self._set_aside.clear()
         self._path = copia.original
         self._adopt(project.active, reset_history=True)
         # Queda como "sin guardar" a propósito: lo recuperado todavía no
@@ -1330,9 +1340,46 @@ class MainWindow(QMainWindow):
             return
         self._pause()
         self.project.sequences[self.project.active_index()] = sequence
+        self._sync_made_sequences()
         self._adopt(sequence, reset_history=False)
         self._dirty = True
         self._update_title()
+
+    def _sync_made_sequences(self) -> None:
+        """Las secuencias que creó una edición siguen a esa edición.
+
+        Antes, deshacer «Anidar» regresaba los clips a su lugar pero la
+        secuencia anidada se quedaba en el proyecto, huérfana, y se guardaba
+        con él. Ahora, si después de deshacer ya nadie la usa, se aparta; y si
+        rehacer la vuelve a usar, regresa tal cual, con su historial.
+        """
+        if not self._made_sequences:
+            return
+        def hijas(secuencia) -> set:
+            return {getattr(clip, "sequence_id", "") for pista in secuencia.tracks
+                    for clip in pista.clips} - {""}
+
+        usadas: set = set()
+        for secuencia in self.project.sequences:
+            usadas |= hijas(secuencia)
+        # Una apartada que vuelve trae a las suyas: anidadas dentro de anidadas.
+        while True:
+            mas = set().union(*(hijas(s) for i, s in self._set_aside.items() if i in usadas))
+            if mas <= usadas:
+                break
+            usadas |= mas
+        cambio = False
+        for ident in sorted(self._made_sequences):
+            presente = self.project.sequence_by_id(ident)
+            if presente is not None and ident not in usadas and presente is not self.sequence:
+                self.project.sequences = [s for s in self.project.sequences if s is not presente]
+                self._set_aside[ident] = presente
+                cambio = True
+            elif presente is None and ident in usadas and ident in self._set_aside:
+                self.project.sequences.append(self._set_aside.pop(ident))
+                cambio = True
+        if cambio:
+            self._sync_made_sequences()     # una que se fue pudo dejar huérfana a otra
 
     def _adopt(self, sequence: Sequence, reset_history: bool) -> None:
         """Pone una secuencia nueva en circulación por toda la interfaz."""
@@ -2506,6 +2553,7 @@ class MainWindow(QMainWindow):
                                referencia.fps or self.sequence.fps,
                                name=f"Multicámara {len(self.project.sequences)}")
         self.project.sequences.append(multi)
+        self._made_sequences.add(multi.id)
         if all(not t.clips for t in self.sequence.tracks):
             self.sequence.width, self.sequence.height = multi.width, multi.height
             self.sequence.fps = multi.fps
@@ -3281,6 +3329,7 @@ class MainWindow(QMainWindow):
             return None
 
         self.project.sequences.append(hija)
+        self._made_sequences.add(hija.id)
         anidada = NestedClip(source=Path(""), start=inicio, duration=fin - inicio,
                              sequence_id=hija.id, name=hija.name)
         overwrite(destino, anidada)
