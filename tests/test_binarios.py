@@ -568,6 +568,52 @@ def test_sin_tag_la_compilacion_no_toca_ninguna_release():
         assert "if: env.TAG == ''" in subir and "actions/upload-artifact" in subir
 
 
+# --- las de fuentes, que tienen que ser las del sistema ----------------------------
+
+FUENTES = ("libfontconfig.so.1", "libfreetype.so.6", "libexpat.so.1")
+
+
+def test_las_de_fuentes_no_viajan_en_el_paquete():
+    """La fontconfig de Ubuntu 22.04 no entiende el `/etc/fonts` de las distros nuevas."""
+    juntadas = [
+        ("libQt6Gui.so.6", "/usr/lib/libQt6Gui.so.6", "BINARY"),
+        ("libfontconfig.so.1", "/usr/lib/x86_64-linux-gnu/libfontconfig.so.1", "BINARY"),
+        ("libfreetype.so.6", "/usr/lib/x86_64-linux-gnu/libfreetype.so.6", "BINARY"),
+        ("libexpat.so.1", "/usr/lib/x86_64-linux-gnu/libexpat.so.1", "BINARY"),
+        ("PySide6/Qt/lib/libfreetype.so.6.18.1", "/opt/libfreetype.so.6.18.1", "BINARY"),
+        ("PySide6/Qt/lib/libxcb-cursor.so.0", "/usr/lib/libxcb-cursor.so.0", "BINARY"),
+        ("libharfbuzz.so.0", "/usr/lib/x86_64-linux-gnu/libharfbuzz.so.0", "BINARY"),
+    ]
+    quedan = [Path(destino).name for destino, _, _ in _bibliotecas().sin_las_del_sistema(juntadas)]
+    assert quedan == ["libQt6Gui.so.6", "libxcb-cursor.so.0", "libharfbuzz.so.0"]
+
+
+def test_ninguna_de_fuentes_va_en_la_lista_de_x11():
+    """Si una entrara en las que se empacan a propósito, el filtro la volvería a sacar."""
+    modulo = _bibliotecas()
+    assert set(FUENTES) == set(modulo.DEL_SISTEMA)
+    assert not set(FUENTES) & set(modulo.X11)
+
+
+def test_la_receta_quita_las_de_fuentes():
+    receta = (RAIZ / "vortex-studio.spec").read_text(encoding="utf-8")
+    quitar = receta.index("a.binaries = sin_las_del_sistema(a.binaries)")
+    # Después de juntarlas y antes de copiar el paquete.
+    assert receta.index("a = Analysis(") < quitar < receta.index("coll = COLLECT(")
+
+
+def test_la_compilacion_revisa_que_no_se_colaron_antes_de_probar_y_subir():
+    linux = _linux()
+    paso = linux[linux.index("- name: Sin las bibliotecas de fuentes"):]
+    paso = paso[:paso.index("- name:", 1)]
+    for nombre in FUENTES:
+        assert f'-name "{nombre.split(".so")[0]}.so*"' in paso, nombre
+    assert "exit 1" in paso
+    revisar = linux.index("- name: Sin las bibliotecas de fuentes")
+    assert linux.index("- name: Compilar") < revisar < linux.index("--smoke-test")
+    assert revisar < linux.index("gh release upload")
+
+
 # --- lo que salió del repaso antes de la estable ------------------------------------
 
 def test_la_compilacion_revisa_el_tag_y_el_banco():

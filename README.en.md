@@ -7,7 +7,7 @@ A non-linear video editor. Part of Vortex Suite.
 The features of DaVinci Resolve, CapCut, Premiere Pro and After Effects, but
 easy to use. The capability, yes; the complexity, no.
 
-> ### ✅ Version 1.0 — `1.0.0`
+> ### ✅ Version 1.0 — `1.0.1`
 >
 > **1.0.** Everything that felt broken is closed: audio follows transitions,
 > the mix no longer clips and has a meter, the timeline scrolls sideways and
@@ -38,9 +38,9 @@ Every version's executables are in
 
 **Windows** (64-bit):
 
-- `VortexStudio-1.0.0-windows-x64-instalador.exe` installs it and adds it to
+- `VortexStudio-1.0.1-windows-x64-instalador.exe` installs it and adds it to
   the Start menu. No admin rights needed.
-- `VortexStudio-1.0.0-windows-x64-portable.zip` is the portable version:
+- `VortexStudio-1.0.1-windows-x64-portable.zip` is the portable version:
   unzip it and open `vortex-studio.exe`.
 
 The executables aren't signed, so Windows may warn through SmartScreen:
@@ -50,8 +50,8 @@ The executables aren't signed, so Windows may warn through SmartScreen:
 later; with PulseAudio or PipeWire, which every desktop ships):
 
 ```bash
-tar xzf VortexStudio-1.0.0-linux-x86_64.tar.gz
-cd VortexStudio-1.0.0-linux-x86_64
+tar xzf VortexStudio-1.0.1-linux-x86_64.tar.gz
+cd VortexStudio-1.0.1-linux-x86_64
 ./instalar.sh
 ```
 

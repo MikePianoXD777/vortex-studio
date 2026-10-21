@@ -12,6 +12,22 @@ compatibilidad: lo que guardes en un `.vortex` abre en todas las `1.x`.
 
 Nada todavía.
 
+## [1.0.1] — 2026-10-21
+
+**Arregla las fuentes del paquete de Linux en distros recientes.** El editor
+no cambia; solo lo que trae el `.tar.gz`.
+
+### Arreglado
+
+- **El paquete de Linux traía su propia `fontconfig`**, la 2.13 de Ubuntu
+  22.04, que no entiende la configuración de fuentes de las distros nuevas.
+  En CachyOS, con la 2.18, el editor arrancaba con unos 45 avisos de
+  «Fontconfig error» y se saltaba las reglas de las familias genéricas
+  (sans-serif, monospace, emoji), así que algunas fuentes podían salir mal.
+  Ahora `libfontconfig`, `libfreetype` y `libexpat` no viajan en el paquete:
+  se usan las del sistema, que todos los escritorios traen. La compilación
+  automática truena si alguna se vuelve a colar.
+
 ## [1.0.0] — 2026-10-19
 
 **La 1.0.** Se cierra todo lo que se sentía roto de la lista de pendientes,

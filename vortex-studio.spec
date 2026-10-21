@@ -10,7 +10,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.join(SPECPATH, "empaquetado"))
-from bibliotecas_linux import binarios_x11  # noqa: E402
+from bibliotecas_linux import binarios_x11, sin_las_del_sistema  # noqa: E402
 
 # OCIO y AAF son opcionales: entran al ejecutable solo si están instalados
 # en el entorno que compila (la compilación de los binarios instala `.[pro]`).
@@ -36,6 +36,10 @@ a = Analysis(
     ],
     noarchive=False,
 )
+
+# Y al revés: las de fuentes que PyInstaller juntó y tienen que ser las del
+# sistema, porque leen su configuración. Ver `empaquetado/bibliotecas_linux.py`.
+a.binaries = sin_las_del_sistema(a.binaries)
 
 pyz = PYZ(a.pure)
 

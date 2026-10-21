@@ -107,6 +107,17 @@ jobs:
           VORTEX_STRICT_BUNDLE: "1"
         run: pyinstaller vortex-studio.spec --noconfirm --clean
 
+      - name: Sin las bibliotecas de fuentes en el paquete
+        # Tienen que ser las del sistema (ver empaquetado/bibliotecas_linux.py):
+        # la fontconfig de esta máquina no entiende la configuración de las
+        # distros nuevas. Si alguna se coló al paquete, esto truena.
+        run: |
+          coladas=$(find dist/vortex-studio -name "libfontconfig.so*" -o -name "libfreetype.so*" -o -name "libexpat.so*")
+          if [ -n "$coladas" ]; then
+            echo "::error::Van en el paquete y deben ser las del sistema: $coladas"
+            exit 1
+          fi
+
       - name: Prueba de humo
         env:
           QT_QPA_PLATFORM: offscreen
