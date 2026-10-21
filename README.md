@@ -11,7 +11,7 @@ fáciles de usar. La capacidad sí; la complejidad no.
 >
 > **La 1.0.** Se cerró todo lo que se sentía roto: el audio sigue a las
 > transiciones, la mezcla ya no recorta y tiene medidor, el timeline se
-> recorre a los lados y se selecciona con rectángulo. Pasa 1431 pruebas
+> recorre a los lados y se selecciona con rectángulo. Pasa 1432 pruebas
 > automáticas, también con material del mundo real: video vertical de
 > celular, 29.97 fps, keyframes lejanos, HEVC, 44.1 kHz y fps variable.
 >
