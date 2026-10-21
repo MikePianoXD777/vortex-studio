@@ -11,7 +11,7 @@ easy to use. The capability, yes; the complexity, no.
 >
 > **1.0.** Everything that felt broken is closed: audio follows transitions,
 > the mix no longer clips and has a meter, the timeline scrolls sideways and
-> supports marquee selection. It passes 1427 automated tests, including
+> supports marquee selection. It passes 1431 automated tests, including
 > real-world footage: vertical phone video, 29.97 fps, distant keyframes,
 > HEVC, 44.1 kHz and variable frame rate.
 >
