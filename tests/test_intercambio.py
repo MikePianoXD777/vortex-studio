@@ -28,7 +28,7 @@ def test_edl_con_codigos_de_tiempo_de_ida_y_vuelta():
     eventos = ix.parse_edl(ix.to_edl(_secuencia()), 24.0)
     video = [e for e in eventos if e["canal"] == "V"]
     assert [(e["inicio"], e["fin"], e["entrada"], e["salida"]) for e in video] == \
-        pytest.approx([(0, 2, 10, 12), (3, 4.5, 0.5, 3.5)])
+        [pytest.approx(t) for t in [(0, 2, 10, 12), (3, 4.5, 0.5, 3.5)]]
     assert [e["nombre"] for e in video] == ["toma uno.mp4", "toma_dos.mov"]
 
 

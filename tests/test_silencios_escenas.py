@@ -125,9 +125,9 @@ def test_cortar_tramos_cierra_huecos_en_video_y_audio():
     assert comando.apply(secuencia)
     assert comando.count == 2 and comando.removed == pytest.approx(3.0)
     assert [(c.start, c.duration, c.in_point) for c in secuencia.track_named("V1").clips] == \
-        pytest.approx([(0, 2, 0), (2, 3, 3), (5, 2, 8), (7, 2, 0)])
+        [pytest.approx(t) for t in [(0, 2, 0), (2, 3, 3), (5, 2, 8), (7, 2, 0)]]
     assert [(c.start, c.duration) for c in secuencia.track_named("A1").clips] == \
-        pytest.approx([(0, 2), (2, 3), (5, 2)])
+        [pytest.approx(t) for t in [(0, 2), (2, 3), (5, 2)]]
     assert despues.start == pytest.approx(7.0)
 
 
@@ -136,7 +136,7 @@ def test_cortar_desde_el_inicio_y_hasta_el_final():
     video = secuencia.track_named("V1").add(Clip("a.mp4", 0.0, 10.0))
     assert CutRanges(item=video, ranges=[(0.0, 1.0), (9.0, 10.0)]).apply(secuencia)
     assert [(c.start, c.duration, c.in_point) for c in secuencia.track_named("V1").clips] == \
-        pytest.approx([(0, 8, 1)])
+        [pytest.approx(t) for t in [(0, 8, 1)]]
 
 
 def test_cortar_en_pista_bloqueada_no_hace_nada():
