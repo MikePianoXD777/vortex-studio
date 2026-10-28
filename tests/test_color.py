@@ -2,12 +2,27 @@
 
 import pytest
 
-from vortex_studio.media import VideoSource
+from vortex_studio.media import Frame, VideoSource
 from vortex_studio.model import ColorAdjust
 
 
 def medio(frame, muestras=30000):
-    return sum(frame.data[:muestras]) / muestras
+    """El promedio de los primeros pixeles, fila por fila y sin el relleno.
+
+    FFmpeg alinea cada fila a lo que pida el procesador: con AVX-512, que
+    traen algunas máquinas del CI, a 64 bytes. Una fila de 160 pixeles RGB
+    —480 bytes— queda en 576, con 96 en ceros, y contarlos bajaba el
+    promedio una sexta parte: gamma y contraste parecían rotos.
+    """
+    ancho = frame.width * 3
+    filas = b"".join(frame.data[i * frame.stride:i * frame.stride + ancho]
+                     for i in range(frame.height))[:muestras]
+    return sum(filas) / len(filas)
+
+
+def test_el_promedio_no_cuenta_el_relleno_de_las_filas():
+    fila = bytes([128]) * 480 + bytes(96)
+    assert medio(Frame(fila * 120, 160, 120, 576)) == 128
 
 
 @pytest.fixture

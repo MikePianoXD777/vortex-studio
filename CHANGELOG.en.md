@@ -12,6 +12,22 @@ in a `.vortex` file opens in every `1.x`.
 
 Nothing yet.
 
+## [1.0.1] — 2026-10-21
+
+**Fixes fonts in the Linux package on recent distros.** The editor itself
+doesn't change; only what ships in the `.tar.gz`.
+
+### Fixed
+
+- **The Linux package shipped its own `fontconfig`**, version 2.13 from
+  Ubuntu 22.04, which doesn't understand the font configuration of newer
+  distros. On CachyOS, with 2.18, the editor started with about 45
+  "Fontconfig error" warnings and skipped the generic family rules
+  (sans-serif, monospace, emoji), so some fonts could resolve wrong. Now
+  `libfontconfig`, `libfreetype` and `libexpat` no longer ship in the
+  package: the system's own are used, and every desktop has them. The
+  automated build fails if any of them sneaks back in.
+
 ## [1.0.0] — 2026-10-19
 
 **1.0.** Everything that felt broken on the to-do list is closed, the

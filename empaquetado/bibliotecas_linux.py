@@ -1,4 +1,4 @@
-"""Bibliotecas de Linux que el paquete trae aunque sean del sistema.
+"""Bibliotecas de Linux que el paquete trae aunque sean del sistema, y las que no.
 
 PyInstaller no empaca las bibliotecas del sistema, a propósito: casi todas
 están en cualquier escritorio. Estas no. El plugin de X11 de Qt 6 pide
@@ -22,6 +22,17 @@ Ubuntu reparte en paquetes sueltos.
 La receta (`vortex-studio.spec`) las busca al compilar. En la compilación
 automática `VORTEX_STRICT_BUNDLE=1` hace que falte una y la compilación
 truene; en la compu de uno solo avisa.
+
+Y al revés: tres que PyInstaller sí empaca y tienen que ser las del sistema.
+`libfontconfig` lee la configuración de fuentes de `/etc/fonts`, que es de
+la distro y cambia con su versión. La 2.13 de Ubuntu 22.04, la de la máquina
+que compila, no entiende la de las distros nuevas: en CachyOS, con la 2.18,
+la 1.0.0 arrancaba con unos 45 «Fontconfig error» y se saltaba las reglas de
+las familias genéricas (sans-serif, monospace, emoji), así que las fuentes
+podían salir mal. `libfreetype` y `libexpat` se van con ella: la fontconfig
+de la distro las pide, y si las viejas del paquete van delante carga esas.
+Todo escritorio trae las tres; por eso están en la lista de exclusión de
+AppImage.
 """
 
 from __future__ import annotations
@@ -66,6 +77,11 @@ CARPETAS = ("/usr/lib/x86_64-linux-gnu", "/lib/x86_64-linux-gnu", "/usr/lib64", 
 DESTINO = "PySide6/Qt/lib"
 DESTINOS = (DESTINO, ".")
 
+# Las que se quitan de lo que PyInstaller juntó (ver arriba): con ellas fuera,
+# Qt, cairo y pango cargan las del sistema, que coinciden con su `/etc/fonts`.
+# Solo `libfontconfig` pide `libexpat`.
+DEL_SISTEMA = ("libfontconfig.so.1", "libfreetype.so.6", "libexpat.so.1")
+
 
 class Falta(RuntimeError):
     """Una biblioteca que tiene que ir en el paquete no está en la máquina."""
@@ -104,3 +120,17 @@ def binarios_x11(estricto: bool | None = None, carpetas=CARPETAS,
             raise Falta(mensaje)
         print(f"AVISO: {mensaje}. El ejecutable no abrirá en sesiones X11 que no las tengan.")
     return encontradas
+
+
+def _es_del_sistema(nombre: str) -> bool:
+    return any(nombre == corto or nombre.startswith(corto + ".") for corto in DEL_SISTEMA)
+
+
+def sin_las_del_sistema(binarios) -> list:
+    """`a.binaries` del `.spec` sin las de `DEL_SISTEMA`, en cualquier carpeta.
+
+    Cada entrada es (destino dentro del paquete, ruta de origen, tipo). Se
+    compara el nombre del archivo, también con la versión completa
+    (`libfreetype.so.6.18.1`) por si PyInstaller no la copia con el corto.
+    """
+    return [entrada for entrada in binarios if not _es_del_sistema(Path(entrada[0]).name)]
