@@ -87,6 +87,14 @@ class Adjustments:
     curve: list[tuple[float, float]] = field(default_factory=list)
     # Por franja: (tono −100…100, saturación −100…100, luminosidad −100…100).
     hsl: dict[str, tuple[float, float, float]] = field(default_factory=dict)
+    # Viraje por zonas (split toning): un color para las sombras y otro para las
+    # luces. Tono en grados (0…360), intensidad 0…100; `split_balance` −100…100
+    # mueve el punto donde una zona cede a la otra (negativo = más luces).
+    split_shadow_hue: float = 0.0
+    split_shadow_sat: float = 0.0
+    split_light_hue: float = 0.0
+    split_light_sat: float = 0.0
+    split_balance: float = 0.0
 
     def is_neutral(self) -> bool:
         return self == Adjustments()

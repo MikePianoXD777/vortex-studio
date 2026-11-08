@@ -172,3 +172,19 @@ Todo lo anterior se cumple tal cual. Además, la interfaz puede usar:
   el motor crea una `QGuiApplication`, y después no se podría crear la `QApplication`.
 
 Sin cambios a `document.py`.
+
+### Viraje por zonas (agregado)
+
+`Adjustments` tiene campos nuevos con valor 0 (neutros): `split_shadow_hue`,
+`split_shadow_sat`, `split_light_hue`, `split_light_sat` (tono 0…360°, intensidad
+0…100) y `split_balance` (−100…100). Tiñen sombras y luces con colores distintos
+sin cambiar el brillo; sin intensidad no hacen nada. Los filtros Sepia, Atardecer,
+Cian y naranja, Invierno, Matte, Pastel, Cálido y Desvanecido los usan. La
+intensidad de un filtro escala las intensidades, no los tonos. `layer_from_dict`
+no necesitó cambios (son campos planos). La interfaz puede mostrar «Tono de
+sombras / luces» en «Más opciones».
+
+### Velocidad de los ajustes (agregado)
+
+Enfoque sobre la luminosidad (sin halos de color); desenfoque y claridad con
+sigma ≥ 4 a resolución reducida; HSL con una rejilla de 64³ colores cacheada.

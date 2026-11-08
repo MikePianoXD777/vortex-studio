@@ -121,3 +121,24 @@ def test_efectos_de_capa_grande():
     t = medir(lambda: apply_effects(px, e, 1.0))
     print(f"[perf] sombra + contorno de 20 px en 800²: {t * 1000:.0f} ms")
     assert t < 4
+
+
+def test_vista_previa_y_exportacion_coinciden_visualmente():
+    """Render a escala 0,5 contra el render a escala 1 reducido a la mitad:
+    mismo aspecto (error medio chico) aunque los radios se calculen aparte."""
+    from vortex_studio.photo._util import resize_rgba
+    st = AssetStore()
+    base = colorido(300, 300)
+    base[100:200, 100:200, :3] = 40
+    todo = Adjustments(exposure=15, contrast=20, saturation=15, temperature=10, clarity=40, sharpen=40,
+                       vignette=30, grain=0, blur=25, hsl={"green": (10, -30, 5)})
+    d = doc_con(st, 600, 600, capa_imagen(st, base, 300, 300, 600, 600, adjustments=todo))
+    previa = Renderer(st).render(d, 0.5)
+    grande = Renderer(st).render(d, 1.0)
+    reducida = resize_rgba(grande, 300, 300)
+    err = np.abs(previa[..., :3].astype(int) - reducida[..., :3]).mean()
+    assert err < 6, err
+    d.layers[0].adjustments.grain = 40
+    g1 = Renderer(st).render(d, 0.5).astype(int)
+    g2 = resize_rgba(Renderer(st).render(d, 1.0), 300, 300).astype(int)
+    assert abs(g1[..., :3].mean() - g2[..., :3].mean()) < 3          # el grano no cambia el brillo general

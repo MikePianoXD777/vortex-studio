@@ -94,6 +94,15 @@ def _box_axis(a: np.ndarray, r: int, axis: int) -> np.ndarray:
     n = movido.shape[-1]
     lote = max(1, 2_000_000 // max(1, n * int(np.prod(movido.shape[1:-1], dtype=np.int64) or 1)))
     k = 2 * r + 1
+    if r <= 3:
+        # Radios chicos: sumar k copias desplazadas cuesta menos que la suma
+        # acumulada en float64.
+        p = np.pad(movido, [(0, 0)] * (movido.ndim - 1) + [(r, r)], mode="edge")
+        acc = p[..., :n].copy()
+        for j in range(1, k):
+            acc += p[..., j:j + n]
+        acc *= np.float32(1.0 / k)
+        return np.moveaxis(acc, -1, axis)
     for i in range(0, movido.shape[0], lote):
         sub = movido[i:i + lote]
         pad = [(0, 0)] * (sub.ndim - 1) + [(r + 1, r)]
@@ -133,3 +142,31 @@ def gaussian_blur(a: np.ndarray, sigma: float) -> np.ndarray:
 
 def luma(rgb: np.ndarray) -> np.ndarray:
     return rgb[..., 0] * 0.2126 + rgb[..., 1] * 0.7152 + rgb[..., 2] * 0.0722
+
+
+def blur_fast(a: np.ndarray, sigma: float) -> np.ndarray:
+    """Como `gaussian_blur` pero, para radios grandes, trabaja a resolución
+    reducida (reduce, desenfoca, amplía): con sigma ≥ 4 la diferencia con el
+    desenfoque a resolución completa no se ve y cuesta una fracción.
+    Entrada float32 0…1 (alto, ancho) o (alto, ancho, 3); salida float32."""
+    h, w = a.shape[:2]
+    k = int(sigma / 2.0)
+    if sigma < 4.0 or k < 2 or min(h, w) < 4 * k:
+        return gaussian_blur(a, sigma)
+    w2, h2 = max(1, w // k), max(1, h // k)
+    a8 = np.clip(a * 255.0 + 0.5, 0, 255).astype(np.uint8)
+    if a.ndim == 2:
+        chico = resize_gray(a8, w2, h2).astype(np.float32)
+    else:
+        rgba = np.empty((h, w, 4), np.uint8)
+        rgba[..., :3] = a8
+        rgba[..., 3] = 255
+        chico = resize_rgba(rgba, w2, h2)[..., :3].astype(np.float32)
+    chico = gaussian_blur(chico * np.float32(1 / 255.0), sigma * w2 / w)
+    c8 = np.clip(chico * 255.0 + 0.5, 0, 255).astype(np.uint8)
+    if a.ndim == 2:
+        return resize_gray(c8, w, h).astype(np.float32) * np.float32(1 / 255.0)
+    rgba = np.empty((h2, w2, 4), np.uint8)
+    rgba[..., :3] = c8
+    rgba[..., 3] = 255
+    return resize_rgba(rgba, w, h)[..., :3].astype(np.float32) * np.float32(1 / 255.0)

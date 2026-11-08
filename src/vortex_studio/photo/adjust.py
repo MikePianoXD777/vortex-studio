@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from ._util import gaussian_blur, luma, smoothstep
+from ._util import blur_fast, gaussian_blur, luma, smoothstep
 from .document import HSL_BANDS, Adjustments
 
 # --- tonos ---------------------------------------------------------------------
@@ -187,7 +187,12 @@ def _de_hsv(h, s, v):
     return v[..., None] - (v * s)[..., None] * f
 
 
-def _aplicar_hsl(rgb, tabla):
+_BITS_HSL = 6
+_N_HSL = 1 << _BITS_HSL
+_cache_hsl: dict = {}
+
+
+def _calcular_hsl(rgb, tabla):
     h, s, v = _hsv(rgb)
     idx = np.minimum((h * (_RES_HUE / 360.0)).astype(np.int32), _RES_HUE - 1)
     t = tabla[idx].astype(np.float32)
@@ -197,8 +202,25 @@ def _aplicar_hsl(rgb, tabla):
     out = _de_hsv(h2, s2, v)
     dl = (t[..., 2] * peso)[..., None]
     pos, neg = np.clip(dl, 0, 1), np.clip(-dl, 0, 1)
-    out = out + (1.0 - out) * 0.5 * pos - out * 0.5 * neg
-    return out
+    return out + (1.0 - out) * 0.5 * pos - out * 0.5 * neg
+
+
+def _aplicar_hsl(rgb, tabla):
+    """El HSL es una función de cada color, así que se calcula una sola vez
+    sobre una rejilla de 64³ colores (guardando cuánto cambia cada uno) y a la
+    foto se le suma ese cambio: un gather en vez de convertir cada píxel. Se
+    guarda la última rejilla (arrastrar otro control no la recalcula)."""
+    clave = tabla.tobytes()
+    delta = _cache_hsl.get(clave)
+    if delta is None:
+        g = (np.arange(_N_HSL, dtype=np.float32) + 0.5) / _N_HSL
+        grid = np.stack(np.meshgrid(g, g, g, indexing="ij"), axis=-1).reshape(-1, 3)
+        delta = (_calcular_hsl(grid, tabla) - grid).astype(np.float32)
+        _cache_hsl.clear()
+        _cache_hsl[clave] = delta
+    q = (rgb * np.float32(_N_HSL - 1e-3)).astype(np.int32)
+    flat = (q[..., 0] << (2 * _BITS_HSL)) | (q[..., 1] << _BITS_HSL) | q[..., 2]
+    return rgb + delta[flat]
 
 
 # --- detalle ---------------------------------------------------------------------
@@ -241,6 +263,7 @@ def apply_adjustments(pixels: np.ndarray, adj: Adjustments, scale: float = 1.0) 
     hsl_tab = _tabla_hsl(adj.hsl) if adj.hsl else None
     quiere = {
         "vib": bool(adj.vibrance), "sat": bool(adj.saturation), "hsl": hsl_tab is not None,
+        "split": adj.split_shadow_sat > 0 or adj.split_light_sat > 0,
         "temp": bool(adj.temperature), "tint": bool(adj.tint),
         "blur": adj.blur > 0, "clar": bool(adj.clarity), "sharp": adj.sharpen > 0,
         "vig": adj.vignette > 0, "grain": adj.grain > 0,
@@ -275,6 +298,19 @@ def apply_adjustments(pixels: np.ndarray, adj: Adjustments, scale: float = 1.0) 
         rgb = np.clip(rgb, 0.0, 1.0)
     if quiere["hsl"]:
         rgb = np.clip(_aplicar_hsl(rgb, hsl_tab), 0.0, 1.0)
+    if quiere["split"]:
+        l = luma(rgb)
+        medio = 0.5 + adj.split_balance / 200.0
+        w_luz = smoothstep((l - medio) / 0.6 + 0.5)
+
+        def _tinte(hue, sat):
+            c = _de_hsv(np.float32(hue % 360.0), np.float32(1.0), np.float32(1.0))
+            return (c - c @ np.float32([0.2126, 0.7152, 0.0722])) * np.float32(sat / 100.0 * 0.6)
+
+        # Se suma color sin mover la luminosidad (el tinte tiene luma cero).
+        rgb = rgb + (1.0 - w_luz)[..., None] * _tinte(adj.split_shadow_hue, adj.split_shadow_sat) \
+            + w_luz[..., None] * _tinte(adj.split_light_hue, adj.split_light_sat)
+        rgb = np.clip(rgb, 0.0, 1.0)
     if quiere["temp"] or quiere["tint"]:
         t, ti = adj.temperature / 100.0, adj.tint / 100.0
         mult = np.array([1 + 0.25 * t, 1 - 0.20 * ti, 1 - 0.25 * t], np.float32)
@@ -287,16 +323,18 @@ def apply_adjustments(pixels: np.ndarray, adj: Adjustments, scale: float = 1.0) 
     if quiere["blur"]:
         sigma = adj.blur / 100.0 * 24.0 * scale
         if sigma >= 0.35:
-            rgb = gaussian_blur(rgb, sigma)
+            rgb = blur_fast(rgb, sigma)
     if quiere["clar"]:
-        base = gaussian_blur(luma(rgb), max(1.0, 18.0 * scale))
         l = luma(rgb)
+        base = blur_fast(l, max(1.0, 18.0 * scale))
         medios = (1.0 - (2.0 * l - 1.0) ** 2) * 0.8 + 0.2
         rgb = np.clip(rgb + ((l - base) * medios * np.float32(adj.clarity / 100.0 * 1.2))[..., None], 0.0, 1.0)
     if quiere["sharp"]:
         sigma = max(0.5, 1.0 * scale)
-        fino = gaussian_blur(rgb, sigma)
-        rgb = np.clip(rgb + (rgb - fino) * np.float32(adj.sharpen / 100.0 * 2.0), 0.0, 1.0)
+        # Enfoque sobre la luminosidad (lo que hacen los programas de foto):
+        # un solo canal desenfocado en vez de tres, y sin halos de color.
+        l = luma(rgb)
+        rgb = np.clip(rgb + ((l - gaussian_blur(l, sigma)) * np.float32(adj.sharpen / 100.0 * 2.0))[..., None], 0.0, 1.0)
     if quiere["vig"]:
         rgb = rgb * _vineta(h, w, adj.vignette / 100.0)[..., None]
     if quiere["grain"]:

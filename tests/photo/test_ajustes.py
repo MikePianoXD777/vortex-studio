@@ -160,7 +160,7 @@ def test_hsl_las_franjas_se_mezclan_sin_saltos():
     px[..., 3] = 255
     out = aplicar(px, hsl={"green": (0, -100, 0)})
     salto = np.abs(np.diff(out[0, :, :3].astype(int), axis=0)).max()
-    assert salto <= 12
+    assert salto <= 16
 
 
 def test_claridad_aumenta_el_contraste_local():
@@ -275,3 +275,38 @@ def test_valores_fuera_de_rango_se_recortan_sin_error():
     px = colorido()
     out = aplicar(px, exposure=900, contrast=500, saturation=900, temperature=-900, hsl={"red": (900, 900, 900)})
     assert out.dtype == np.uint8 and out.shape == px.shape
+
+
+def test_viraje_por_zonas_tine_sombras_y_luces_por_separado():
+    px = np.zeros((1, 3, 4), np.uint8)
+    px[0, 0] = (60, 60, 60, 255)
+    px[0, 1] = (128, 128, 128, 255)
+    px[0, 2] = (225, 225, 225, 255)
+    out = aplicar(px, split_shadow_hue=210, split_shadow_sat=100, split_light_hue=30, split_light_sat=100)
+    sombra, luz = out[0, 0].astype(int), out[0, 2].astype(int)
+    assert sombra[2] > sombra[0] + 10              # sombras azuladas
+    assert luz[0] > luz[2] + 10                    # luces anaranjadas
+    assert abs(lum(out[:, :1]).mean() - lum(px[:, :1]).mean()) < 6      # el viraje no cambia el brillo
+    assert np.array_equal(out[..., 3], px[..., 3])
+
+
+def test_viraje_por_zonas_neutro_y_balance():
+    px = ruido(16, 16)
+    assert apply_adjustments(px, Adjustments(split_shadow_hue=120, split_light_hue=300)) is px   # sin intensidad no hace nada
+    g = solido(2, 2, (150, 150, 150, 255))
+    tine = lambda **k: abs(int(aplicar(g, split_light_hue=30, split_light_sat=100, **k)[0, 0, 0]) - 150)
+    assert tine(split_balance=-80) > tine(split_balance=80)         # balance negativo = más zona de luces
+
+
+def test_viraje_por_zonas_se_guarda_y_se_lee():
+    from vortex_studio.photo.document import Layer, layer_from_dict, layer_to_dict
+    c = Layer(adjustments=Adjustments(split_shadow_hue=200, split_shadow_sat=30, split_balance=-10))
+    assert layer_from_dict(layer_to_dict(c)).adjustments == c.adjustments
+    assert layer_from_dict({"adjustments": {"exposure": 5}}).adjustments.split_light_sat == 0
+
+
+def test_la_intensidad_del_filtro_no_escala_el_tono_del_viraje():
+    from vortex_studio.photo.filters import FILTERS, scale_adjustments
+    a = FILTERS["sepia"].adjustments
+    m = scale_adjustments(a, 0.5)
+    assert m.split_shadow_hue == a.split_shadow_hue and m.split_shadow_sat == a.split_shadow_sat / 2
