@@ -10,6 +10,7 @@ una terminal, por SSH o en un servidor sin pantalla.
 from __future__ import annotations
 
 import functools
+import gc
 import os
 import shutil
 import subprocess
@@ -106,6 +107,8 @@ def ventana(qapp):
     lenta. La prueba ya falló por eso; el cierre no debe preguntar qué hacer
     con ellas ni dejar el hilo de render vivo para las que vienen atrás.
     """
+    from PySide6.QtCore import QEvent
+
     from vortex_studio.ui import MainWindow
 
     w = MainWindow()
@@ -118,6 +121,12 @@ def ventana(qapp):
     w._ask_quit_with_exports = lambda: "cancelar"
     w.close()
     qapp.processEvents()
+    # Cerrar no la borra: sin esto cada prueba dejaba su ventana viva (~7 MB) y
+    # el banco entero pasaba de 7 GB.
+    w.deleteLater()
+    qapp.sendPostedEvents(None, QEvent.DeferredDelete)
+    qapp.processEvents()
+    gc.collect()
 
 
 @pytest.fixture
