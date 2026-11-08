@@ -188,3 +188,9 @@ sombras / luces» en «Más opciones».
 
 Enfoque sobre la luminosidad (sin halos de color); desenfoque y claridad con
 sigma ≥ 4 a resolución reducida; HSL con una rejilla de 64³ colores cacheada.
+
+### Suavidad (agregado)
+
+`Adjustments.softness` (0…100, neutro 0): brillo difuso tipo Orton, una versión
+desenfocada de contraste recortado mezclada en Trama. Lo usa el filtro Suave y
+la interfaz lo muestra como «Suavidad» en Detalle.
