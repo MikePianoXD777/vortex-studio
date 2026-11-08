@@ -1,8 +1,8 @@
 """El launcher: elegir con qué se va a trabajar antes de abrir el editor.
 
-Vortex Studio va a ser dos editores en uno. Por ahora el de video funciona
-y el de fotos todavía no, así que su tarjeta se dibuja apagada y no
-responde al clic — se ve que existe, pero no se puede entrar.
+Vortex Studio son dos editores en uno: el de video y Vortex Photo, el de
+fotos y diseños. Cada tarjeta se puede apagar (`enabled=False`) para
+mostrar un modo que todavía no está listo; hoy los dos funcionan.
 """
 
 from __future__ import annotations
@@ -210,7 +210,7 @@ class ModeCard(QWidget):
 
 
 class Launcher(QDialog):
-    """Ventana de arranque. `choice` queda en VIDEO o en None si se cancela."""
+    """Ventana de arranque. `choice` queda en VIDEO, FOTOS o en None si se cancela."""
 
     def __init__(self, version: str = "") -> None:
         super().__init__()
@@ -254,10 +254,10 @@ class Launcher(QDialog):
 
     def _cards(self) -> QHBoxLayout:
         video = ModeCard(VIDEO, "Video", "Editor de video no lineal")
-        fotos = ModeCard(FOTOS, "Fotos", "Editor de fotos",
-                         enabled=False, note="PRÓXIMAMENTE")
+        fotos = ModeCard(FOTOS, "Fotos", "Diseña y retoca fotos, como en Canva")
 
         video.clicked.connect(self._pick)
+        fotos.clicked.connect(self._pick)
         video.setFocus()
 
         row = QHBoxLayout()
