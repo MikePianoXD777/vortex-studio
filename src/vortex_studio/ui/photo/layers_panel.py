@@ -256,6 +256,8 @@ class LayersPanel(QWidget):
         """Lleva la fila `src` junto a la fila `dst` (la lista va con el frente arriba)."""
         if not (0 <= src < len(self._rows)) or not (0 <= dst < len(self._rows)):
             return False
+        if src == dst:
+            return False
         lid = self._rows[src]
         i = self.s.doc.index(lid)
         # En la lista, «después» = más abajo = menor índice en doc.layers.

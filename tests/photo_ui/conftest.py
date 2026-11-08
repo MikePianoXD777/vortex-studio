@@ -1,6 +1,9 @@
 """Fixtures de las pruebas de la interfaz de Vortex Photo."""
 
+import gc
+
 import pytest
+from PySide6.QtCore import QEvent
 
 
 @pytest.fixture
@@ -17,7 +20,11 @@ def foto(qapp):
     yield w
     w.session.dirty = False         # closeEvent preguntaría y un diálogo colgaría la prueba
     w.close()
+    # Sin esto cada prueba deja su ventana viva y el banco entero se come la memoria.
+    w.deleteLater()
+    qapp.sendPostedEvents(None, QEvent.DeferredDelete)
     qapp.processEvents()
+    gc.collect()
 
 
 @pytest.fixture

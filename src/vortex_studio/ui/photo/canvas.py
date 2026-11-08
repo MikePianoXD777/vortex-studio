@@ -191,7 +191,9 @@ class CanvasView(QWidget):
         """Dibuja ya lo pendiente (para las pruebas y para capturas)."""
         if self._timer.isActive():
             self._timer.stop()
-        self._render()
+            self._render()
+        elif self._frame is None:
+            self._render()
 
     def render_scale(self, draft: bool) -> float:
         d = self.s.doc
