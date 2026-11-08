@@ -254,7 +254,7 @@ class Launcher(QDialog):
 
     def _cards(self) -> QHBoxLayout:
         video = ModeCard(VIDEO, "Video", "Editor de video no lineal")
-        fotos = ModeCard(FOTOS, "Fotos", "Diseña y retoca fotos, como en Canva")
+        fotos = ModeCard(FOTOS, "Fotos", "Diseña y retoca tus fotos")
 
         video.clicked.connect(self._pick)
         fotos.clicked.connect(self._pick)
