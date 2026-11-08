@@ -1238,8 +1238,10 @@ class CanvasView(QWidget):
         p.drawImage(QRectF(-(fx1 - fx0) / 2, -(fy1 - fy0) / 2, fx1 - fx0, fy1 - fy0), c["image"])
         p.restore()
         x0, y0, x1, y1 = c["rect"]
+        # Todo lo que queda fuera del recorte se atenúa: la foto completa y lo demás del lienzo.
         sombra = QPainterPath()
-        sombra.addRect(QRectF(fx0, fy0, fx1 - fx0, fy1 - fy0))
+        gran = 20000.0
+        sombra.addRect(QRectF(-gran, -gran, 2 * gran, 2 * gran))
         hueco = QPainterPath()
         hueco.addRect(QRectF(x0, y0, x1 - x0, y1 - y0))
         p.fillPath(sombra.subtracted(hueco), QColor(0, 0, 0, 150))

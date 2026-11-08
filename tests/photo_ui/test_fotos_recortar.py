@@ -269,3 +269,22 @@ def test_remap_mask_es_puro():
     out = remap_mask(m, (10, 10, 20, 10), (0, 10, 40, 10))      # crece 10 a cada lado
     assert out.shape == (10, 40)
     assert out[:, :10].min() == 255 and out[:, 30:].min() == 255 and out[:, 10:30].max() == 0
+
+
+def test_en_modo_recortar_lo_de_fuera_se_atenua_y_lo_de_dentro_no(foto, s, lienzo, img, qapp):
+    from PySide6.QtGui import QColor
+    s.add_shape("ellipse", at=(100, 100))                # algo del lienzo fuera de la foto
+    s.select([img.id])
+    lienzo.begin_crop()
+    lienzo.set_crop_ratio(1.0)
+    lienzo.flush()
+    qapp.processEvents()
+    pm = lienzo.grab().toImage()
+    cx, cy = lienzo.to_screen(540, 540).x(), lienzo.to_screen(540, 540).y()
+    dentro = QColor(pm.pixel(int(cx), int(cy)))
+    fuera = QColor(pm.pixelColor(int(lienzo.to_screen(540 - 190, 540).x()), int(cy)))   # dentro de la foto, fuera del recorte
+    assert fuera.lightness() < dentro.lightness() or fuera.red() < dentro.red()
+    # la forma del lienzo (fuera de la foto) también queda atenuada
+    px, py = lienzo.to_screen(100, 100).x(), lienzo.to_screen(100, 100).y()
+    morado = QColor(pm.pixel(int(px), int(py)))
+    assert morado.red() < 0x7c and morado.blue() < 0xff
