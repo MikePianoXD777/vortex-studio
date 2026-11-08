@@ -24,3 +24,7 @@ FILTERS: dict[str, FilterPreset] = {i: FilterPreset(i, n) for i, n in _NOMBRES}
 
 def apply_filter(pixels: np.ndarray, flt: Filter, scale: float = 1.0) -> np.ndarray:
     return pixels
+
+
+def auto_enhance(pixels: np.ndarray) -> Adjustments:
+    return Adjustments(contrast=12, vibrance=15, shadows=10)
