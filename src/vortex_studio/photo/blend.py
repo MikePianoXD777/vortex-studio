@@ -154,13 +154,27 @@ def composite(dst: np.ndarray, src: np.ndarray, mode: str, opacity: float,
         d[...] = s
         return
 
+    da = d[..., 3]
+    if da.min() == 255 and mode == NORMAL:
+        # Fondo opaco y modo normal (el 95 % de los casos): Cr = Cb + αs'·(Cs − Cb)
+        # en float32, en el menor número de pasadas posible y sin temporales
+        # de más. Es una mezcla convexa, así que no hace falta recortar.
+        d3, s3 = d[..., :3], s[..., :3]
+        a = sa8.astype(np.float32)
+        a *= np.float32(opacity / 255.0)
+        diff = np.subtract(s3, d3, dtype=np.float32)
+        diff *= a[..., None]
+        diff += d3
+        diff += np.float32(0.5)
+        d3[...] = diff
+        return
+
     as_ = sa8.astype(np.float32)[..., None] * np.float32(opacity / 255.0)    # αs'
     cs = s[..., :3].astype(np.float32) * np.float32(1 / 255.0)
-    da = d[..., 3]
     if da.min() == 255:
-        # Fondo opaco (lo normal): αr = 1 y Cr = Cb + αs'·(B − Cb).
+        # Fondo opaco con otro modo: αr = 1 y Cr = Cb + αs'·(B − Cb).
         cb = d[..., :3].astype(np.float32) * np.float32(1 / 255.0)
-        b = cs if mode == NORMAL else blend_colors(cb, cs, mode)
+        b = blend_colors(cb, cs, mode)
         r = cb + as_ * (b - cb)
         d[..., :3] = np.clip(r * 255.0 + 0.5, 0, 255).astype(np.uint8)
         return

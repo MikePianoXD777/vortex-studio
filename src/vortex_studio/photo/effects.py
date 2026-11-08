@@ -52,6 +52,8 @@ def dilate(alpha: np.ndarray, r: float) -> np.ndarray:
         x = math.sqrt(max(r * r - y * y, 0.0))
         kx, ky = 2 * int(round(x)) + 1, 2 * int(round(y)) + 1
         out = np.maximum(out, _max_axis(_max_axis(alpha, kx, 1), ky, 0))
+        if kx != ky:                       # y la escalera transpuesta, para que sea simétrica
+            out = np.maximum(out, _max_axis(_max_axis(alpha, ky, 1), kx, 0))
     return gaussian_blur(out, 0.6)
 
 

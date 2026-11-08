@@ -121,3 +121,54 @@ class PhotoHistory:   # instantáneas de document_to_dict; las imágenes no se c
 SIZES: list[tuple[str, str, int, int]]   # (grupo, nombre, ancho, alto)
 def text_presets() -> list[tuple[str, Layer]]   # «Agregar un título», «subtítulo», «cuerpo»
 ```
+
+## Lo que el motor agrega al contrato (compatible hacia atrás)
+
+Todo lo anterior se cumple tal cual. Además, la interfaz puede usar:
+
+- **`Renderer.render_layer_fx(doc, layer, scale) -> (imagen, margen_izq, margen_arriba)`**:
+  la capa con sombra, contorno y brillo (la imagen es más grande que la caja).
+  `render_layer` devuelve la capa **sin** efectos, exactamente del tamaño de su
+  caja (los efectos agrandan la imagen, y el contrato pide el tamaño de la caja).
+- **`Renderer(store, max_cache_bytes=512 MB)`**, `Renderer.cache_bytes()`, y los
+  contadores `builds` / `hits` (cuántas veces se rehízo o se reutilizó el
+  contenido de una capa).
+- `apply_adjustments` devuelve **el mismo arreglo** (sin copiar) si los ajustes
+  son neutros: no hay que modificarlo en su lugar. `apply_filter` igual si el
+  filtro está apagado o no existe.
+- `apply_filter` acepta en `Filter.name` el **id** (`"bn"`) o el nombre
+  visible (`"Blanco y negro"`). La intensidad escala los ajustes del preset
+  hacia cero (exacto, no mezcla dos imágenes). `FILTERS` tiene 22 presets;
+  `filters.find_preset(nombre)` los busca.
+- `io.PhotoFileError` (subclase de `ValueError`): archivo ilegible o dañado, con
+  el mensaje listo para mostrar. `io.PROJECT_FILTER` para el diálogo de `.vphoto`.
+  `load_image` y `load_document` lanzan esa excepción; si solo falta una imagen
+  dentro del `.vphoto`, el diseño abre y esa capa no se dibuja.
+- `AssetStore`: `hash_of(pixels)`, `adopt(id, pixels)` (guarda bajo un id dado,
+  lo usa `load_document`), `len()` y `nbytes()`. Las máscaras son arreglos 2D
+  `uint8` y viven en el mismo almacén.
+- `PhotoHistory(limit=100)`; un `push` con un estado idéntico al actual no agrega
+  paso; `undo_label` es la etiqueta de la acción que se deshará y `redo_label` la
+  de la que se rehará; `assets_in_use()` incluye los de **todos** los pasos (también
+  los deshechos), para que deshacer pueda traerlos de vuelta.
+- `paint.coverage(...)` (el mapa de cobertura de un trazo, útil para mostrar el
+  cursor o vista previa del pincel).
+
+### Cómo se interpreta lo que el contrato dejaba abierto
+
+- `scale` de `apply_adjustments` es la escala del **lienzo** a la que se ve la
+  imagen: los radios (desenfoque, enfoque, claridad) están en píxeles del lienzo.
+- Una capa de ajuste actúa en su caja (`transform`) y con su máscara; fuera de
+  ella no toca nada. Su modo de fusión se ignora (siempre es una corrección).
+  «Antes» (`original=True`) no aplica capas de ajuste.
+- Una capa girada con sombra: el desplazamiento de la sombra se mide en el
+  lienzo (cae hacia el mismo lado aunque la capa gire).
+- El texto se acomoda siempre a escala 1 y solo se dibuja escalado: el corte de
+  líneas es el mismo en la vista previa, en la exportación y en `text_height`.
+- `paint.stroke`: la opacidad del pincel es el tope del trazo entero (un trazo
+  que se cruza no se oscurece); la presión (0…1) escala el diámetro de 15 % a 100 %.
+- Las pruebas de la interfaz que importen el motor deben usar la `qapp` del
+  banco (una `QApplication`) antes de llamar al motor: si no hay aplicación,
+  el motor crea una `QGuiApplication`, y después no se podría crear la `QApplication`.
+
+Sin cambios a `document.py`.
