@@ -56,7 +56,7 @@ from vortex_studio.ui.photo.session import PhotoSession
 
 SIDEBAR = (("diseno", "Diseño"), ("subir", "Subir"), ("texto", "Texto"),
            ("elementos", "Elementos"), ("dibujar", "Dibujar"), ("capas", "Capas"))
-SAVE_FILTER = "Diseño de Vortex Photo (*.vphoto)"
+SAVE_FILTER = getattr(photo_io, "PROJECT_FILTER", "Diseño de Vortex Photo (*.vphoto)")
 OPEN_ALL = f"Diseños e imágenes (*.vphoto *.png *.jpg *.jpeg *.webp *.bmp *.gif);;{photo_io.OPEN_FILTER};;{SAVE_FILTER}"
 EXT = {"PNG": ".png", "JPG": ".jpg", "WEBP": ".webp"}
 
