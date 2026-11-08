@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -116,6 +117,8 @@ class DesignPanel(QWidget):
                 v.addWidget(lab)
             b = QPushButton(f"{nombre}    {w} × {h}")
             b.setStyleSheet("text-align:left; padding:8px 12px;")
+            b.setToolTip(b.text())
+            b.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)   # nombres largos no ensanchan el panel
             b.clicked.connect(lambda _=False, a=w, c=h: self.s.resize_document(a, c))
             v.addWidget(b)
             self.size_buttons.append((b, w, h))

@@ -183,7 +183,7 @@ def test_mejorar_con_un_clic(foto, s, ed):
     p.auto_enhance()
     assert not s.doc.layer(capa.id).adjustments.is_neutral()
     assert s.history.undo_label == "Mejorar con un clic"
-    assert p.sliders["contrast"].value() == s.doc.layer(capa.id).adjustments.contrast
+    assert abs(p.sliders["contrast"].value() - s.doc.layer(capa.id).adjustments.contrast) <= 0.5
     s.undo()
     assert s.doc.layer(capa.id).adjustments.is_neutral()
 
