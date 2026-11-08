@@ -7,12 +7,16 @@ Editor de video no lineal. Parte de Vortex Suite.
 Las funciones de DaVinci Resolve, CapCut, Premiere Pro y After Effects, pero
 fáciles de usar. La capacidad sí; la complejidad no.
 
-> ### ✅ Versión 1.0 — `1.0.1`
+> ### ✅ Versión 2.0 — `2.0.0`
+>
+> **Ahora también fotos.** Al abrir eliges Video o **Fotos**: Vortex Photo es un
+> lienzo con capas, filtros, ajustes, texto, formas, máscaras y modos de fusión,
+> fácil de usar. Pasa 2141 pruebas automáticas.
 >
 > **La 1.0.** Se cerró todo lo que se sentía roto: el audio sigue a las
 > transiciones, la mezcla ya no recorta y tiene medidor, el timeline se
-> recorre a los lados y se selecciona con rectángulo. Pasa 1432 pruebas
-> automáticas, también con material del mundo real: video vertical de
+> recorre a los lados y se selecciona con rectángulo. Se probó también
+> con material del mundo real: video vertical de
 > celular, 29.97 fps, keyframes lejanos, HEVC, 44.1 kHz y fps variable.
 >
 > Qué significa la 1.0:
@@ -38,9 +42,9 @@ están los ejecutables de cada versión.
 
 **Windows** (64 bits):
 
-- `VortexStudio-1.0.1-windows-x64-instalador.exe` lo instala y lo agrega al
+- `VortexStudio-2.0.0-windows-x64-instalador.exe` lo instala y lo agrega al
   menú Inicio. No pide permisos de administrador.
-- `VortexStudio-1.0.1-windows-x64-portable.zip` es la versión portátil:
+- `VortexStudio-2.0.0-windows-x64-portable.zip` es la versión portátil:
   descomprime y abre `vortex-studio.exe`.
 
 Los ejecutables no están firmados, así que Windows puede avisar con
@@ -50,8 +54,8 @@ SmartScreen: **Más información → Ejecutar de todas formas**.
 o posteriores; con PulseAudio o PipeWire, que traen todos los escritorios):
 
 ```bash
-tar xzf VortexStudio-1.0.1-linux-x86_64.tar.gz
-cd VortexStudio-1.0.1-linux-x86_64
+tar xzf VortexStudio-2.0.0-linux-x86_64.tar.gz
+cd VortexStudio-2.0.0-linux-x86_64
 ./instalar.sh
 ```
 
