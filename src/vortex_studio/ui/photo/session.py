@@ -10,6 +10,7 @@ se arrastra se llama a `touch()`, que solo avisa que hay que volver a dibujar.
 from __future__ import annotations
 
 import math
+import threading
 from collections.abc import Callable
 from pathlib import Path
 
@@ -74,7 +75,12 @@ class PhotoSession(QObject):
 
     def _reset(self, doc: Document, store: AssetStore | None = None) -> None:
         self.store = store or AssetStore()
+        # `renderer` lo usa solo el hilo de dibujo del lienzo (con `render_lock`); las
+        # miniaturas de las capas usan el suyo, para no esperar a que termine un dibujo.
         self.renderer = Renderer(self.store)
+        self.thumb_renderer = Renderer(self.store, max_cache_bytes=64 * 1024 * 1024)
+        self.render_lock = threading.RLock()
+        self._to_invalidate: set[str] = set()
         self.history = PhotoHistory()
         self.doc = doc
         self.history.reset(doc)
@@ -589,7 +595,7 @@ class PhotoSession(QObject):
         brush = paint.Brush(self.brush.size * k, self.brush.hardness, self.brush.opacity,
                             self.brush.color, "erase" if erase else "paint")
         capa.asset = self.store.put(paint.stroke(self.store.get(capa.asset), pts, brush))
-        self.renderer.invalidate(capa.id)
+        self.invalidate(capa.id)
         if nueva:
             self.selection = [capa.id]
             self.selection_changed.emit()
@@ -611,6 +617,23 @@ class PhotoSession(QObject):
                 m = m[..., 0]
             return np.array(m, np.uint8)
         return np.full(px.shape[:2], 255, np.uint8)
+
+    def invalidate(self, layer_id: str) -> None:
+        """Descarta la caché de una capa sin esperar si el hilo de dibujo está ocupado."""
+        if self.render_lock.acquire(blocking=False):
+            try:
+                self.renderer.invalidate(layer_id)
+                self.thumb_renderer.invalidate(layer_id)
+            finally:
+                self.render_lock.release()
+        else:
+            self._to_invalidate.add(layer_id)       # lo aplica el hilo de dibujo al empezar
+
+    def apply_pending_invalidations(self) -> None:
+        """Lo llama el hilo de dibujo, con `render_lock` tomado."""
+        pend, self._to_invalidate = self._to_invalidate, set()
+        for lid in pend:
+            self.renderer.invalidate(lid)
 
     def remap_mask(self, layer: Layer, old_crop) -> None:
         """Acomoda la máscara de la capa al recorte nuevo (`old_crop`: el de antes, o None)."""
@@ -695,7 +718,7 @@ class PhotoSession(QObject):
         offset = (sx - pts[0][0], sy - pts[0][1])
         brush = paint.Brush(self.brush.size * k, self.brush.hardness, self.brush.opacity)
         capa.asset = self.store.put(paint.clone(self.store.get(capa.asset), pts, brush, offset))
-        self.renderer.invalidate(capa.id)
+        self.invalidate(capa.id)
         self.commit("Tampón de clonar")
         return True
 

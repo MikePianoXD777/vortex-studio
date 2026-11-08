@@ -1,9 +1,15 @@
 """El lienzo de Vortex Photo: dibujo, selección, mover/escalar/girar, guías, zoom.
 
-El render lo hace el motor (`Renderer.render`) a la escala de la vista, con un
-temporizador de un solo disparo que junta los cambios: si llegan veinte
-`touch()` mientras se arrastra, se dibuja una vez. Mientras algo se arrastra
-se usa una escala más chica («borrador») y al soltar, la buena.
+El render lo hace el motor (`Renderer.render`) a la escala de la vista, **en un
+hilo aparte** (un `QThreadPool` de un solo hilo), con un temporizador de un solo
+disparo que junta los cambios: si llegan veinte `touch()` mientras se arrastra,
+se dibuja una vez. El hilo recibe una copia del documento (`doc.copy()`), y el
+`Renderer` solo se toca dentro de `session.render_lock`. Cada trabajo lleva un
+número de generación: un resultado de un documento que ya se reemplazó se
+descarta, y mientras llega el nuevo se sigue mostrando la imagen anterior.
+Solo hay un dibujo en curso y uno pendiente: lo último que se pidió siempre
+se dibuja y gana. Mientras algo se arrastra se usa una escala más chica
+(«borrador») y al soltar, la buena.
 
 Todo lo que se dibuja encima (caja de selección, asas, guías, recorte, cursor
 del pincel) lo pinta este widget con `QPainter`; no pasa por el motor.
@@ -16,7 +22,7 @@ import math
 from dataclasses import replace
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QCoreApplication, QEvent, QObject, QPointF, QRectF, QRunnable, Qt, QThreadPool, QTimer, Signal
 from PySide6.QtGui import (
     QBrush,
     QColor,
@@ -57,6 +63,33 @@ def _hex_alpha(color: str, alpha: float) -> QColor:
     return c
 
 
+class _Relay(QObject):
+    """Lleva el resultado del hilo de dibujo al hilo de la interfaz (señal en cola)."""
+
+    done = Signal(int, object, object, float)       # generación, QImage o None, error o None, escala
+
+
+class _RenderJob(QRunnable):
+    def __init__(self, session, doc, scale, hide, original, gen, relay) -> None:
+        super().__init__()
+        self.setAutoDelete(True)
+        self.session, self.doc, self.scale = session, doc, scale
+        self.hide, self.original, self.gen, self.relay = hide, original, gen, relay
+        # Se lee aquí, en el hilo de la interfaz: así una función sustituida (pruebas) también cuenta.
+        self.render = session.renderer.render
+
+    def run(self) -> None:
+        img, error = None, None
+        try:
+            with self.session.render_lock:
+                self.session.apply_pending_invalidations()
+                px = self.render(self.doc, self.scale, hide=self.hide, original=self.original)
+            img = to_qimage(px)
+        except Exception as e:          # un fallo del motor no debe tumbar la ventana
+            error = e
+        self.relay.done.emit(self.gen, img, error, self.scale)
+
+
 class CanvasView(QWidget):
     files_dropped = Signal(list, float, float)      # rutas, x y y en el lienzo
     image_dropped = Signal(object, float, float)    # una QImage soltada
@@ -79,6 +112,14 @@ class CanvasView(QWidget):
         self._timer.setSingleShot(True)
         self._timer.setInterval(8)
         self._timer.timeout.connect(self._render)
+        self._pool = QThreadPool(self)
+        self._pool.setMaxThreadCount(1)             # un solo dibujo a la vez, en orden
+        self._relay = _Relay()
+        self._relay.done.connect(self._on_rendered, Qt.QueuedConnection)
+        self._gen = 0                  # número del último trabajo lanzado
+        self._min_gen = 0              # lo anterior a esto es de un documento que ya no está
+        self._running = False
+        self._again = False            # llegó otro pedido mientras se dibujaba
 
         self._drag: dict | None = None
         self._guides: list = []
@@ -189,12 +230,22 @@ class CanvasView(QWidget):
             self.request_render()
 
     def flush(self) -> None:
-        """Dibuja ya lo pendiente (para las pruebas y para capturas)."""
+        """Dibuja ya lo pendiente y espera el resultado (para las pruebas y las capturas)."""
         if self._timer.isActive():
             self._timer.stop()
             self._render()
-        elif self._frame is None:
+        elif self._frame is None and not self._running:
             self._render()
+        self.wait_idle()
+
+    def wait_idle(self) -> None:
+        """Espera a que no haya dibujo en curso ni pendiente."""
+        while self._running or self._again or self._timer.isActive():
+            if self._timer.isActive():
+                self._timer.stop()
+                self._render()
+            self._pool.waitForDone(50)
+            QCoreApplication.processEvents()
 
     def render_scale(self, draft: bool) -> float:
         d = self.s.doc
@@ -214,19 +265,37 @@ class CanvasView(QWidget):
         return hide
 
     def _render(self) -> None:
+        """Lanza el dibujo en el hilo (o lo deja pendiente si ya hay uno en curso)."""
+        if self._running:
+            self._again = True
+            return
         draft = self._draft
         self._draft = False
+        self._again = False
         scale = self.render_scale(draft)
         try:
-            px = self.s.renderer.render(self.s.doc, scale, hide=self._hidden(),
-                                        original=self.show_original)
-            self._frame = to_qimage(px)
-        except Exception as error:      # un fallo del motor no debe tumbar la ventana
+            doc = self.s.doc.copy()
+        except Exception as error:
             self.s.message.emit(f"No se pudo dibujar: {error}")
             return
-        self.last_render_scale = scale
-        self.render_count += 1
-        self.update()
+        self._gen += 1
+        self._running = True
+        self._pool.start(_RenderJob(self.s, doc, scale, self._hidden(), self.show_original,
+                                    self._gen, self._relay))
+
+    def _on_rendered(self, gen: int, img, error, scale: float) -> None:
+        self._running = False
+        if gen >= self._min_gen:
+            if error is not None:
+                self.s.message.emit(f"No se pudo dibujar: {error}")
+            elif img is not None:
+                self._frame = img
+                self.last_render_scale = scale
+                self.render_count += 1
+                self.update()
+        if self._again:
+            self._again = False
+            self._render()
 
     def _on_live(self) -> None:
         self.request_render(draft=self._drag is not None)
@@ -250,6 +319,7 @@ class CanvasView(QWidget):
         self._drop_editor()
         self._drop_crop()
         self._frame = None
+        self._min_gen = self._gen + 1         # el dibujo que vuelva del documento anterior no vale
         self.fit()
         self.request_render()
 
@@ -657,7 +727,7 @@ class CanvasView(QWidget):
                 rect = cropmod.drag_handle(m.current_rect(), handle, lx, ly, m.full_rect(), None)
                 c.crop, nt = m.result(rect)
                 c.transform = replace(nt, rotation=t0.rotation)
-                self.s.renderer.invalidate(c.id)
+                self.s.invalidate(c.id)
                 self._hud = f"{round(c.transform.width)} × {round(c.transform.height)}"
                 self.s.touch()
                 return
@@ -742,7 +812,7 @@ class CanvasView(QWidget):
                 capa = self.s.doc.layer(d["orig"][0][0].id)
                 if capa is not None:
                     self.s.remap_mask(capa, cr["crop0"])
-                    self.s.renderer.invalidate(capa.id)
+                    self.s.invalidate(capa.id)
                 self.s.commit("Recortar")
             else:
                 self.s.commit("Cambiar tamaño")
@@ -1152,7 +1222,7 @@ class CanvasView(QWidget):
         capa.crop = crop
         capa.transform = t
         self.s.remap_mask(capa, crop0)
-        self.s.renderer.invalidate(capa.id)
+        self.s.invalidate(capa.id)
         if cambio:
             self.s.commit("Recortar")
         else:

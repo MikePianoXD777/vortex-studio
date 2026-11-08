@@ -306,7 +306,7 @@ class LayersPanel(QWidget):
         try:
             t = layer.transform
             scale = (THUMB - 2) / max(t.width, t.height, 1.0)
-            px = self.s.renderer.render_layer(self.s.doc, layer, scale)
+            px = self.s.thumb_renderer.render_layer(self.s.doc, layer, scale)
             pm = QPixmap.fromImage(to_qimage(px))
         except Exception:
             return None

@@ -570,7 +570,7 @@ class EditPanel(QWidget):
         if c is None or self._syncing or c.locked:
             return
         setattr(c.adjustments, campo, float(valor))
-        self.s.renderer.invalidate(c.id)
+        self.s.invalidate(c.id)
         self.s.touch()
 
     def reset_group(self, nombre: str) -> None:
@@ -582,7 +582,7 @@ class EditPanel(QWidget):
             return
         for campo, *_ in campos:
             setattr(c.adjustments, campo, 0.0)
-        self.s.renderer.invalidate(c.id)
+        self.s.invalidate(c.id)
         self.s.commit(f"Restablecer {nombre.lower()}")
 
     def auto_enhance(self) -> None:
@@ -599,7 +599,7 @@ class EditPanel(QWidget):
         else:
             adj = auto_enhance(np.zeros((8, 8, 4), np.uint8))
         c.adjustments = adj
-        self.s.renderer.invalidate(c.id)
+        self.s.invalidate(c.id)
         self.s.commit("Mejorar con un clic")
 
     # --- curva y HSL --------------------------------------------------------------------
@@ -652,7 +652,7 @@ class EditPanel(QWidget):
         if c is None or self._syncing or c.locked:
             return
         getattr(c.effects, clave).enabled = on
-        self.s.renderer.invalidate(c.id)
+        self.s.invalidate(c.id)
         self.s.commit(titulo if on else f"Quitar {titulo.lower()}")
 
     def _fx_attr(self, clave: str, attr: str, valor, titulo: str) -> None:
@@ -662,7 +662,7 @@ class EditPanel(QWidget):
         e = getattr(c.effects, clave)
         setattr(e, attr, valor)
         e.enabled = True
-        self.s.renderer.invalidate(c.id)
+        self.s.invalidate(c.id)
         self.s.commit(titulo)
 
     def _fx_live(self, clave: str, attr: str, valor: float) -> None:
