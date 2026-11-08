@@ -286,7 +286,9 @@ class CanvasView(QWidget):
     def _on_rendered(self, gen: int, img, error, scale: float) -> None:
         self._running = False
         if gen >= self._min_gen:
-            if error is not None:
+            if isinstance(error, KeyError) and (self._again or self._timer.isActive()):
+                pass        # un asset soltado mientras se dibujaba un documento viejo: ya viene otro dibujo
+            elif error is not None:
                 self.s.message.emit(f"No se pudo dibujar: {error}")
             elif img is not None:
                 self._frame = img

@@ -30,12 +30,15 @@ from vortex_studio.photo.document import (
     Layer,
     Transform,
     layer_from_dict,
+    document_to_dict,
     layer_to_dict,
     new_id,
 )
 from vortex_studio.photo.history import PhotoHistory
+from vortex_studio.photo._util import resize_gray
 from vortex_studio.photo.render import Renderer, from_qimage
 from vortex_studio.photo.text import text_height
+from vortex_studio.ui.photo import aniso
 from vortex_studio.ui.photo import crop as cropmod
 from vortex_studio.ui.photo import geometry as geo
 
@@ -63,6 +66,7 @@ class PhotoSession(QObject):
         self.brush = paint.Brush(size=40, hardness=0.8, opacity=1.0, color="#7c5cff")
         self.tool = "move"
         self.clipboard: list[dict] = []
+        self.clipboard_pixels: dict[str, np.ndarray] = {}     # id viejo → píxeles (sobreviven a otro diseño)
         self._paste_count = 0
         self.uploads: list[tuple[str, np.ndarray, str]] = []     # (nombre, miniatura RGBA, id en el almacén)
         self.wand_tolerance = 32.0
@@ -84,6 +88,7 @@ class PhotoSession(QObject):
         self.history = PhotoHistory()
         self.doc = doc
         self.history.reset(doc)
+        self._saved = document_to_dict(doc)
         self.selection: list[str] = []
         self.path: Path | None = None
         self.dirty = False
@@ -134,7 +139,8 @@ class PhotoSession(QObject):
             return False
         self.path = destino
         self.dirty = False
-        self.store.collect(self.history.assets_in_use() | self.doc.assets())
+        self.collect_assets()
+        self._saved = document_to_dict(self.doc)
         self.committed.emit("Guardado")
         return True
 
@@ -184,9 +190,21 @@ class PhotoSession(QObject):
     def touch(self) -> None:
         self.live.emit()
 
+    def _keep_assets(self) -> set[str]:
+        """Lo que no se puede soltar del almacén: historial, diseño y subidas de la sesión."""
+        return (self.history.assets_in_use() | self.doc.assets()
+                | {u[2] for u in self.uploads if u[2]})
+
+    def collect_assets(self) -> None:
+        """Suelta las imágenes que ya nadie usa (cada trazo agrega una completa)."""
+        keep = self._keep_assets()
+        if len(self.store) > len(keep):
+            self.store.collect(keep)
+
     def commit(self, label: str) -> None:
         self.history.push(self.doc, label)
         self.dirty = True
+        self.collect_assets()
         self.live.emit()
         self.committed.emit(label)
 
@@ -201,7 +219,8 @@ class PhotoSession(QObject):
             return False
         self.doc = doc
         self.selection = [i for i in self.selection if doc.layer(i) is not None]
-        self.dirty = True
+        # Si se deshace (o rehace) justo hasta lo guardado, ya no hay cambios sin guardar.
+        self.dirty = self._saved is None or document_to_dict(doc) != self._saved
         self.live.emit()
         self.committed.emit(prefijo)
         self.selection_changed.emit()
@@ -326,6 +345,11 @@ class PhotoSession(QObject):
         if not sel:
             return False
         self.clipboard = [layer_to_dict(c) for c in sel]
+        self.clipboard_pixels = {}
+        for c in sel:
+            for aid in (c.asset, c.mask):
+                if aid and self.store.has(aid):
+                    self.clipboard_pixels[aid] = self.store.get(aid)
         self._paste_count = 0
         try:
             # La marca en el portapapeles real distingue «copié aquí» de
@@ -366,6 +390,12 @@ class PhotoSession(QObject):
             capa = layer_from_dict(d)
             capa.id = new_id()
             capa.locked = False
+            for campo in ("asset", "mask"):
+                aid = getattr(capa, campo)
+                if aid and not self.store.has(aid):
+                    px = self.clipboard_pixels.get(aid)
+                    # Se vuelve a registrar en el almacén de este diseño (puede ser otro).
+                    setattr(capa, campo, self.store.put(px) if px is not None else None)
             capa.transform.cx += PASTE_OFFSET * self._paste_count
             capa.transform.cy += PASTE_OFFSET * self._paste_count
             nuevas.append(capa)
@@ -517,6 +547,14 @@ class PhotoSession(QObject):
                     continue
                 t.width *= s
                 t.height *= s
+                c.stroke_width *= s
+                c.corner_radius *= s
+                fx = c.effects
+                fx.shadow.blur *= s
+                fx.shadow.dx *= s
+                fx.shadow.dy *= s
+                fx.outline.width *= s
+                fx.glow.radius *= s
                 if c.kind == KIND_TEXT:
                     c.font_size *= s
                     c.letter_spacing *= s
@@ -535,6 +573,13 @@ class PhotoSession(QObject):
 
     # --- pintar -----------------------------------------------------------
 
+    def _has_pixels(self, layer: Layer | None) -> bool:
+        """La capa tiene su imagen en el almacén (si no, no se puede pintar sobre ella)."""
+        if layer is None or not layer.asset or not self.store.has(layer.asset):
+            self.message.emit("A esta capa le falta su imagen")
+            return False
+        return True
+
     def pixel_point(self, layer: Layer, x: float, y: float) -> tuple[float, float]:
         """Un punto del lienzo, en píxeles de la imagen original de la capa."""
         w, h = self.store.size(layer.asset)
@@ -549,9 +594,14 @@ class PhotoSession(QObject):
                 cy0 + (ly / max(1e-6, t.height) + 0.5) * ch)
 
     def pixels_per_unit(self, layer: Layer) -> float:
+        return self.pixels_per_unit_xy(layer)[0]
+
+    def pixels_per_unit_xy(self, layer: Layer) -> tuple[float, float]:
+        """Píxeles de la imagen por unidad del lienzo, en x y en y (difieren si la capa está estirada)."""
         w, h = self.store.size(layer.asset)
         cw = layer.crop[2] if layer.crop else w
-        return cw / max(1e-6, layer.transform.width)
+        ch = layer.crop[3] if layer.crop else h
+        return (cw / max(1e-6, layer.transform.width), ch / max(1e-6, layer.transform.height))
 
     def paint_target(self, create: bool) -> Layer | None:
         sel = self.single()
@@ -578,6 +628,8 @@ class PhotoSession(QObject):
                 self.message.emit("Selecciona una foto o un dibujo para borrar")
                 return False
             nueva = False
+            if not self._has_pixels(capa):
+                return False
         else:
             capa = self.paint_target(create=False)
             nueva = capa is None
@@ -587,14 +639,24 @@ class PhotoSession(QObject):
                     self.message.emit("La capa está bloqueada")
                     return False
                 capa = self.paint_target(create=True)
-        k = self.pixels_per_unit(capa)
+            elif not self._has_pixels(capa):
+                return False
+        ax, ay = self.pixels_per_unit_xy(capa)
         pts = []
         for x, y in points:
             u, v = self.pixel_point(capa, x, y)
             pts.append((u, v, 1.0))
-        brush = paint.Brush(self.brush.size * k, self.brush.hardness, self.brush.opacity,
-                            self.brush.color, "erase" if erase else "paint")
-        capa.asset = self.store.put(paint.stroke(self.store.get(capa.asset), pts, brush))
+        pixels = self.store.get(capa.asset)
+        if aniso.es_estirada(ax, ay):
+            # Capa estirada: el pincel se calcula redondo en el lienzo, no en la imagen.
+            cob = aniso.cobertura(pixels.shape[:2], pts, self.brush.size, self.brush.hardness,
+                                  self.brush.opacity, ax, ay)
+            nuevo = aniso.pintar(pixels, cob, self.brush.color, erase)
+        else:
+            brush = paint.Brush(self.brush.size * ax, self.brush.hardness, self.brush.opacity,
+                                self.brush.color, "erase" if erase else "paint")
+            nuevo = paint.stroke(pixels, pts, brush)
+        capa.asset = self.store.put(nuevo)
         self.invalidate(capa.id)
         if nueva:
             self.selection = [capa.id]
@@ -615,7 +677,10 @@ class PhotoSession(QObject):
             m = np.array(self.store.get(layer.mask))
             if m.ndim == 3:
                 m = m[..., 0]
-            return np.array(m, np.uint8)
+            m = np.array(m, np.uint8)
+            if m.shape != px.shape[:2]:          # quedó de otro recorte: se acomoda al actual
+                m = resize_gray(m, px.shape[1], px.shape[0])
+            return m
         return np.full(px.shape[:2], 255, np.uint8)
 
     def invalidate(self, layer_id: str) -> None:
@@ -660,11 +725,20 @@ class PhotoSession(QObject):
         if capa is None or capa.kind != KIND_IMAGE or capa.locked or not capa.asset or not points:
             self.message.emit("Selecciona una foto para pintar su máscara")
             return False
-        k = self.pixels_per_unit(capa)
+        if not self._has_pixels(capa):
+            return False
+        ax, ay = self.pixels_per_unit_xy(capa)
         pts = [(*self._mask_point(capa, x, y), 1.0) for x, y in points]
-        brush = paint.Brush(self.brush.size * k, self.brush.hardness, 1.0, "#ffffff",
-                            "erase" if erase else "paint")
-        capa.mask = self.store.put(paint.stroke_mask(self._mask_of(capa), pts, brush))
+        actual = self._mask_of(capa)
+        if aniso.es_estirada(ax, ay):
+            cob = aniso.cobertura(actual.shape[:2], pts, self.brush.size, self.brush.hardness,
+                                  1.0, ax, ay)
+            nueva = aniso.pintar_mascara(actual, cob, erase)
+        else:
+            brush = paint.Brush(self.brush.size * ax, self.brush.hardness, 1.0, "#ffffff",
+                                "erase" if erase else "paint")
+            nueva = paint.stroke_mask(actual, pts, brush)
+        capa.mask = self.store.put(nueva)
         self.commit("Borrar con la máscara" if erase else "Pintar la máscara")
         return True
 
@@ -672,6 +746,8 @@ class PhotoSession(QObject):
         capa = self.single()
         if capa is None or capa.kind != KIND_IMAGE or capa.locked or not capa.asset:
             self.message.emit("Selecciona una foto para usar la varita")
+            return False
+        if not self._has_pixels(capa):
             return False
         u, v = self._mask_point(capa, x, y)
         px = self._crop_pixels(capa)
@@ -693,6 +769,8 @@ class PhotoSession(QObject):
         if capa is None or capa.kind != KIND_IMAGE or capa.locked or not capa.asset:
             self.message.emit("Selecciona una foto para quitarle el fondo")
             return False
+        if not self._has_pixels(capa):
+            return False
         capa.mask = self.store.put(paint.remove_background(self._crop_pixels(capa)))
         self.commit("Quitar fondo")
         return True
@@ -711,6 +789,8 @@ class PhotoSession(QObject):
             return False
         if self.clone_source is None:
             self.message.emit("Alt + clic para elegir de dónde copiar")
+            return False
+        if not self._has_pixels(capa):
             return False
         k = self.pixels_per_unit(capa)
         pts = [(*self.pixel_point(capa, x, y), 1.0) for x, y in points]

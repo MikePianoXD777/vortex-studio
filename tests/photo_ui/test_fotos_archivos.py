@@ -365,3 +365,29 @@ def test_abrir_pregunta_si_hay_cambios(foto, s, png, monkeypatch):
     responder(monkeypatch, QMessageBox.Cancel, [])
     assert not foto.open_file(png)
     assert len(s.doc.layers) == 1
+
+
+# --- cambios sin guardar y subidas ------------------------------------------------------------------
+
+def test_deshacer_hasta_lo_guardado_quita_la_marca_de_cambios(s, tmp_path):
+    s.add_shape("rect")
+    assert s.save(tmp_path / "a.vphoto")
+    assert not s.dirty
+    s.move_selected(10, 0)
+    assert s.dirty
+    s.undo()
+    assert not s.dirty                                # volvió justo a lo guardado
+    s.redo()
+    assert s.dirty
+
+
+def test_las_subidas_de_la_sesion_siguen_vivas_tras_guardar(s, tmp_path):
+    from ayudas import foto_de_prueba
+    capa = s.add_image(foto_de_prueba(80, 60))
+    asset = capa.asset
+    s.select([capa.id])
+    s.delete_selected()
+    s.history.reset(s.doc)                            # ya nada del historial la usa
+    assert s.save(tmp_path / "a.vphoto")
+    assert s.store.has(asset)
+    assert any(u[2] == asset for u in s.uploads)

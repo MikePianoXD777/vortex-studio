@@ -169,8 +169,6 @@ def test_el_pincel_cae_donde_se_ve_el_punto_del_lienzo(s, rot, fh, fv, crop):
     assert abs(c[0] - objetivo[0]) < 2.5 and abs(c[1] - objetivo[1]) < 2.5, (c, objetivo)
 
 
-@pytest.mark.xfail(strict=True, reason="paint_stroke usa un solo píxeles-por-unidad (ancho): en una capa estirada "
-                   "el borrador/pincel sale elíptico en el lienzo (session.py: pixels_per_unit y paint_stroke)")
 def test_el_borrador_es_redondo_en_una_capa_estirada(s):
     s.new_document(400, 300)
     capa = s.add_image(np.full((100, 100, 4), 255, np.uint8))
@@ -191,8 +189,6 @@ def test_el_borrador_es_redondo_en_una_capa_estirada(s):
 
 # --- máscaras y recortes -------------------------------------------------------------
 
-@pytest.mark.xfail(strict=True, reason="session.wand_click: la máscara guardada tiene el tamaño del recorte anterior; "
-                   "tras recortar `np.where(sel > 127, 0, actual)` mezcla formas distintas y truena (session.py ~ _mask_of/wand_click)")
 def test_varita_despues_de_recortar_no_truena(s):
     s.new_document(300, 300)
     capa = s.add_image(degradado(200, 200))
@@ -204,8 +200,6 @@ def test_varita_despues_de_recortar_no_truena(s):
     s.wand_click(capa.transform.cx, capa.transform.cy)
 
 
-@pytest.mark.xfail(strict=True, reason="canvas.apply_crop no re-muestrea la máscara: el motor la estira sobre la caja "
-                   "nueva, así que tras recortar la máscara queda desalineada (canvas.py apply_crop ~1100)")
 def test_la_mascara_sigue_alineada_despues_de_recortar(s):
     s.new_document(200, 100, background=None)
     capa = s.add_image(mitades(200, 100))
@@ -213,10 +207,12 @@ def test_la_mascara_sigue_alineada_despues_de_recortar(s):
     m = np.full((100, 200), 255, np.uint8)
     m[:, :100] = 0                                    # se oculta toda la mitad roja
     capa.mask = s.store.put(m)
-    # recortar a la mitad azul (derecha) igual que apply_crop: crop + caja nueva
-    capa.crop = (100.0, 0.0, 100.0, 100.0)
-    capa.transform.width, capa.transform.height = 100.0, 100.0
-    capa.transform.cx, capa.transform.cy = 150.0, 50.0
+    # recortar a la mitad azul (derecha) con la herramienta de recortar de la interfaz
+    from vortex_studio.ui.photo.crop import CropMath
+    mate = CropMath(capa, s.store.size(capa.asset))
+    crop0 = capa.crop
+    capa.crop, capa.transform = mate.result((0.0, -50.0, 100.0, 50.0))
+    s.remap_mask(capa, crop0)
     px = s.renderer.render(s.doc, 1.0)
     visible = px[:, 100:, 3] > 200
     assert visible.mean() > 0.95                     # toda la mitad azul debe seguir visible
@@ -249,8 +245,6 @@ def test_quitar_fondo_en_capa_recortada_no_truena_y_aplica(s):
 
 # --- almacén, portapapeles y memoria -----------------------------------------------------
 
-@pytest.mark.xfail(strict=True, reason="copiar y pegar entre diseños: el portapapeles guarda ids del almacén viejo; en el "
-                   "diseño nuevo la capa pegada apunta a una imagen que no existe (session.py paste/new_document)")
 def test_pegar_en_otro_diseno_trae_la_imagen(s):
     capa = s.add_image(degradado(100, 100))
     s.select([capa.id])
@@ -262,8 +256,6 @@ def test_pegar_en_otro_diseno_trae_la_imagen(s):
             assert s.store.has(c.asset)
 
 
-@pytest.mark.xfail(strict=True, reason="misma causa: paint_stroke/mask_stroke/wand_click/clone_stroke llaman a "
-                   "store.size/get sin comprobar store.has y lanzan KeyError (session.py:545 pixels_per_unit, 600 y 660)")
 def test_pegar_en_otro_diseno_y_pintar_no_truena_con_el_almacen_vacio(s):
     """Aunque la imagen falte, nada debe lanzar una excepción sin atrapar."""
     capa = s.add_image(degradado(100, 100))
@@ -284,8 +276,6 @@ def test_pegar_en_otro_diseno_y_pintar_no_truena_con_el_almacen_vacio(s):
     s.renderer.render(s.doc, 1.0)
 
 
-@pytest.mark.xfail(strict=True, reason="la sesión solo llama a store.collect al guardar: cada trazo agrega una imagen "
-                   "completa y las que salen del historial (límite 100) se quedan en memoria (session.commit)")
 def test_el_almacen_no_crece_sin_limite_con_muchos_trazos(s):
     s.new_document(512, 512)
     s.set_tool("brush")
@@ -380,8 +370,6 @@ def test_texto_editado_y_deshecho_no_deja_capas_fantasma(s):
     assert s.doc.layer(t.id).transform.height == pytest.approx(alto)
 
 
-@pytest.mark.xfail(strict=True, reason="session.resize_document escala posición y tamaño pero no stroke_width, "
-                   "corner_radius ni sombra/contorno/brillo (session.py resize_document)")
 def test_redimensionar_el_diseno_escala_efectos_y_trazos(s):
     """Un lienzo al doble de tamaño debe verse igual de proporcionado: sombra, contorno,
     radio de esquina y grosor de borde también crecen."""
