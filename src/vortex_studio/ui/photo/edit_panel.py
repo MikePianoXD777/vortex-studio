@@ -59,7 +59,7 @@ GROUPS = [
     ("Color", [("temperature", "Temperatura", -100, 100, 1), ("tint", "Matiz", -100, 100, 1),
                ("vibrance", "Intensidad", -100, 100, 1), ("saturation", "Saturación", -100, 100, 1)]),
     ("Detalle", [("clarity", "Claridad", -100, 100, 1), ("sharpen", "Nitidez", 0, 100, 1),
-                 ("blur", "Desenfoque", 0, 100, 1)]),
+                 ("blur", "Desenfoque", 0, 100, 1), ("softness", "Suavidad", 0, 100, 1)]),
     ("Efectos", [("vignette", "Viñeta", 0, 100, 1), ("grain", "Grano", 0, 100, 1)]),
 ]
 

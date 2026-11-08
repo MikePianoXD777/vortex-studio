@@ -28,7 +28,7 @@ from vortex_studio.photo import templates
 from vortex_studio.photo.document import Adjustments, Filter
 from vortex_studio.photo.filters import FILTERS
 from vortex_studio.ui import theme
-from vortex_studio.ui.photo.controls import PSlider, Segmented, heading, muted
+from vortex_studio.ui.photo.controls import BAR_SPIN_STYLE, PSlider, Segmented, heading, muted
 from vortex_studio.ui.photo.session import PhotoSession
 
 
@@ -130,6 +130,10 @@ class SizePicker(QWidget):
             s.setValue(v)
             s.setSuffix(" px")
             s.setKeyboardTracking(False)
+            s.setButtonSymbols(QSpinBox.NoButtons)
+            s.setStyleSheet(BAR_SPIN_STYLE)
+            s.setAlignment(Qt.AlignCenter)
+            s.setFixedHeight(32)
         self.lock = QCheckBox("Mantener proporción")
         self.lock.setChecked(True)
         self.w.valueChanged.connect(self._w)
@@ -184,7 +188,7 @@ class NewDesignDialog(QDialog):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Nuevo diseño")
-        self.setMinimumWidth(380)
+        self.setMinimumWidth(500)
         lay = QVBoxLayout(self)
         lay.setSpacing(10)
         lay.addWidget(heading("Nuevo diseño"))
