@@ -105,9 +105,9 @@ def test_cambiar_tamano_sin_adaptar(s):
 
 
 def test_cambiar_al_mismo_tamano_no_agrega_paso(s):
-    n = s.history._pos
+    n = len(s.history)
     s.resize_document(1080, 1080)
-    assert s.history._pos == n
+    assert len(s.history) == n
 
 
 def test_cambiar_tamano_con_el_dialogo(foto, s, monkeypatch):

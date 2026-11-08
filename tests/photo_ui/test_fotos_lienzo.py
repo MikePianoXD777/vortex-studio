@@ -76,10 +76,10 @@ def test_rectangulo_con_shift_conserva_lo_anterior(s, lienzo, dos):
 
 
 def test_seleccionar_no_toca_el_historial(s, lienzo, img):
-    n = s.history._pos
+    n = len(s.history)
     clic(lienzo, 540, 540)
     clic(lienzo, 50, 50)
-    assert s.history._pos == n
+    assert len(s.history) == n
     assert not s.history.can_redo
 
 
@@ -92,20 +92,20 @@ def test_capa_oculta_no_se_selecciona_con_clic(s, lienzo, img):
 # --- mover -------------------------------------------------------------------------
 
 def test_arrastrar_mueve_la_capa_y_deja_un_solo_paso(s, lienzo, img):
-    pasos = s.history._pos
+    pasos = len(s.history)
     arrastrar(lienzo, (540, 540), (640, 590))
     assert centro(img) == pytest.approx((640, 590))
-    assert s.history._pos == pasos + 1
+    assert len(s.history) == pasos + 1
     assert s.history.undo_label == "Mover"
 
 
 def test_un_clic_sin_arrastrar_no_mueve_ni_guarda_paso(s, lienzo, img):
-    pasos = s.history._pos
+    pasos = len(s.history)
     presionar(lienzo, 540, 540)
     mover(lienzo, 541, 541)          # menos que el umbral
     soltar(lienzo, 541, 541)
     assert centro(img) == (540, 540)
-    assert s.history._pos == pasos
+    assert len(s.history) == pasos
 
 
 def test_deshacer_y_rehacer_el_movimiento(s, lienzo, img):
@@ -118,11 +118,11 @@ def test_deshacer_y_rehacer_el_movimiento(s, lienzo, img):
 
 def test_una_capa_bloqueada_no_se_mueve(s, lienzo, img):
     s.set_locked(img.id, True)
-    pasos = s.history._pos
+    pasos = len(s.history)
     arrastrar(lienzo, (540, 540), (700, 700))
     assert centro(s.doc.layer(img.id)) == (540, 540)
     assert s.selection == [img.id]            # se puede seleccionar
-    assert s.history._pos == pasos
+    assert len(s.history) == pasos
 
 
 def test_las_capas_bloqueadas_no_muestran_asas(s, lienzo, img):
@@ -228,17 +228,17 @@ def test_flechas_con_shift_empujan_diez(s, lienzo, img):
 
 
 def test_flechas_sin_seleccion_no_hacen_nada(s, lienzo, img):
-    pasos = s.history._pos
+    pasos = len(s.history)
     tecla(lienzo, Qt.Key_Right)
-    assert s.history._pos == pasos and centro(img) == (540, 540)
+    assert len(s.history) == pasos and centro(img) == (540, 540)
 
 
 def test_flechas_no_mueven_una_capa_bloqueada(s, lienzo, img):
     s.set_locked(img.id, True)
     s.select([img.id])
-    pasos = s.history._pos
+    pasos = len(s.history)
     tecla(lienzo, Qt.Key_Right)
-    assert centro(s.doc.layer(img.id)) == (540, 540) and s.history._pos == pasos
+    assert centro(s.doc.layer(img.id)) == (540, 540) and len(s.history) == pasos
 
 
 def test_flechas_se_deshacen_de_a_una(s, lienzo, img):
@@ -509,7 +509,7 @@ def test_espacio_y_arrastrar_desplaza(s, lienzo, img):
     lienzo.zoom_100()
     o = lienzo.origin
     tecla(lienzo, Qt.Key_Space)
-    pasos = s.history._pos
+    pasos = len(s.history)
     presionar(lienzo, 540, 540)
     mover(lienzo, 540, 540)
     ev = lienzo.to_screen(540, 540)
@@ -521,7 +521,7 @@ def test_espacio_y_arrastrar_desplaza(s, lienzo, img):
     assert lienzo.origin.x() == pytest.approx(o.x() + 40)
     assert lienzo.origin.y() == pytest.approx(o.y() + 25)
     assert centro(img) == (540, 540)             # no movió la capa
-    assert s.history._pos == pasos
+    assert len(s.history) == pasos
 
 
 def test_no_se_pierde_el_lienzo_al_desplazar(s, lienzo):

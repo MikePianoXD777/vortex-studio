@@ -58,11 +58,11 @@ def test_un_clic_pinta_un_punto(s, lienzo):
 
 def test_el_trazo_se_ve_mientras_se_arrastra_y_no_toca_el_historial(s, lienzo):
     s.set_tool("brush")
-    n = s.history._pos
+    n = len(s.history)
     presionar(lienzo, 200, 200)
     mover(lienzo, 300, 300)
     assert len(lienzo._stroke) == 2
-    assert s.history._pos == n
+    assert len(s.history) == n
     soltar(lienzo, 300, 300)
     assert lienzo._stroke == []
 
@@ -160,8 +160,8 @@ def test_tampon_pide_el_origen_con_alt(s, lienzo):
     s.set_tool("clone")
     arrastrar(lienzo, (540, 540), (560, 540))          # sin origen
     assert s.clone_source is None and mensajes
-    n = s.history._pos
-    assert s.history._pos == n
+    n = len(s.history)
+    assert len(s.history) == n
     presionar(lienzo, 480, 480, ALT)
     soltar(lienzo, 480, 480, ALT)
     assert s.clone_source is not None

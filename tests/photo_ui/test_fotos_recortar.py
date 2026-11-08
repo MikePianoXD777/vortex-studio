@@ -111,11 +111,11 @@ def test_cancelar_no_cambia_nada(s, lienzo, img):
     lienzo.begin_crop()
     lienzo.set_crop_ratio(1.0)
     lienzo.set_straighten(10)
-    n = s.history._pos
+    n = len(s.history)
     lienzo.cancel_crop()
     capa = s.doc.layer(img.id)
     assert capa.crop is None and capa.transform.rotation == 0
-    assert s.history._pos == n
+    assert len(s.history) == n
 
 
 def test_enderezar_gira_la_capa(s, lienzo, img):
@@ -130,9 +130,9 @@ def test_enderezar_gira_la_capa(s, lienzo, img):
 
 def test_aplicar_sin_cambios_no_agrega_paso(s, lienzo, img):
     lienzo.begin_crop()
-    n = s.history._pos
+    n = len(s.history)
     assert not lienzo.apply_crop()
-    assert s.history._pos == n
+    assert len(s.history) == n
 
 
 def test_enter_aplica_y_escape_cancela(s, lienzo, img):

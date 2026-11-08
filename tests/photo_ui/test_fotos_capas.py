@@ -334,9 +334,9 @@ def test_reordenar_arrastrando_en_la_lista(foto, s, tres):
 
 def test_mover_una_fila_donde_ya_esta_no_hace_nada(foto, s, tres):
     p = foto.layers_panel
-    n = s.history._pos
+    n = len(s.history)
     assert not p.move_row(0, 0)
-    assert s.history._pos == n
+    assert len(s.history) == n
 
 
 def test_ojo_y_candado_de_la_lista(foto, s, tres):
@@ -370,14 +370,14 @@ def test_arrastrar_la_transparencia_es_un_solo_paso(foto, s, tres):
     a, *_ = tres
     s.select([a.id])
     p = foto.layers_panel
-    n = s.history._pos
+    n = len(s.history)
     p.opacity._slider.sliderPressed.emit()
     for v in (90, 70, 50, 30):
         p.opacity._slider.setValue(v)
-    assert s.history._pos == n                       # nada en el historial mientras se arrastra
+    assert len(s.history) == n                       # nada en el historial mientras se arrastra
     assert s.doc.layer(a.id).opacity == pytest.approx(0.3)
     p.opacity._slider.sliderReleased.emit()
-    assert s.history._pos == n + 1
+    assert len(s.history) == n + 1
     s.undo()
     assert s.doc.layer(a.id).opacity == 1.0
 

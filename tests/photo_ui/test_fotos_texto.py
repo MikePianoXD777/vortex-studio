@@ -26,14 +26,14 @@ def test_doble_clic_en_un_texto_lo_edita(s, lienzo, texto):
 
 def test_escribir_cambia_el_texto_y_termina_en_un_paso(s, lienzo, texto):
     doble_clic(lienzo, *centro(texto))
-    n = s.history._pos
+    n = len(s.history)
     lienzo.editor().setPlainText("Hola")
     lienzo.editor().setPlainText("Hola mundo")
     assert s.doc.layer(texto.id).text == "Hola mundo"
-    assert s.history._pos == n                    # nada en el historial mientras se escribe
+    assert len(s.history) == n                    # nada en el historial mientras se escribe
     lienzo.end_text_edit()
     assert not lienzo.is_editing()
-    assert s.history._pos == n + 1 and s.history.undo_label == "Editar texto"
+    assert len(s.history) == n + 1 and s.history.undo_label == "Editar texto"
     s.undo()
     assert s.doc.layer(texto.id).text != "Hola mundo"
     s.redo()
@@ -58,9 +58,9 @@ def test_clic_fuera_termina_la_edicion(s, lienzo, texto):
 
 def test_editar_sin_cambiar_no_agrega_paso(s, lienzo, texto):
     doble_clic(lienzo, *centro(texto))
-    n = s.history._pos
+    n = len(s.history)
     lienzo.end_text_edit()
-    assert s.history._pos == n
+    assert len(s.history) == n
 
 
 def test_dejar_el_texto_vacio_borra_la_capa(s, lienzo, texto):
@@ -176,14 +176,14 @@ def test_fuente_y_color(foto, s, texto):
 def test_espaciado_arrastrando_es_un_paso(foto, s, texto):
     s.select([texto.id])
     c = foto.context
-    n = s.history._pos
+    n = len(s.history)
     sl = c.sp_letter._slider
     sl.sliderPressed.emit()
     for v in (2, 5, 9):
         sl.setValue(v)
-    assert s.history._pos == n
+    assert len(s.history) == n
     sl.sliderReleased.emit()
-    assert s.history._pos == n + 1
+    assert len(s.history) == n + 1
     assert s.doc.layer(texto.id).letter_spacing == 9
 
 

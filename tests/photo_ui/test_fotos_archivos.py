@@ -76,10 +76,10 @@ def test_exportar_corrige_la_extension(foto, con_contenido, qapp, tmp_path):
 
 
 def test_exportar_no_cambia_el_diseno_ni_el_historial(foto, con_contenido, qapp, tmp_path):
-    n, bg = con_contenido.history._pos, con_contenido.doc.background
+    n, bg = len(con_contenido.history), con_contenido.doc.background
     foto.export_with(tmp_path / "x.png", transparent=True)
     esperar_export(foto, qapp)
-    assert con_contenido.history._pos == n and con_contenido.doc.background == bg
+    assert len(con_contenido.history) == n and con_contenido.doc.background == bg
 
 
 def test_exportar_no_bloquea_y_avisa(foto, con_contenido, qapp, tmp_path):

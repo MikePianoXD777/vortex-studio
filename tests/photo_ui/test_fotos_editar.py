@@ -90,10 +90,10 @@ def test_quitar_el_filtro(foto, s, ed):
 def test_la_intensidad_arrastrada_es_un_paso(foto, s, ed):
     p, capa = ed
     p.pick_filter(next(iter(FILTERS)))
-    n = s.history._pos
+    n = len(s.history)
     arrastrar_slider(p.intensity, (90, 70, 40))
     assert s.doc.layer(capa.id).filter.intensity == 40
-    assert s.history._pos == n + 1
+    assert len(s.history) == n + 1
     s.undo()
     assert s.doc.layer(capa.id).filter.intensity == 100
 
@@ -126,10 +126,10 @@ def test_filtro_en_una_capa_bloqueada_no_se_aplica(foto, s, ed):
 
 def test_arrastrar_un_deslizador_deja_un_solo_paso(foto, s, ed):
     p, capa = ed
-    n = s.history._pos
+    n = len(s.history)
     arrastrar_slider(p.sliders["contrast"], (5, 15, 30, 42))
     assert s.doc.layer(capa.id).adjustments.contrast == 42
-    assert s.history._pos == n + 1
+    assert len(s.history) == n + 1
     assert s.history.undo_label == "Contraste"
     s.undo()
     assert s.doc.layer(capa.id).adjustments.contrast == 0
@@ -140,11 +140,11 @@ def test_mientras_se_arrastra_se_redibuja_sin_historial(foto, s, lienzo, ed):
     p, capa = ed
     lienzo.flush()
     r0 = lienzo.render_count
-    n = s.history._pos
+    n = len(s.history)
     p.sliders["shadows"]._slider.sliderPressed.emit()
     for v in range(0, 40, 4):
         p.sliders["shadows"]._slider.setValue(v)
-    assert s.history._pos == n
+    assert len(s.history) == n
     lienzo.flush()
     assert lienzo.render_count == r0 + 1          # los cambios se juntaron en un solo dibujo
     p.sliders["shadows"]._slider.sliderReleased.emit()
@@ -169,13 +169,13 @@ def test_restablecer_un_grupo_es_un_paso(foto, s, ed):
     arrastrar_slider(p.sliders["contrast"], (20,))
     arrastrar_slider(p.sliders["shadows"], (30,))
     arrastrar_slider(p.sliders["vibrance"], (30,))
-    n = s.history._pos
+    n = len(s.history)
     p.reset_group("Luz")
     a = s.doc.layer(capa.id).adjustments
     assert a.contrast == 0 and a.shadows == 0 and a.vibrance == 30
-    assert s.history._pos == n + 1
+    assert len(s.history) == n + 1
     p.reset_group("Luz")                                # ya está en neutro: sin paso nuevo
-    assert s.history._pos == n + 1
+    assert len(s.history) == n + 1
 
 
 def test_mejorar_con_un_clic(foto, s, ed):
@@ -239,11 +239,11 @@ def test_sombra_contorno_y_brillo(foto, s, ed):
 
 def test_el_desenfoque_de_la_sombra_arrastrado_es_un_paso(foto, s, ed):
     p, capa = ed
-    n = s.history._pos
+    n = len(s.history)
     arrastrar_slider(p.fx["shadow"]["sliders"]["blur"][0], (5, 20, 33))
     e = s.doc.layer(capa.id).effects.shadow
     assert e.blur == 33 and e.enabled
-    assert s.history._pos == n + 1
+    assert len(s.history) == n + 1
 
 
 def test_color_del_contorno(foto, s, ed):
@@ -296,10 +296,10 @@ def test_la_tecla_barra_invertida_muestra_el_original(foto, s, lienzo):
 
 
 def test_antes_despues_no_toca_el_historial(foto, s, lienzo, ed):
-    n = s.history._pos
+    n = len(s.history)
     lienzo.set_show_original(True)
     lienzo.set_show_original(False)
-    assert s.history._pos == n
+    assert len(s.history) == n
 
 
 # --- más opciones --------------------------------------------------------------------------------------------------
@@ -313,13 +313,13 @@ def test_curva_agregar_mover_y_quitar_puntos(foto, s, ed):
     from PySide6.QtCore import QEvent, QPointF
     r = c._rect()
     centro_ = QPointF(r.center())
-    n = s.history._pos
+    n = len(s.history)
     c.mousePressEvent(_ev(QEvent.MouseButtonPress, centro_))
     c.mouseMoveEvent(_ev(QEvent.MouseMove, centro_ + QPointF(0, -30), Qt.NoButton, Qt.LeftButton))
     c.mouseReleaseEvent(_ev(QEvent.MouseButtonRelease, centro_ + QPointF(0, -30), Qt.LeftButton, Qt.NoButton))
     curva = s.doc.layer(capa.id).adjustments.curve
     assert len(curva) == 3 and curva[1][1] > 0.5
-    assert s.history._pos == n + 1 and s.history.undo_label == "Curva"
+    assert len(s.history) == n + 1 and s.history.undo_label == "Curva"
     c.mouseDoubleClickEvent(_ev(QEvent.MouseButtonDblClick, c._to_pt(*curva[1])))
     assert s.doc.layer(capa.id).adjustments.curve == []
 
@@ -398,12 +398,12 @@ def test_la_varita_ajusta_su_tolerancia_y_modo(foto, s, lienzo, ed):
 def test_la_varita_fuera_de_la_foto_no_hace_nada(foto, s, lienzo, ed):
     p, capa = ed
     p.btn_wand.click()
-    n = s.history._pos
+    n = len(s.history)
     clic(lienzo, 540, 540)      # esta sí está dentro
-    n2 = s.history._pos
+    n2 = len(s.history)
     s.select([capa.id])
     assert not s.wand_click(5.0, 5.0)
-    assert s.history._pos == n2
+    assert len(s.history) == n2
 
 
 def test_mascara_sin_foto_seleccionada(foto, s, lienzo):
