@@ -209,3 +209,63 @@ def test_dos_recortes_seguidos(s, lienzo, img):
     lienzo.apply_crop()
     t = s.doc.layer(img.id).transform
     assert t.width / t.height == pytest.approx(16 / 9, rel=1e-6)
+
+
+# --- la máscara sigue al recorte -------------------------------------------------------------------
+
+def _con_mascara(s, img):
+    """Máscara de 400x300 con la mitad izquierda oculta."""
+    import numpy as np
+    m = np.full((300, 400), 255, np.uint8)
+    m[:, :200] = 0
+    s.doc.layer(img.id).mask = s.store.put(m)
+    s.renderer.invalidate(img.id)
+
+
+def test_recortar_con_mascara_la_remapea(s, lienzo, img):
+    _con_mascara(s, img)
+    lienzo.begin_crop()
+    lienzo.set_crop_ratio(1.0)                      # 300x300 centrado: x de 50 a 350
+    assert lienzo.apply_crop()
+    capa = s.doc.layer(img.id)
+    m = s.store.get(capa.mask)
+    assert m.shape == (300, 300)
+    assert m[:, :149].max() == 0 and m[:, 151:].min() == 255        # el corte sigue en x=200 de la foto
+
+
+def test_recortar_por_un_lado_con_mascara_la_remapea(s, lienzo, img):
+    from ayudas import asa
+    _con_mascara(s, img)
+    s.select([img.id])
+    x, y = asa(lienzo, "w")
+    arrastrar(lienzo, (x, y), (x + 100, y))                  # quita 100 px por la izquierda
+    capa = s.doc.layer(img.id)
+    assert capa.crop[0] == pytest.approx(100)
+    m = s.store.get(capa.mask)
+    assert m.shape == (300, 300)
+    assert m[:, :99].max() == 0 and m[:, 101:].min() == 255
+
+
+def test_ampliar_el_recorte_deja_visible_lo_nuevo(s, lienzo, img):
+    from ayudas import asa
+    import numpy as np
+    s.select([img.id])
+    x, y = asa(lienzo, "w")
+    arrastrar(lienzo, (x, y), (x + 100, y))
+    _con_mascara_actual = np.zeros((300, 300), np.uint8)
+    capa = s.doc.layer(img.id)
+    capa.mask = s.store.put(_con_mascara_actual)              # todo oculto en la región actual
+    x, y = asa(lienzo, "w")
+    arrastrar(lienzo, (x, y), (x - 100, y))                  # vuelve a sacar los 100 px
+    m = s.store.get(s.doc.layer(img.id).mask)
+    assert m.shape == (300, 400)
+    assert m[:, :100].min() == 255 and m[:, 100:].max() == 0
+
+
+def test_remap_mask_es_puro():
+    import numpy as np
+    from vortex_studio.ui.photo.crop import remap_mask
+    m = np.zeros((10, 20), np.uint8)
+    out = remap_mask(m, (10, 10, 20, 10), (0, 10, 40, 10))      # crece 10 a cada lado
+    assert out.shape == (10, 40)
+    assert out[:, :10].min() == 255 and out[:, 30:].min() == 255 and out[:, 10:30].max() == 0

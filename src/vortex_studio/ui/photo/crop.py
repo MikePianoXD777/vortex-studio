@@ -9,6 +9,8 @@ queda derecho aunque la capa esté girada o volteada.
 
 from __future__ import annotations
 
+import numpy as np
+
 from vortex_studio.photo.document import Layer
 from vortex_studio.ui.photo import geometry as geo
 
@@ -122,3 +124,25 @@ def drag_handle(rect, handle: str, px: float, py: float, bounds, ratio: float | 
     nx0 = ax if hx > 0 else ax - w if hx < 0 else ax - w / 2
     ny0 = ay if hy > 0 else ay - h if hy < 0 else ay - h / 2
     return clamp_rect((nx0, ny0, nx0 + w, ny0 + h), bounds, min_size)
+
+
+def remap_mask(mask: np.ndarray, old: tuple[float, float, float, float],
+               new: tuple[float, float, float, float]) -> np.ndarray:
+    """La máscara de la región `old` de la imagen, vuelta a medir para la región `new`.
+
+    La máscara se estira sobre lo que muestra la capa (su recorte), así que al
+    cambiar el recorte hay que moverla con él. Lo que antes quedaba fuera del
+    recorte se ve (255). Misma densidad de píxeles que la máscara original.
+    """
+    mh, mw = mask.shape[:2]
+    ox, oy, ow, oh = old
+    nx, ny, nw, nh = new
+    sx, sy = mw / max(1e-6, ow), mh / max(1e-6, oh)
+    x0, y0 = int(round((nx - ox) * sx)), int(round((ny - oy) * sy))
+    w, h = max(1, int(round(nw * sx))), max(1, int(round(nh * sy)))
+    out = np.full((h, w), 255, np.uint8)
+    sx0, sy0 = max(0, x0), max(0, y0)
+    sx1, sy1 = min(mw, x0 + w), min(mh, y0 + h)
+    if sx1 > sx0 and sy1 > sy0:
+        out[sy0 - y0: sy1 - y0, sx0 - x0: sx1 - x0] = mask[sy0:sy1, sx0:sx1]
+    return out

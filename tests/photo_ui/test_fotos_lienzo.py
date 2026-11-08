@@ -260,7 +260,8 @@ def test_escalar_una_foto_por_cada_asa(s, lienzo, img, nombre):
     fija0 = asa(lienzo, OPUESTA[nombre])
     hx, hy = geo.HANDLES[nombre]
     x, y = asa(lienzo, nombre)
-    arrastrar(lienzo, (x, y), (x + hx * 60, y + hy * 45), CTRL)
+    mods = CTRL if nombre in geo.CORNERS else CTRL | SHIFT       # el lado solo deforma con Mayúsculas
+    arrastrar(lienzo, (x, y), (x + hx * 60, y + hy * 45), mods)
     capa = s.doc.layer(img.id)
     fija1 = asa(lienzo, OPUESTA[nombre])
     assert fija1 == pytest.approx(fija0, abs=1e-6)
@@ -292,13 +293,59 @@ def test_shift_libera_la_proporcion_de_una_foto(s, lienzo, img, nombre):
 
 
 @pytest.mark.parametrize("nombre", ["e", "w"])
-def test_asas_de_lado_solo_cambian_el_ancho(s, lienzo, img, nombre):
+def test_asas_de_lado_con_mayusculas_deforman(s, lienzo, img, nombre):
     s.select([img.id])
     hx, _ = geo.HANDLES[nombre]
     x, y = asa(lienzo, nombre)
-    arrastrar(lienzo, (x, y), (x + hx * 50, y))
+    arrastrar(lienzo, (x, y), (x + hx * 50, y), SHIFT)
     t = s.doc.layer(img.id).transform
     assert t.width == pytest.approx(450) and t.height == pytest.approx(300)
+    assert s.doc.layer(img.id).crop is None
+
+
+@pytest.mark.parametrize("nombre,idx", [("e", 2), ("w", 0), ("s", 3), ("n", 1)])
+def test_asas_de_lado_recortan_la_foto(s, lienzo, img, nombre, idx):
+    """Como en Canva: el lado mueve el borde del recorte y la foto no se deforma."""
+    s.select([img.id])
+    x, y = asa(lienzo, nombre)
+    hx, hy = geo.HANDLES[nombre]
+    arrastrar(lienzo, (x, y), (x - hx * 60, y - hy * 60))
+    capa = s.doc.layer(img.id)
+    assert capa.crop is not None
+    cx, cy, cw, ch = capa.crop
+    assert (cw, ch) == pytest.approx((340.0, 300.0)) or (cw, ch) == pytest.approx((400.0, 240.0))
+    # la escala de la foto no cambió: 1 unidad del lienzo = 1 píxel de la imagen
+    assert capa.transform.width == pytest.approx(cw) and capa.transform.height == pytest.approx(ch)
+    assert s.history.undo_label == "Recortar"
+    s.undo()
+    assert s.doc.layer(img.id).crop is None
+    assert s.doc.layer(img.id).transform.width == pytest.approx(400)
+
+
+def test_el_lado_opuesto_no_se_mueve_al_recortar(s, lienzo, img):
+    s.select([img.id])
+    fija = asa(lienzo, "w")
+    x, y = asa(lienzo, "e")
+    arrastrar(lienzo, (x, y), (x - 100, y))
+    assert asa(lienzo, "w") == pytest.approx(fija, abs=1e-6)
+
+
+def test_el_recorte_por_un_lado_no_pasa_del_borde_de_la_foto(s, lienzo, img):
+    s.select([img.id])
+    x, y = asa(lienzo, "e")
+    arrastrar(lienzo, (x, y), (x + 200, y))                # hacia afuera: no hay más foto
+    capa = s.doc.layer(img.id)
+    assert capa.transform.width == pytest.approx(400)
+
+
+def test_recortar_por_un_lado_y_volver_a_sacar_recupera_la_foto(s, lienzo, img):
+    s.select([img.id])
+    x, y = asa(lienzo, "e")
+    arrastrar(lienzo, (x, y), (x - 100, y))
+    x, y = asa(lienzo, "e")
+    arrastrar(lienzo, (x, y), (x + 100, y))
+    capa = s.doc.layer(img.id)
+    assert capa.transform.width == pytest.approx(400)
 
 
 def test_escalar_con_deshacer(s, lienzo, img):

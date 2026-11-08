@@ -11,6 +11,7 @@ del pincel) lo pinta este widget con `QPainter`; no pasa por el motor.
 
 from __future__ import annotations
 
+import copy
 import math
 from dataclasses import replace
 from pathlib import Path
@@ -531,6 +532,16 @@ class CanvasView(QWidget):
             "orig": [(c, replace(c.transform), c.font_size, c.letter_spacing) for c in sel],
             "group": len(sel) > 1,
         }
+        # Como en Canva: en una foto, las asas de los lados recortan en vez de deformar.
+        if (len(sel) == 1 and sel[0].kind == KIND_IMAGE and sel[0].asset
+                and handle not in geo.CORNERS and self.s.store.has(sel[0].asset)):
+            c = sel[0]
+            copia = copy.copy(c)
+            copia.transform = replace(c.transform)
+            self._drag["crop"] = {
+                "math": cropmod.CropMath(copia, self.s.store.size(c.asset)),
+                "crop0": c.crop, "t0": replace(c.transform),
+            }
 
     def _begin_rotate(self, x, y) -> None:
         sel = self.s.selected()
@@ -639,6 +650,20 @@ class CanvasView(QWidget):
             self._hud = f"{round(nb.width)} × {round(nb.height)}"
         else:
             c, t0, fs0, ls0 = d["orig"][0]
+            cr = d.get("crop")
+            if cr is not None and not shift:
+                m = cr["math"]
+                lx, ly = geo.to_local(cr["t0"], x, y)
+                rect = cropmod.drag_handle(m.current_rect(), handle, lx, ly, m.full_rect(), None)
+                c.crop, nt = m.result(rect)
+                c.transform = replace(nt, rotation=t0.rotation)
+                self.s.renderer.invalidate(c.id)
+                self._hud = f"{round(c.transform.width)} × {round(c.transform.height)}"
+                self.s.touch()
+                return
+            if cr is not None:                        # con Mayúsculas el lado sí deforma
+                c.crop = cr["crop0"]
+                cr["estirado"] = True
             if c.kind == KIND_TEXT:
                 prop = esquina
             elif c.kind == KIND_IMAGE:
@@ -712,7 +737,15 @@ class CanvasView(QWidget):
         if kind == "move" and d["moved"]:
             self.s.commit("Mover")
         elif kind == "resize" and d["moved"]:
-            self.s.commit("Cambiar tamaño")
+            cr = d.get("crop")
+            if cr is not None and not cr.get("estirado"):
+                capa = self.s.doc.layer(d["orig"][0][0].id)
+                if capa is not None:
+                    self.s.remap_mask(capa, cr["crop0"])
+                    self.s.renderer.invalidate(capa.id)
+                self.s.commit("Recortar")
+            else:
+                self.s.commit("Cambiar tamaño")
         elif kind == "rotate" and d["moved"]:
             self.s.commit("Girar")
         elif kind == "stroke":
@@ -1115,8 +1148,11 @@ class CanvasView(QWidget):
                   or abs(t.height - capa.transform.height) > 0.01
                   or abs(t.cx - capa.transform.cx) > 0.01 or abs(t.cy - capa.transform.cy) > 0.01
                   or abs(c["straighten"]) > 1e-6)
+        crop0 = capa.crop
         capa.crop = crop
         capa.transform = t
+        self.s.remap_mask(capa, crop0)
+        self.s.renderer.invalidate(capa.id)
         if cambio:
             self.s.commit("Recortar")
         else:

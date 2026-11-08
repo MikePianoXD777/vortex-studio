@@ -35,6 +35,7 @@ from vortex_studio.photo.document import (
 from vortex_studio.photo.history import PhotoHistory
 from vortex_studio.photo.render import Renderer, from_qimage
 from vortex_studio.photo.text import text_height
+from vortex_studio.ui.photo import crop as cropmod
 from vortex_studio.ui.photo import geometry as geo
 
 SHAPE_NAMES = {
@@ -610,6 +611,20 @@ class PhotoSession(QObject):
                 m = m[..., 0]
             return np.array(m, np.uint8)
         return np.full(px.shape[:2], 255, np.uint8)
+
+    def remap_mask(self, layer: Layer, old_crop) -> None:
+        """Acomoda la máscara de la capa al recorte nuevo (`old_crop`: el de antes, o None)."""
+        if not layer.mask or not self.store.has(layer.mask) or not layer.asset:
+            return
+        w, h = self.store.size(layer.asset)
+        full = (0.0, 0.0, float(w), float(h))
+        old, new = old_crop or full, layer.crop or full
+        if all(abs(a - b) < 1e-6 for a, b in zip(old, new)):
+            return
+        m = np.array(self.store.get(layer.mask))
+        if m.ndim == 3:
+            m = m[..., 0]
+        layer.mask = self.store.put(cropmod.remap_mask(np.array(m, np.uint8), old, new))
 
     def _mask_point(self, layer: Layer, x: float, y: float) -> tuple[float, float]:
         u, v = self.pixel_point(layer, x, y)
