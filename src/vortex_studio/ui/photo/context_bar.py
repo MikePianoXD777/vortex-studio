@@ -22,6 +22,7 @@ from vortex_studio.photo.document import KIND_ADJUST, KIND_IMAGE, KIND_SHAPE, KI
 from vortex_studio.ui import theme
 from vortex_studio.ui.photo import crop as cropmod
 from vortex_studio.ui.photo.controls import (
+    BAR_SPIN_STYLE,
     ColorButton,
     IconBtn,
     PSlider,
@@ -159,6 +160,8 @@ class ContextBar(QWidget):
         self.size_spin.setRange(4, 999)
         self.size_spin.setKeyboardTracking(False)
         self.size_spin.setButtonSymbols(QSpinBox.NoButtons)
+        self.size_spin.setStyleSheet(BAR_SPIN_STYLE)
+        self.size_spin.setAlignment(Qt.AlignCenter)
         self.size_spin.setFixedSize(62, 32)
         self.size_spin.valueChanged.connect(self._size_changed)
         self.text_color = ColorButton("#ffffff", "Color del texto")
@@ -215,6 +218,8 @@ class ContextBar(QWidget):
         self.stroke_spin.setSuffix(" px")
         self.stroke_spin.setKeyboardTracking(False)
         self.stroke_spin.setButtonSymbols(QSpinBox.NoButtons)
+        self.stroke_spin.setStyleSheet(BAR_SPIN_STYLE)
+        self.stroke_spin.setAlignment(Qt.AlignCenter)
         self.stroke_spin.setFixedSize(76, 32)
         self.stroke_spin.setToolTip("Grosor del borde")
         self.stroke_spin.valueChanged.connect(lambda v: self._shape_edit("Grosor del borde", stroke_width=float(v)))
@@ -223,6 +228,8 @@ class ContextBar(QWidget):
         self.radius_spin.setSuffix(" px")
         self.radius_spin.setKeyboardTracking(False)
         self.radius_spin.setButtonSymbols(QSpinBox.NoButtons)
+        self.radius_spin.setStyleSheet(BAR_SPIN_STYLE)
+        self.radius_spin.setAlignment(Qt.AlignCenter)
         self.radius_spin.setFixedSize(76, 32)
         self.radius_spin.setToolTip("Esquinas redondeadas")
         self.radius_spin.valueChanged.connect(lambda v: self._shape_edit("Esquinas", corner_radius=float(v)))

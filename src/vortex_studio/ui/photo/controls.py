@@ -31,6 +31,16 @@ from vortex_studio.ui.widgets import SLIDER_STYLE, SPIN_STYLE
 # SPIN_STYLE es de QSpinBox; el de decimales necesita su propia copia.
 DSPIN_STYLE = SPIN_STYLE.replace("QSpinBox", "QDoubleSpinBox")
 
+# Para los spinbox de las barras: con borde visible, sin tope de ancho y con el
+# arreglo de Qt 6.12 (sin flechas el campo de texto se quedaba en 1 px).
+BAR_SPIN_STYLE = (
+    SPIN_STYLE
+    .replace("max-width: 58px;", "max-width: 200px;")
+    .replace("min-width: 44px;", "min-width: 40px;")
+    .replace("border: 1px solid transparent;", f"border: 1px solid {theme.BORDE};")
+    .replace("color: " + theme.TENUE + ";", "color: " + theme.TEXTO + ";", 1)
+)
+
 MORADO = "#8b5cf6"           # acento de Vortex Photo: selección, guías, asas
 ROSA = "#ff5ca8"             # guías del lienzo
 
