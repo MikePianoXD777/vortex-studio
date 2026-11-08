@@ -109,7 +109,10 @@ class PhotoWindow(QMainWindow):
         self.resize(1440, 860)
         self.setMinimumSize(980, 600)
         self.setAcceptDrops(False)
-        self.session = PhotoSession()
+        # Hija de la ventana: sin padre, sus conexiones a lambdas que apuntan a la ventana
+        # formaban un ciclo que el recolector de Python no ve, y cada ventana cerrada se
+        # quedaba en memoria con su almacén de imágenes y sus cachés.
+        self.session = PhotoSession(self)
         s = self.session
         self._export_worker: _Worker | None = None
         self._edit_open = False

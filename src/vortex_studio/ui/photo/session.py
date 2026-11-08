@@ -61,8 +61,8 @@ class PhotoSession(QObject):
     tool_changed = Signal(str)
     message = Signal(str)           # aviso breve para la barra de estado
 
-    def __init__(self) -> None:
-        super().__init__()
+    def __init__(self, parent: QObject | None = None) -> None:
+        super().__init__(parent)
         self.brush = paint.Brush(size=40, hardness=0.8, opacity=1.0, color="#7c5cff")
         self.tool = "move"
         self.clipboard: list[dict] = []

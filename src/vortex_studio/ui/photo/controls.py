@@ -305,6 +305,8 @@ class ColorButton(QToolButton):
         self.update()
 
     def open_popup(self) -> None:
+        if self.popup is not None:          # la de la vez pasada, que si no se queda viva
+            self.popup.deleteLater()
         self.popup = ColorPopup(self._color, self.allow_none, self)
         self.popup.picked.connect(self._picked)
         self.popup.adjustSize()

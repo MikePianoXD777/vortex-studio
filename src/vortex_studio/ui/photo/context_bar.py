@@ -56,11 +56,13 @@ class PopupButton(IconBtn):
     def __init__(self, icon: str, tip: str, sliders: list[PSlider], text: str = "") -> None:
         super().__init__(icon, tip, 32, text=text)
         self.sliders = sliders
-        self.popup: SliderPopup | None = None
+        # Una sola, hija del botón, desde el principio. Antes cada clic armaba otra (las viejas
+        # quedaban vivas) y hasta el primer clic los deslizadores no tenían padre: eran
+        # ventanas sueltas cuyas conexiones mantenían viva la ventana de Fotos ya cerrada.
+        self.popup = SliderPopup(self.sliders, self)
         self.clicked.connect(self.open_popup)
 
     def open_popup(self) -> None:
-        self.popup = SliderPopup(self.sliders, self)
         self.popup.adjustSize()
         self.popup.move(self.mapToGlobal(QPoint(0, self.height() + 4)))
         self.popup.show()
