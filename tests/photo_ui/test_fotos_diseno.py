@@ -140,7 +140,7 @@ def test_nuevo_diseno_con_el_dialogo(foto, s, monkeypatch):
         return QDialog.Accepted
     monkeypatch.setattr(NewDesignDialog, "exec", exec_)
     foto.show_new()
-    assert (s.doc.width, s.doc.height, s.doc.name) == (1080, 1920, "Historia")
+    assert (s.doc.width, s.doc.height, s.doc.name) == (*templates.SIZES[1][2:], "Historia")
 
 
 def test_proporcion_bloqueada_en_el_selector(qapp):

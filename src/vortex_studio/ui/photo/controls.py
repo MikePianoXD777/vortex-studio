@@ -28,6 +28,9 @@ from vortex_studio.ui import theme
 from vortex_studio.ui.photo.icons import draw_icon, draw_letter
 from vortex_studio.ui.widgets import SLIDER_STYLE, SPIN_STYLE
 
+# SPIN_STYLE es de QSpinBox; el de decimales necesita su propia copia.
+DSPIN_STYLE = SPIN_STYLE.replace("QSpinBox", "QDoubleSpinBox")
+
 MORADO = "#8b5cf6"           # acento de Vortex Photo: selección, guías, asas
 ROSA = "#ff5ca8"             # guías del lienzo
 
@@ -147,7 +150,7 @@ class PSlider(QWidget):
         self._spin.setButtonSymbols(QDoubleSpinBox.NoButtons)
         self._spin.setAlignment(Qt.AlignRight)
         self._spin.setFixedWidth(58)
-        self._spin.setStyleSheet(SPIN_STYLE)
+        self._spin.setStyleSheet(DSPIN_STYLE)
 
         self._slider.sliderPressed.connect(self._pressed)
         self._slider.sliderReleased.connect(self._released)

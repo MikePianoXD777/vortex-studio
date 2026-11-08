@@ -25,11 +25,13 @@ def test_el_pincel_crea_una_capa_de_dibujo_del_tamano_del_lienzo(s, lienzo):
 
 
 def test_el_segundo_trazo_usa_la_misma_capa(s, lienzo):
+    pasos = []
+    s.committed.connect(pasos.append)
     s.set_tool("brush")
     arrastrar(lienzo, (200, 200), (600, 400))
     arrastrar(lienzo, (200, 500), (600, 500))
     assert len(s.doc.layers) == 1
-    assert len(s.history._stack) == 3
+    assert pasos == ["Pincel", "Pincel"]
 
 
 def test_el_pincel_sobre_una_foto_no_la_daña(s, lienzo):

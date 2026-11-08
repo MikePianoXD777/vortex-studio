@@ -19,7 +19,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from vortex_studio.photo import adjust as photo_adjust
 from vortex_studio.photo.document import (
     BLENDS,
     HSL_BANDS,
@@ -31,7 +30,7 @@ from vortex_studio.photo.document import (
     Filter,
     Layer,
 )
-from vortex_studio.photo.filters import FILTERS, apply_filter
+from vortex_studio.photo.filters import FILTERS, apply_filter, auto_enhance
 from vortex_studio.photo.render import from_qimage, to_qimage
 from vortex_studio.ui import theme
 from vortex_studio.ui.photo.controls import (
@@ -257,13 +256,14 @@ class EditPanel(QWidget):
             b = QToolButton()
             b.setCheckable(True)
             b.setText(nombre)
+            b.setToolTip(nombre)
             b.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
             b.setIconSize(QSize(THUMB_SIDE, THUMB_SIDE))
             b.setFixedSize(THUMB_SIDE + 12, THUMB_SIDE + 34)
             b.setCursor(Qt.PointingHandCursor)
             b.setStyleSheet(
                 f"QToolButton {{ background:transparent; border:2px solid transparent; border-radius:10px; "
-                f"color:{theme.TENUE}; font-size:11px; padding:2px; }}"
+                f"color:{theme.TENUE}; font-size:10px; padding:2px; }}"
                 f"QToolButton:hover {{ color:{theme.TEXTO}; }}"
                 f"QToolButton:checked {{ border-color:{MORADO}; color:{theme.TEXTO}; }}")
             b.clicked.connect(lambda _=False, f=fid: self.pick_filter(f))
@@ -595,9 +595,9 @@ class EditPanel(QWidget):
                 x, y, w, h = (int(round(v)) for v in c.crop)
                 px = px[max(0, y): y + max(1, h), max(0, x): x + max(1, w)]
             paso = max(1, max(px.shape[:2]) // 512)
-            adj = photo_adjust.auto_enhance(np.ascontiguousarray(px[::paso, ::paso]))
+            adj = auto_enhance(np.ascontiguousarray(px[::paso, ::paso]))
         else:
-            adj = photo_adjust.auto_enhance(np.zeros((8, 8, 4), np.uint8))
+            adj = auto_enhance(np.zeros((8, 8, 4), np.uint8))
         c.adjustments = adj
         self.s.renderer.invalidate(c.id)
         self.s.commit("Mejorar con un clic")
