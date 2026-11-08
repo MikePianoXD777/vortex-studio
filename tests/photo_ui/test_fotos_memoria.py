@@ -35,11 +35,12 @@ def abrir_y_cerrar(qapp, usar=None):
 
 
 def test_cerrar_la_ventana_la_suelta(qapp):
-    abrir_y_cerrar(qapp)
+    # Se compara contra lo que ya había: `smoke_test`, en otra prueba, cierra su
+    # ventana sin borrarla (el proceso termina ahí, en el programa real no importa).
     antes = vivas("PhotoWindow")
     for _ in range(4):
         abrir_y_cerrar(qapp)
-    assert vivas("PhotoWindow") == antes == 0
+    assert vivas("PhotoWindow") == antes
 
 
 def test_no_quedan_ventanas_sueltas(qapp):
@@ -62,5 +63,6 @@ def test_abrir_las_ventanitas_no_las_acumula(qapp):
         qapp.processEvents()
         assert len(w.context.btn_shape_opacity.findChildren(type(w.context.btn_shape_opacity.popup))) == 1
 
+    antes = vivas("PhotoWindow")
     abrir_y_cerrar(qapp, usar)
-    assert vivas("PhotoWindow") == 0
+    assert vivas("PhotoWindow") == antes
