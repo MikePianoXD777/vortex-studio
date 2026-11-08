@@ -95,6 +95,8 @@ class Adjustments:
     split_light_hue: float = 0.0
     split_light_sat: float = 0.0
     split_balance: float = 0.0
+    # Brillo difuso (efecto Orton): mezcla con una versión desenfocada en «Trama». 0…100.
+    softness: float = 0.0
 
     def is_neutral(self) -> bool:
         return self == Adjustments()

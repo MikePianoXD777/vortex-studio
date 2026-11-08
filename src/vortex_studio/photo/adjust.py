@@ -263,6 +263,7 @@ def apply_adjustments(pixels: np.ndarray, adj: Adjustments, scale: float = 1.0) 
     hsl_tab = _tabla_hsl(adj.hsl) if adj.hsl else None
     quiere = {
         "vib": bool(adj.vibrance), "sat": bool(adj.saturation), "hsl": hsl_tab is not None,
+        "soft": adj.softness > 0,
         "split": adj.split_shadow_sat > 0 or adj.split_light_sat > 0,
         "temp": bool(adj.temperature), "tint": bool(adj.tint),
         "blur": adj.blur > 0, "clar": bool(adj.clarity), "sharp": adj.sharpen > 0,
@@ -324,6 +325,13 @@ def apply_adjustments(pixels: np.ndarray, adj: Adjustments, scale: float = 1.0) 
         sigma = adj.blur / 100.0 * 24.0 * scale
         if sigma >= 0.35:
             rgb = blur_fast(rgb, sigma)
+    if quiere["soft"]:
+        # Brillo difuso: Trama con la versión desenfocada, con el contraste
+        # recortado para que quede un velo luminoso y no una foto borrosa.
+        b = blur_fast(rgb, max(1.0, 9.0 * scale))
+        b = 0.5 + (b - 0.5) * np.float32(0.75)
+        orton = rgb + b - rgb * b
+        rgb = np.clip(rgb + (orton - rgb) * np.float32(adj.softness / 100.0 * 0.7), 0.0, 1.0)
     if quiere["clar"]:
         l = luma(rgb)
         base = blur_fast(l, max(1.0, 18.0 * scale))
@@ -334,7 +342,9 @@ def apply_adjustments(pixels: np.ndarray, adj: Adjustments, scale: float = 1.0) 
         # Enfoque sobre la luminosidad (lo que hacen los programas de foto):
         # un solo canal desenfocado en vez de tres, y sin halos de color.
         l = luma(rgb)
-        rgb = np.clip(rgb + ((l - gaussian_blur(l, sigma)) * np.float32(adj.sharpen / 100.0 * 2.0))[..., None], 0.0, 1.0)
+        # El realce se limita (±0,10): sin tope, en los bordes duros se pasa y deja halos.
+        det = np.clip(l - gaussian_blur(l, sigma), -0.10, 0.10)
+        rgb = np.clip(rgb + (det * np.float32(adj.sharpen / 100.0 * 2.0))[..., None], 0.0, 1.0)
     if quiere["vig"]:
         rgb = rgb * _vineta(h, w, adj.vignette / 100.0)[..., None]
     if quiere["grain"]:
