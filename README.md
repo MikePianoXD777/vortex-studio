@@ -11,7 +11,7 @@ fáciles de usar. La capacidad sí; la complejidad no.
 >
 > **Ahora también fotos.** Al abrir eliges Video o **Fotos**: Vortex Photo es un
 > lienzo con capas, filtros, ajustes, texto, formas, máscaras y modos de fusión,
-> fácil de usar. Pasa 2141 pruebas automáticas.
+> fácil de usar. Pasa 2136 pruebas automáticas.
 >
 > **La 1.0.** Se cerró todo lo que se sentía roto: el audio sigue a las
 > transiciones, la mezcla ya no recorta y tiene medidor, el timeline se
