@@ -11,7 +11,7 @@ fáciles de usar. La capacidad sí; la complejidad no.
 >
 > **Ahora también fotos.** Al abrir eliges Video o **Fotos**: Vortex Photo es un
 > lienzo con capas, filtros, ajustes, texto, formas, máscaras y modos de fusión,
-> fácil de usar. Pasa 2136 pruebas automáticas.
+> fácil de usar. Pasa 2181 pruebas automáticas.
 >
 > **La 1.0.** Se cerró todo lo que se sentía roto: el audio sigue a las
 > transiciones, la mezcla ya no recorta y tiene medidor, el timeline se
@@ -590,6 +590,23 @@ La exportación va a la **cola de render** y se puede seguir editando: se
 lleva una copia congelada de la secuencia, así que lo que edites después no
 cambia el archivo. Cada trabajo tiene su barra y su botón de cancelar; el
 archivo incompleto se borra.
+
+## Claude edita contigo
+
+Vortex Studio trae un servidor [MCP](https://modelcontextprotocol.io): con él,
+Claude (en Claude Code) edita **en el editor que tienes abierto** y ves cada
+cambio en vivo: corta, mueve, recorta, quita silencios, pone textos y
+subtítulos, corrige color y volumen, pone transiciones, mira el cuadro que
+dejó y exporta. Todo entra al historial y se deshace con `Ctrl+Z`. Mientras
+está conectado, la barra de abajo dice **«Claude está editando»**.
+
+```bash
+claude mcp add --scope user vortex-studio -- vortex-studio --mcp
+```
+
+En Vortexine's OS ya viene puesto. Si el editor no está abierto, Claude lo
+abre (`vortex-studio --video` entra directo al editor de video). Solo
+escucha en un socket local de tu usuario: nadie más lo puede manejar.
 
 ## Autoguardado
 

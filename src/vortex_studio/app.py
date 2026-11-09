@@ -21,6 +21,7 @@ from vortex_studio import __version__
 ASSETS = Path(__file__).resolve().parent / "assets"
 SMOKE_FLAG = "--smoke-test"
 SELF_CHECK_FLAG = "--self-check"     # ver `selfcheck.py`
+VIDEO_FLAG = "--video"               # directo al editor de video, sin elegir (lo usa el MCP)
 
 
 def app_icon() -> QIcon:
@@ -185,21 +186,27 @@ def _main(argv: list[str] | None = None) -> int:
     splash.status("Preparando interfaz…" if HAS_PYAV else "Sin códecs — continuando…")
     from vortex_studio.ui.launcher import FOTOS, VIDEO, Launcher
 
-    launcher = Launcher(__version__)
+    if VIDEO_FLAG in argv:
+        eleccion = VIDEO
+        splash.status("Listo")
+        splash.hold()
+    else:
+        launcher = Launcher(__version__)
 
-    splash.status("Listo")
+        splash.status("Listo")
 
-    # Primero se cumple el tiempo del splash, y hasta entonces aparece la
-    # siguiente ventana. Al revés, la taparía: bajo Wayland no hay manera de
-    # forzar que una ventana se quede encima de otra.
-    splash.hold()
-    launcher.show()
-    splash.finish(launcher)
+        # Primero se cumple el tiempo del splash, y hasta entonces aparece la
+        # siguiente ventana. Al revés, la taparía: bajo Wayland no hay manera de
+        # forzar que una ventana se quede encima de otra.
+        splash.hold()
+        launcher.show()
+        splash.finish(launcher)
 
-    if launcher.exec() != Launcher.Accepted or launcher.choice not in (VIDEO, FOTOS):
-        return 0
+        if launcher.exec() != Launcher.Accepted or launcher.choice not in (VIDEO, FOTOS):
+            return 0
+        eleccion = launcher.choice
 
-    if launcher.choice == FOTOS:
+    if eleccion == FOTOS:
         # Igual que con el video: el editor de fotos se importa hasta aquí.
         from vortex_studio.ui.photo import PhotoWindow
 
@@ -213,7 +220,14 @@ def _main(argv: list[str] | None = None) -> int:
 
     window = MainWindow()
     window.show()
+    if VIDEO_FLAG in argv:
+        splash.finish(window)
     window.offer_recovery()     # si la vez pasada se cerró de golpe
+
+    # Para que Claude pueda editar aquí con el MCP (`vortex-studio --mcp`).
+    from vortex_studio.control.server import attach
+
+    attach(window)
 
     return app.exec()
 

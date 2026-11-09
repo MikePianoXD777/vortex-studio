@@ -35,6 +35,13 @@ a professional one within reach. The video editor doesn't change and your
 - **Save** your design as `.vphoto` and **export** to PNG, JPG or WEBP. Many
   photos can also be edited in a batch.
 
+- **Claude edits with you in the video editor.** An MCP server
+  (`vortex-studio --mcp`) lets Claude cut, move, trim, remove silences, add
+  titles and subtitles, color, volume and transitions, look at the frame and
+  export, in the open editor and live. Everything undoes with Ctrl+Z, and the
+  status bar says "Claude está editando" while it's connected.
+  `vortex-studio --video` opens the video editor directly.
+
 ### Changed
 
 - Vortex Studio is now video and photos, in the same download.

@@ -35,6 +35,13 @@ proyectos `.vortex` abren igual.
 - **Guarda** tu diseño como `.vphoto` y **exporta** a PNG, JPG o WEBP. También
   se pueden editar muchas fotos en lote.
 
+- **Claude edita contigo en el editor de video.** Un servidor MCP
+  (`vortex-studio --mcp`) deja que Claude corte, mueva, recorte, quite
+  silencios, ponga textos y subtítulos, color, volumen y transiciones, mire el
+  cuadro y exporte, en el editor abierto y en vivo. Todo se deshace con
+  Ctrl+Z, y la barra de abajo dice «Claude está editando» mientras está
+  conectado. `vortex-studio --video` abre directo el editor de video.
+
 ### Cambiado
 
 - Vortex Studio pasa a ser video y fotos, con la misma descarga.
