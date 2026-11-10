@@ -53,6 +53,12 @@ doesn't change; only what ships in the `.tar.gz`.
 
 ### Fixed
 
+- **Long text no longer runs off the frame.** If it doesn't fit across, it
+  wraps onto more lines; if a single word doesn't fit either, the letters get
+  smaller. It always keeps a 5 % safe margin on each side, and looks the same
+  in the preview and in the exported video. Also, placing text on an edge
+  ("Abajo izquierda", "Arriba derecha"…) from Claude now aligns it toward that
+  edge, as the text panel already did.
 - **The Linux package shipped its own `fontconfig`**, version 2.13 from
   Ubuntu 22.04, which doesn't understand the font configuration of newer
   distros. On CachyOS, with 2.18, the editor started with about 45

@@ -53,6 +53,12 @@ no cambia; solo lo que trae el `.tar.gz`.
 
 ### Arreglado
 
+- **Un texto largo ya no se sale del cuadro.** Si no cabe a lo ancho, se parte
+  en renglones; si una sola palabra tampoco cabe, la letra se achica. Siempre
+  deja un margen seguro del 5 % por lado, y se ve igual en la vista previa y
+  en el video exportado. Además, poner un texto en una orilla («Abajo
+  izquierda», «Arriba derecha»…) desde Claude lo alinea hacia esa orilla, como
+  ya lo hacía el panel de texto.
 - **El paquete de Linux traía su propia `fontconfig`**, la 2.13 de Ubuntu
   22.04, que no entiende la configuración de fuentes de las distros nuevas.
   En CachyOS, con la 2.18, el editor arrancaba con unos 45 avisos de

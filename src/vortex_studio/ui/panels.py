@@ -77,6 +77,7 @@ from vortex_studio.model.color import (
 from vortex_studio.model import timeremap
 from vortex_studio.model.color import INPUT_SPACES, SPACE_NONE, SPACE_OCIO
 from vortex_studio.model.mask import NONE as MASK_NONE
+from vortex_studio.model.overlays import align_for_anchor
 from vortex_studio.model.project import (
     KEEP_PITCH,
     MUTE_AUDIO,
@@ -750,8 +751,7 @@ class TextPanel(Page):
         en «centro» medio texto quedaba fuera del cuadro.
         """
         if not self._loading:
-            lado = ("izquierda" if "izquierda" in nombre
-                    else "derecha" if "derecha" in nombre else "centro")
+            lado = align_for_anchor(nombre)
             self._align.blockSignals(True)
             self._align.setCurrentText(lado)
             self._align.blockSignals(False)

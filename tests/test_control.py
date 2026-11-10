@@ -217,6 +217,18 @@ def test_texto_mal_pedido(con_video):
             {"texto": "b", "inicio": 1, "duracion": 2}]})
 
 
+def test_texto_en_una_orilla_se_alinea_hacia_ella(con_video):
+    """Con «Abajo izquierda» centrado en el 6 % del ancho, medio texto se salía."""
+    res = run(con_video, "texto", {"texto": "Hola", "inicio": 0, "duracion": 1,
+                                   "posicion": "Abajo izquierda"})
+    titulo, _ = commands._find(con_video, res["id"])
+    assert titulo.align == "izquierda"
+    run(con_video, "editar_texto", {"id": res["id"], "posicion": "Abajo derecha"})
+    assert titulo.align == "derecha"
+    run(con_video, "editar_texto", {"id": res["id"], "posicion": "Subtítulo"})
+    assert titulo.align == "centro"
+
+
 def test_editar_texto(con_video):
     res = run(con_video, "texto", {"texto": "Hola", "inicio": 0, "duracion": 1})
     res = run(con_video, "editar_texto", {"id": res["id"], "texto": "Adiós", "color": "#ff0000"})

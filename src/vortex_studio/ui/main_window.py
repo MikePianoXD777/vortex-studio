@@ -97,7 +97,7 @@ from vortex_studio.ui.timeline_tools import TimelineTools
 from vortex_studio.ui.meters import AudioMeter
 from vortex_studio.ui.topbar import TopBar
 from vortex_studio.ui.widgets import Card, style_dock
-from vortex_studio.model.overlays import AdjustmentLayer
+from vortex_studio.model.overlays import AdjustmentLayer, align_for_anchor
 from vortex_studio.model.project import NestedClip
 from vortex_studio.model.nesting import children_of, would_cycle
 from vortex_studio.model import render_zones
@@ -3228,7 +3228,7 @@ class MainWindow(QMainWindow):
         x, y = ANCHORS.get(anchor, ANCHORS["Subtítulo"])
 
         title = Title(start=self.timeline.playhead, duration=DEFAULT_TITLE_SECONDS,
-                      text="Texto nuevo", x=x, y=y)
+                      text="Texto nuevo", x=x, y=y, align=align_for_anchor(anchor))
         track.add(title)
         self._title = title
 

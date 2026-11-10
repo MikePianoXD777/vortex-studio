@@ -19,7 +19,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QBuffer, QByteArray, QIODevice, Qt
 
-from vortex_studio.model.overlays import ANCHORS, Title
+from vortex_studio.model.overlays import ANCHORS, Title, align_for_anchor
 
 
 class CommandError(Exception):
@@ -396,7 +396,8 @@ def _title(window, datos: dict, pista) -> Title:
     if lugar not in ANCHORS:
         raise CommandError(f"«posicion» va una de: {', '.join(ANCHORS)}.")
     x, y = ANCHORS[lugar]
-    titulo = Title(start=inicio, duration=duracion, text=texto, x=x, y=y)
+    titulo = Title(start=inicio, duration=duracion, text=texto, x=x, y=y,
+                   align=align_for_anchor(lugar))
     if datos.get("tamano") is not None:
         titulo.size = _num(datos, "tamano", minimo=0.01, maximo=0.5)
     if datos.get("color"):
@@ -470,6 +471,7 @@ def editar_texto(window, args):
         if args["posicion"] not in ANCHORS:
             raise CommandError(f"«posicion» va una de: {', '.join(ANCHORS)}.")
         item.x, item.y = ANCHORS[args["posicion"]]
+        item.align = align_for_anchor(args["posicion"])
     if args.get("tamano") is not None:
         item.size = _num(args, "tamano", minimo=0.01, maximo=0.5)
     if args.get("color"):

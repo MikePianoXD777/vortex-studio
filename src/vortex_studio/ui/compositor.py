@@ -32,7 +32,7 @@ from PySide6.QtGui import (
 
 from vortex_studio.media import Frame
 from vortex_studio.model import ImageOverlay, Mask, Title
-from vortex_studio.model.animation import AnimState, anim_state, visible_text
+from vortex_studio.model.animation import AnimState, anim_state
 from vortex_studio.model.blend import NORMAL, is_normal
 from vortex_studio.model.transform import CORNERS, FILL, FIT, STRETCH, TILT_MAX
 
@@ -485,38 +485,137 @@ def draw_title(painter: QPainter, target: QRectF, title: Title,
         painter.restore()
 
 
+# Margen seguro: el texto nunca se acerca a menos de esto de cada orilla.
+SAFE_MARGIN = 0.05
+MIN_TITLE_PX = 8
+
+
+def _title_font(title: Title, px: int) -> QFont:
+    font = QFont(title.font) if title.font else QFont()
+    font.setPixelSize(max(MIN_TITLE_PX, px))
+    font.setBold(title.bold)
+    font.setItalic(title.italic)
+    return font
+
+
+def _title_pad(title: Title, line_height: float, px: float) -> float:
+    """Lo que el texto ocupa a cada lado además de sus letras: la caja de
+    fondo y medio contorno."""
+    pad = line_height * 0.22 if title.background else 0.0
+    if title.outline and title.outline_width > 0:
+        pad += px * title.outline_width / 2
+    return pad
+
+
+def _wrap(text: str, metrics: QFontMetricsF, ancho: float) -> list[tuple[str, int]]:
+    """Parte el texto en renglones que quepan en `ancho`, por palabras.
+
+    Devuelve cada renglón con cuántos caracteres del texto original se
+    comió el corte que lo sigue (el salto de línea o los espacios): así el
+    efecto de máquina de escribir sigue contando sobre el texto original.
+    """
+    renglones: list[tuple[str, int]] = []
+    for crudo in text.splitlines(keepends=True) or [""]:
+        parrafo = crudo.splitlines()[0] if crudo.splitlines() else ""
+        salto = len(crudo) - len(parrafo)
+        palabras = parrafo.split(" ")
+        actual = palabras[0]
+        espacios = 0
+        for palabra in palabras[1:]:
+            if palabra == "":          # espacios seguidos: se quedan en el renglón
+                espacios += 1
+                continue
+            candidato = actual + " " * (espacios + 1) + palabra
+            if actual.strip() == "" or metrics.horizontalAdvance(candidato) <= ancho:
+                actual = candidato
+            else:
+                renglones.append((actual, espacios + 1))
+                actual = palabra
+            espacios = 0
+        actual += " " * espacios
+        renglones.append((actual, salto))
+    return renglones
+
+
+def _visible_lines(renglones: list[tuple[str, int]], cuantos: int) -> list[str]:
+    lines: list[str] = []
+    for renglon, corte in renglones:
+        if cuantos <= 0:
+            break
+        lines.append(renglon[:cuantos])
+        cuantos -= len(renglon) + corte
+    return lines or [""]
+
+
+def title_layout(target: QRectF, title: Title) -> tuple[int, list[tuple[str, int]]]:
+    """El tamaño de letra y los renglones del título, sin animación.
+
+    El texto se parte en renglones que quepan dentro del margen seguro; si
+    una sola palabra tampoco cabe, la letra se achica hasta que quepa. Se
+    calcula sin la escala de la animación para que los renglones no
+    cambien mientras el texto crece o se encoge.
+    """
+    # Con tope de un cuadro de alto: una letra de 50 cuadros —de un proyecto a
+    # mano— no se ve y sí se tarda en trazar.
+    px = max(MIN_TITLE_PX, int(target.height() * min(1.0, title.size)))
+    seguro = target.width() * (1 - 2 * SAFE_MARGIN)
+    palabras = [w for w in title.text.split() if w] or [""]
+    for _ in range(6):
+        metrics = QFontMetricsF(_title_font(title, px))
+        util = seguro - 2 * _title_pad(title, metrics.height(), px)
+        mas_ancha = max(metrics.horizontalAdvance(w) for w in palabras)
+        if mas_ancha <= util or px <= MIN_TITLE_PX:
+            break
+        px = max(MIN_TITLE_PX, min(px - 1, int(px * util / mas_ancha)))
+    metrics = QFontMetricsF(_title_font(title, px))
+    util = seguro - 2 * _title_pad(title, metrics.height(), px)
+    return px, _wrap(title.text, metrics, util)
+
+
+def _clamp(valor: float, minimo: float, maximo: float) -> float:
+    if maximo < minimo:                # no cabe: se centra en el espacio
+        return (minimo + maximo) / 2
+    return max(minimo, min(maximo, valor))
+
+
 def _draw_title_body(painter: QPainter, target: QRectF, title: Title,
                      estado: AnimState) -> None:
 
-    font = QFont(title.font) if title.font else QFont()
-    # Con tope de un cuadro de alto: una letra de 50 cuadros —de un proyecto a
-    # mano— no se ve y sí se tarda en trazar.
-    font.setPixelSize(max(8, int(target.height() * min(1.0, title.size) * estado.scale)))
-    font.setBold(title.bold)
-    font.setItalic(title.italic)
+    px, renglones = title_layout(target, title)
+    font = _title_font(title, int(px * estado.scale))
 
     metrics = QFontMetricsF(font)
-    texto = visible_text(title.text, estado.chars)
-    lines = texto.splitlines() or [""]
+    cuantos = round(len(title.text) * max(0.0, min(1.0, estado.chars)))
+    lines = _visible_lines(renglones, cuantos)
     line_height = metrics.height()
-    block_height = line_height * len(lines)
+    block_height = line_height * len(renglones)
 
-    # El ancho se mide sobre el texto COMPLETO, no sobre el que ya se
-    # escribió: si se midiera sobre el visible, un texto centrado se iría
+    # El ancho y el alto se miden sobre el texto COMPLETO, no sobre el que ya
+    # se escribió: si se midiera sobre el visible, un texto centrado se iría
     # acomodando letra por letra y se vería como un temblor.
-    completo = title.text.splitlines() or [""]
-    widest = max(metrics.horizontalAdvance(line) for line in completo)
+    widest = max(metrics.horizontalAdvance(line) for line, _ in renglones)
 
-    anchor_x = target.left() + target.width() * (title.x + estado.dx)
-    anchor_y = target.top() + target.height() * (title.y + estado.dy)
-    left = anchor_x - widest * ALIGN_OFFSET.get(title.align, 0.5)
-    block = QRectF(left, anchor_y - block_height / 2, widest, block_height)
+    # El ancla se mueve lo necesario para que el bloque quede dentro del
+    # margen seguro; el movimiento de la animación va encima, para que una
+    # entrada deslizándose siga entrando desde fuera.
+    pad = _title_pad(title, line_height, font.pixelSize())
+    margen_x = target.width() * SAFE_MARGIN + pad
+    margen_y = target.height() * SAFE_MARGIN + pad
+    anchor_x = target.left() + target.width() * title.x
+    anchor_y = target.top() + target.height() * title.y
+    left = _clamp(anchor_x - widest * ALIGN_OFFSET.get(title.align, 0.5),
+                  target.left() + margen_x, target.right() - margen_x - widest)
+    top = _clamp(anchor_y - block_height / 2,
+                 target.top() + margen_y, target.bottom() - margen_y - block_height)
+    left += target.width() * estado.dx
+    top += target.height() * estado.dy
+    block = QRectF(left, top, widest, block_height)
 
     if title.background:
-        pad = line_height * 0.22
+        caja = line_height * 0.22
         painter.setPen(Qt.NoPen)
         painter.setBrush(CAPTION_BOX)
-        painter.drawRoundedRect(block.adjusted(-pad, -pad / 2, pad, pad / 2), 4, 4)
+        painter.drawRoundedRect(block.adjusted(-caja, -caja / 2, caja, caja / 2), 4, 4)
 
     if title.shadow:
         _draw_shadow(painter, block, lines, font, metrics, title)
