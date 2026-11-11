@@ -11,7 +11,7 @@ easy to use. The capability, yes; the complexity, no.
 >
 > **Now photos too.** On opening you choose Video or **Photos**: Vortex Photo is
 > a layered canvas with filters, adjustments, text, shapes, masks and blend modes,
-> easy to use. It passes 2181 automated tests.
+> easy to use. It passes 2190 automated tests.
 >
 > **1.0.** Everything that felt broken is closed: audio follows transitions,
 > the mix no longer clips and has a meter, the timeline scrolls sideways and

@@ -46,11 +46,6 @@ a professional one within reach. The video editor doesn't change and your
 
 - Vortex Studio is now video and photos, in the same download.
 
-## [1.0.1] — 2026-10-21
-
-**Fixes fonts in the Linux package on recent distros.** The editor itself
-doesn't change; only what ships in the `.tar.gz`.
-
 ### Fixed
 
 - **Long text no longer runs off the frame.** If it doesn't fit across, it
@@ -59,6 +54,14 @@ doesn't change; only what ships in the `.tar.gz`.
   in the preview and in the exported video. Also, placing text on an edge
   ("Abajo izquierda", "Arriba derecha"…) from Claude now aligns it toward that
   edge, as the text panel already did.
+
+## [1.0.1] — 2026-10-21
+
+**Fixes fonts in the Linux package on recent distros.** The editor itself
+doesn't change; only what ships in the `.tar.gz`.
+
+### Fixed
+
 - **The Linux package shipped its own `fontconfig`**, version 2.13 from
   Ubuntu 22.04, which doesn't understand the font configuration of newer
   distros. On CachyOS, with 2.18, the editor started with about 45
