@@ -21,6 +21,7 @@ from vortex_studio import __version__
 ASSETS = Path(__file__).resolve().parent / "assets"
 SMOKE_FLAG = "--smoke-test"
 SELF_CHECK_FLAG = "--self-check"     # ver `selfcheck.py`
+VIDEO_FLAG = "--video"               # directo al editor de video, sin elegir (lo usa el MCP)
 
 
 def app_icon() -> QIcon:
@@ -59,6 +60,15 @@ def smoke_test(app: QApplication) -> int:
         app.processEvents()
         ventana._dirty = False
         ventana.close()
+        app.processEvents()
+
+        # Vortex Photo también va en el ejecutable: que arme su ventana igual.
+        from vortex_studio.ui.photo import PhotoWindow
+
+        fotos = PhotoWindow()
+        app.processEvents()
+        fotos.session.dirty = False
+        fotos.close()
         app.processEvents()
     except Exception:
         destino = os.environ.get("VORTEX_SMOKE_LOG")
@@ -174,29 +184,50 @@ def _main(argv: list[str] | None = None) -> int:
     from vortex_studio.media import HAS_PYAV
 
     splash.status("Preparando interfaz…" if HAS_PYAV else "Sin códecs — continuando…")
-    from vortex_studio.ui.launcher import VIDEO, Launcher
+    from vortex_studio.ui.launcher import FOTOS, VIDEO, Launcher
 
-    launcher = Launcher(__version__)
+    if VIDEO_FLAG in argv:
+        eleccion = VIDEO
+        splash.status("Listo")
+        splash.hold()
+    else:
+        launcher = Launcher(__version__)
 
-    splash.status("Listo")
+        splash.status("Listo")
 
-    # Primero se cumple el tiempo del splash, y hasta entonces aparece la
-    # siguiente ventana. Al revés, la taparía: bajo Wayland no hay manera de
-    # forzar que una ventana se quede encima de otra.
-    splash.hold()
-    launcher.show()
-    splash.finish(launcher)
+        # Primero se cumple el tiempo del splash, y hasta entonces aparece la
+        # siguiente ventana. Al revés, la taparía: bajo Wayland no hay manera de
+        # forzar que una ventana se quede encima de otra.
+        splash.hold()
+        launcher.show()
+        splash.finish(launcher)
 
-    if launcher.exec() != Launcher.Accepted or launcher.choice != VIDEO:
-        return 0
+        if launcher.exec() != Launcher.Accepted or launcher.choice not in (VIDEO, FOTOS):
+            return 0
+        eleccion = launcher.choice
 
-    # El editor se importa hasta aquí: si algún día se elige Fotos, no tiene
-    # por qué haberse cargado el de video.
+    if eleccion == FOTOS:
+        # Igual que con el video: el editor de fotos se importa hasta aquí.
+        from vortex_studio.ui.photo import PhotoWindow
+
+        fotos = PhotoWindow()
+        fotos.show()
+        return app.exec()
+
+    # El editor de video se importa hasta aquí: si se eligió Fotos, no tiene
+    # por qué haberse cargado.
     from vortex_studio.ui import MainWindow
 
     window = MainWindow()
     window.show()
+    if VIDEO_FLAG in argv:
+        splash.finish(window)
     window.offer_recovery()     # si la vez pasada se cerró de golpe
+
+    # Para que Claude pueda editar aquí con el MCP (`vortex-studio --mcp`).
+    from vortex_studio.control.server import attach
+
+    attach(window)
 
     return app.exec()
 

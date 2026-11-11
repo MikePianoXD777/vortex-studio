@@ -12,6 +12,49 @@ compatibilidad: lo que guardes en un `.vortex` abre en todas las `1.x`.
 
 Nada todavía.
 
+## [2.0.0] — 2026-11-08
+
+**Vortex Photo: ahora también editas fotos.** Al abrir, la tarjeta **Fotos** ya
+funciona. Un lienzo con capas, fácil como un editor de diseño y con las
+herramientas de uno profesional a la mano. El editor de video no cambia y tus
+proyectos `.vortex` abren igual.
+
+### Nuevo
+
+- **Diseña sobre un lienzo:** tamaños listos para redes, video e impresión, o
+  el tuyo. Agrega fotos (también arrastrando o con Ctrl+V), texto y formas.
+- **Mueve, escala y gira** con asas y guías que se alinean solas. Las esquinas
+  escalan una foto y los lados la recortan. Texto editable sobre el lienzo.
+- **Editar foto:** 22 filtros con miniaturas de tu propia foto, «Mejorar con un
+  clic» y ajustes de luz, color, detalle y efectos.
+- **Efectos de capa:** sombra, contorno y brillo.
+- **Capas:** opacidad, 16 modos de fusión, bloqueo y orden.
+- **En «Más opciones»:** curva, HSL por color, máscaras, varita mágica, quitar
+  fondo, tampón de clonar y capas de ajuste.
+- **Pincel y borrador**, y **antes y después** con la tecla `\`.
+- **Guarda** tu diseño como `.vphoto` y **exporta** a PNG, JPG o WEBP. También
+  se pueden editar muchas fotos en lote.
+
+- **Claude edita contigo en el editor de video.** Un servidor MCP
+  (`vortex-studio --mcp`) deja que Claude corte, mueva, recorte, quite
+  silencios, ponga textos y subtítulos, color, volumen y transiciones, mire el
+  cuadro y exporte, en el editor abierto y en vivo. Todo se deshace con
+  Ctrl+Z, y la barra de abajo dice «Claude está editando» mientras está
+  conectado. `vortex-studio --video` abre directo el editor de video.
+
+### Cambiado
+
+- Vortex Studio pasa a ser video y fotos, con la misma descarga.
+
+### Arreglado
+
+- **Un texto largo ya no se sale del cuadro.** Si no cabe a lo ancho, se parte
+  en renglones; si una sola palabra tampoco cabe, la letra se achica. Siempre
+  deja un margen seguro del 5 % por lado, y se ve igual en la vista previa y
+  en el video exportado. Además, poner un texto en una orilla («Abajo
+  izquierda», «Arriba derecha»…) desde Claude lo alinea hacia esa orilla, como
+  ya lo hacía el panel de texto.
+
 ## [1.0.1] — 2026-10-21
 
 **Arregla las fuentes del paquete de Linux en distros recientes.** El editor

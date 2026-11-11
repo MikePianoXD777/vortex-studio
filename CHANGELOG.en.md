@@ -12,6 +12,49 @@ in a `.vortex` file opens in every `1.x`.
 
 Nothing yet.
 
+## [2.0.0] — 2026-11-08
+
+**Vortex Photo: you can now edit photos too.** The **Photos** card on the start
+screen now works. A layered canvas, as easy as a design tool, with the tools of
+a professional one within reach. The video editor doesn't change and your
+`.vortex` projects open as before.
+
+### Added
+
+- **Design on a canvas:** ready-made sizes for social media, video and print,
+  or your own. Add photos (also by dragging or with Ctrl+V), text and shapes.
+- **Move, scale and rotate** with handles and guides that snap on their own.
+  Corners scale a photo and sides crop it. Text is edited right on the canvas.
+- **Edit photo:** 22 filters previewed on your own photo, one-click enhance and
+  light, color, detail and effect adjustments.
+- **Layer effects:** shadow, outline and glow.
+- **Layers:** opacity, 16 blend modes, locking and ordering.
+- **Under "More options":** curve, per-color HSL, masks, magic wand, background
+  removal, clone stamp and adjustment layers.
+- **Brush and eraser**, and **before and after** with the `\` key.
+- **Save** your design as `.vphoto` and **export** to PNG, JPG or WEBP. Many
+  photos can also be edited in a batch.
+
+- **Claude edits with you in the video editor.** An MCP server
+  (`vortex-studio --mcp`) lets Claude cut, move, trim, remove silences, add
+  titles and subtitles, color, volume and transitions, look at the frame and
+  export, in the open editor and live. Everything undoes with Ctrl+Z, and the
+  status bar says "Claude está editando" while it's connected.
+  `vortex-studio --video` opens the video editor directly.
+
+### Changed
+
+- Vortex Studio is now video and photos, in the same download.
+
+### Fixed
+
+- **Long text no longer runs off the frame.** If it doesn't fit across, it
+  wraps onto more lines; if a single word doesn't fit either, the letters get
+  smaller. It always keeps a 5 % safe margin on each side, and looks the same
+  in the preview and in the exported video. Also, placing text on an edge
+  ("Abajo izquierda", "Arriba derecha"…) from Claude now aligns it toward that
+  edge, as the text panel already did.
+
 ## [1.0.1] — 2026-10-21
 
 **Fixes fonts in the Linux package on recent distros.** The editor itself

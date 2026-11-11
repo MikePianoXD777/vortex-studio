@@ -123,6 +123,16 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: ./dist/vortex-studio/vortex-studio --smoke-test
 
+      - name: El servidor MCP arranca
+        # `--mcp` es lo que Claude Code arranca: tiene que contestar sin Qt.
+        run: |
+          respuesta=$(printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
+                                    '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
+            | timeout 30 ./dist/vortex-studio/vortex-studio --mcp)
+          echo "$respuesta" | head -c 300; echo
+          echo "$respuesta" | grep -q '"serverInfo"'
+          echo "$respuesta" | grep -q '"quitar_silencios"'
+
       - name: Revisión a fondo
         # Usa el editor empacado de verdad: importa, exporta, guarda.
         env:

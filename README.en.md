@@ -7,11 +7,15 @@ A non-linear video editor. Part of Vortex Suite.
 The features of DaVinci Resolve, CapCut, Premiere Pro and After Effects, but
 easy to use. The capability, yes; the complexity, no.
 
-> ### ✅ Version 1.0 — `1.0.1`
+> ### ✅ Version 2.0 — `2.0.0`
+>
+> **Now photos too.** On opening you choose Video or **Photos**: Vortex Photo is
+> a layered canvas with filters, adjustments, text, shapes, masks and blend modes,
+> easy to use. It passes 2190 automated tests.
 >
 > **1.0.** Everything that felt broken is closed: audio follows transitions,
 > the mix no longer clips and has a meter, the timeline scrolls sideways and
-> supports marquee selection. It passes 1432 automated tests, including
+> supports marquee selection. It was also tested with
 > real-world footage: vertical phone video, 29.97 fps, distant keyframes,
 > HEVC, 44.1 kHz and variable frame rate.
 >
@@ -38,9 +42,9 @@ Every version's executables are in
 
 **Windows** (64-bit):
 
-- `VortexStudio-1.0.1-windows-x64-instalador.exe` installs it and adds it to
+- `VortexStudio-2.0.0-windows-x64-instalador.exe` installs it and adds it to
   the Start menu. No admin rights needed.
-- `VortexStudio-1.0.1-windows-x64-portable.zip` is the portable version:
+- `VortexStudio-2.0.0-windows-x64-portable.zip` is the portable version:
   unzip it and open `vortex-studio.exe`.
 
 The executables aren't signed, so Windows may warn through SmartScreen:
@@ -50,8 +54,8 @@ The executables aren't signed, so Windows may warn through SmartScreen:
 later; with PulseAudio or PipeWire, which every desktop ships):
 
 ```bash
-tar xzf VortexStudio-1.0.1-linux-x86_64.tar.gz
-cd VortexStudio-1.0.1-linux-x86_64
+tar xzf VortexStudio-2.0.0-linux-x86_64.tar.gz
+cd VortexStudio-2.0.0-linux-x86_64
 ./instalar.sh
 ```
 
@@ -640,6 +644,23 @@ Exports go to the **render queue** and you can keep editing: each one takes a
 frozen copy of the sequence, so whatever you edit afterwards doesn't change
 the file. Every job has its progress bar and cancel button; the incomplete
 file is deleted.
+
+## Claude edits with you
+
+Vortex Studio ships an [MCP](https://modelcontextprotocol.io) server: with it,
+Claude (in Claude Code) edits **in the editor you have open** and you watch
+every change live: it cuts, moves, trims, removes silences, adds titles and
+subtitles, fixes color and volume, adds transitions, looks at the frame it
+made and exports. Everything goes into the history and undoes with `Ctrl+Z`.
+While it's connected, the status bar says **"Claude está editando"**.
+
+```bash
+claude mcp add --scope user vortex-studio -- vortex-studio --mcp
+```
+
+It comes set up in Vortexine's OS. If the editor isn't open, Claude opens it
+(`vortex-studio --video` goes straight to the video editor). It only listens
+on a local socket owned by your user: nobody else can drive it.
 
 ## Autosave
 

@@ -36,6 +36,19 @@ ANCHORS = {
 }
 
 
+def align_for_anchor(nombre: str) -> str:
+    """La alineación que va con una posición de orilla.
+
+    Las posiciones de orilla ponen el ancla al 6 % o al 94 % del ancho; con
+    el texto centrado ahí, medio texto quedaba fuera del cuadro.
+    """
+    if "izquierda" in nombre:
+        return "izquierda"
+    if "derecha" in nombre:
+        return "derecha"
+    return "centro"
+
+
 @dataclass(eq=False)
 class TimedItem:
     """Lo mínimo para vivir en una pista: cuándo empieza y cuánto dura.
